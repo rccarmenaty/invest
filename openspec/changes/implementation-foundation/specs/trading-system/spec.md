@@ -40,7 +40,7 @@ Fixture files MUST be validated before scanner execution. Invalid schemas, missi
 - GIVEN a fixture file with duplicate rows for the same symbol and date
 - WHEN fixture validation runs
 - THEN validation MUST fail
-- AND the failure MUST identify the rejection reason as fixture-invalid
+- AND the failure MUST identify the rejection reason as duplicate-bar
 
 #### Scenario: Reject a version mismatch
 
