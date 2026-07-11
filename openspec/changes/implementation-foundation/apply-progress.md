@@ -3,15 +3,15 @@
 ## Delivery Boundary
 
 - Strategy: chained PRs, `stacked-to-main`
-- Current work unit: PR 2 — deterministic scanner
-- Start: PR 1 contracts and validated fixtures on `main`
-- End: pure deterministic momentum scanner with stable rejection decisions and enforced domain boundaries
-- Prior dependencies: PR 1 contracts and validated fixtures
-- Follow-up: PR 3 journal, CLI, and container packaging
-- Out of scope: journal, application orchestration, CLI, container, broker/infrastructure integrations, and Kubernetes assets
+- Current work unit: PR 3 — journal, CLI, and container packaging
+- Start: PR 1 contracts/fixtures and PR 2 scanner on `main`
+- End: locally runnable scan orchestration, idempotent memory journal, CLI, and application container
+- Prior dependencies: PR 1 contracts/fixtures and PR 2 deterministic scanner
+- Follow-up: verification and archive
+- Out of scope: broker/infrastructure integrations, live trading, and Kubernetes/Helm/provisioning assets
 
 ```text
-main <- PR 1 contracts/fixtures <- PR 2 scanner 📍 <- PR 3 CLI/container
+main <- PR 1 contracts/fixtures <- PR 2 scanner <- PR 3 CLI/container 📍
 ```
 
 ## Completed Tasks
@@ -25,6 +25,12 @@ main <- PR 1 contracts/fixtures <- PR 2 scanner 📍 <- PR 3 CLI/container
 - [x] 2.3 Stable rejection tests added for all five assigned domain reasons.
 - [x] 2.4 Scanner emits exactly one deterministically ordered decision per universe symbol; calculations refactored behind named constants and pure helpers.
 - [x] 2.5 AST boundary test enforces forbidden imports, I/O, network, randomness, SDK, and wall-clock calls.
+- [x] 3.1 Idempotent deterministic in-memory event journal implemented test-first.
+- [x] 3.2 `ScanRun` maps every scanner decision to deterministic versioned contracts and journals it.
+- [x] 3.3 CLI success/failure behavior specified with tests before implementation.
+- [x] 3.4 `invest-scan` entrypoint implemented with JSON-only stdout and stable failure records.
+- [x] 3.5 Container entrypoint and no-cluster-assets boundary implemented test-first.
+- [x] 3.6 Full tests, Ruff, CLI runtime, and local/container documentation completed.
 
 ## TDD Cycle Evidence
 
@@ -35,6 +41,10 @@ main <- PR 1 contracts/fixtures <- PR 2 scanner 📍 <- PR 3 CLI/container
 | 2.1–2.2 | `tests/domain/test_scanner.py` | Unit | 22 passed | Import failed: `invest.domain.scanner` absent | 1 passed | Two accepted symbols, reversed inputs, repeat execution | Named rule constants and pure ATR helper; 6 passed |
 | 2.3–2.4 | `tests/domain/test_scanner.py` | Unit | 1 scanner test passed | Four rejection assertions failed before validation branches | 6 passed | Five distinct stable rejection paths plus accepted path | One decision path per symbol; 6 passed |
 | 2.5 | `tests/test_boundaries.py` | Architecture | 6 scanner tests passed | No forbidden dependency was present when the boundary guard was introduced | 1 passed | All domain modules traversed via AST | Helper functions isolate import and call-name analysis; 1 passed |
+| 3.1 | `tests/adapters/test_journal_memory.py` | Unit | 29 passed | Import failed: `invest.adapters.journal_memory` absent | 1 passed | Duplicate append plus reverse chronological input | Dictionary-backed idempotency behind `Journal`; 1 passed |
+| 3.2 | `tests/application/test_scan_run.py` | Application | Journal test passed | Import failed: `invest.application.scan_run` absent | 1 passed after fixture calibration | Repeat execution proves stable ID and idempotent journal | Contract mapping kept in one application module; 1 passed |
+| 3.3–3.4 | `tests/adapters/test_cli.py` | Runtime adapter | Application and journal tests passed | Import failed: `invest.adapters.cli` absent | 2 passed | Success list and malformed-fixture failure record | Parsing/output remain at adapter boundary; 2 passed |
+| 3.5 | `tests/test_container_scope.py` | Packaging | 33 passed | `Dockerfile` missing; 1 failed | 1 passed | Entrypoint, no kubectl, no Helm/Kustomize metadata | Minimal uv image with fixture-only default command; 1 passed |
 
 ## Work Unit Evidence
 
@@ -49,6 +59,12 @@ main <- PR 1 contracts/fixtures <- PR 2 scanner 📍 <- PR 3 CLI/container
 | PR 2 full suite | `uv run --extra dev pytest -q` — exit 0, 29 passed |
 | PR 2 quality | `uv run --extra dev ruff check .` — exit 0, all checks passed |
 | PR 2 rollback boundary | Remove `src/invest/domain/scanner.py`, `tests/domain/test_scanner.py`, `tests/test_boundaries.py`, and the `ScanDecision` addition in `src/invest/domain/models.py` |
+| PR 3 focused tests | `uv run --extra dev pytest tests/application tests/adapters/test_cli.py tests/adapters/test_journal_memory.py -q` — exit 0, 4 passed |
+| PR 3 runtime harness | `uv run invest-scan --universe fixtures/v1/universe.json --bars fixtures/v1/bars.json --format json` — exit 0, one deterministic `candidate.rejected.v1` JSON event |
+| PR 3 full suite | `uv run --extra dev pytest -q` — exit 0, 34 passed |
+| PR 3 quality | `uv run --extra dev ruff check .` — exit 0, all checks passed |
+| PR 3 container evidence | Docker executable unavailable (`command -v docker` returned no path); `tests/test_container_scope.py` structurally validates the entrypoint and absence of cluster assets — 1 passed |
+| PR 3 rollback boundary | Remove `src/invest/application/scan_run.py`, `src/invest/adapters/{journal_memory.py,cli.py}`, PR 3 tests, `Dockerfile`, `README.md`, and the `invest-scan` script entry |
 
 ## Deviations and Risks
 
