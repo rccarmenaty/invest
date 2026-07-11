@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from invest.domain.rejection import RejectionReason
 
 
 @dataclass(frozen=True)
@@ -24,3 +28,11 @@ class DailyBar:
 class FixtureInputs:
     universe: Universe
     bars: tuple[DailyBar, ...]
+
+
+@dataclass(frozen=True)
+class ScanDecision:
+    symbol: str
+    decision_date: date
+    accepted: bool
+    reason: "RejectionReason | None" = None
