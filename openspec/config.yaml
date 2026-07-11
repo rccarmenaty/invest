@@ -1,0 +1,78 @@
+schema: spec-driven
+project: invest
+persistence: hybrid
+strict_tdd: true
+
+context: |
+  Specification seed: SPEC.md (Momentum Breakout Trading System), dated 2026-07-11.
+  Current repo has specification/scaffolding only; no implementation code or package manager files yet.
+  Target stack from seed: Python-style hexagonal services, Pydantic contracts, NATS JetStream, Postgres, Alpaca, local Kubernetes.
+  Architecture: event-driven microservices with pure domain packages, ports/adapters, replay/backtest before paper execution.
+  Safety: paper-first; no live trading until replay, paper, and readiness gates pass.
+
+testing:
+  detected_at: '2026-07-11'
+  strict_tdd: true
+  source: AGENTS strict TDD marker; no runnable test harness exists yet.
+  runner:
+    available: false
+    framework: null
+    command: null
+    limitation: No package files, test config, or implementation tree exist yet.
+  layers:
+    unit:
+      available: planned
+      tool: pytest or equivalent to be selected when Python project scaffolding exists
+    integration:
+      available: planned
+      tool: testcontainers for NATS/Postgres per SPEC.md
+    e2e:
+      available: false
+      tool: null
+    replay_backtest:
+      available: planned
+      tool: recorded JetStream/day replay and point-in-time daily bars per SPEC.md
+    broker_adapter:
+      available: planned
+      tool: Alpaca paper API tests per SPEC.md
+  coverage:
+    available: false
+    command: null
+  quality:
+    linter:
+      available: false
+      command: null
+    type_checker:
+      available: false
+      command: null
+    formatter:
+      available: false
+      command: null
+
+rules:
+  proposal:
+    - Keep the paper-first and no-live-before-validation gates explicit.
+    - Identify data authority and broker/account-rule assumptions before implementation.
+  specs:
+    - Use RFC 2119 keywords and Given/When/Then scenarios.
+    - Treat missing market, earnings, and corporate-action data as fail-safe behavior.
+  design:
+    - Preserve hexagonal boundaries: domain has no SDK, adapter, clock, or wall-time dependencies.
+    - Include replay/idempotency and safety-halt behavior for money-moving flows.
+  tasks:
+    - Start with contracts, ref-data, ingestor, scanner, and journal before order execution.
+    - Forecast review workload and split work if estimated changed lines exceed 400.
+  apply:
+    tdd: true
+    test_command: ''
+    phase_rules:
+      - Start trading logic with failing tests before implementation.
+      - Do not make live trading changes without explicit live-readiness artifacts.
+  verify:
+    test_command: ''
+    build_command: ''
+    coverage_threshold: 0
+    phase_rules:
+      - Report unavailable tests honestly until the implementation harness exists.
+  archive:
+    - Preserve archived changes as an audit trail.
