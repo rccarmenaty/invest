@@ -1,4 +1,7 @@
 {
   "fixture_version": "v1",
-  "symbols": ["ACME"]
+  "symbols": [
+    "ACME",
+    "MOMO"
+  ]
 }
