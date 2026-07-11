@@ -47,7 +47,7 @@ def test_loads_valid_versioned_fixtures(tmp_path: Path) -> None:
     ("mutate", "reason"),
     [
         (lambda universe, bars: bars.update({"bars": "not-a-list"}), "fixture-invalid"),
-        (lambda universe, bars: bars["bars"].append(dict(bars["bars"][0])), "fixture-invalid"),
+        (lambda universe, bars: bars["bars"].append(dict(bars["bars"][0])), "duplicate-bar"),
         (lambda universe, bars: bars.update({"bars": list(reversed(bars["bars"]))}), "non-monotonic-bars"),
         (lambda universe, bars: bars["bars"][0].update({"symbol": "UNKNOWN"}), "fixture-symbol-missing"),
         (lambda universe, bars: bars.update({"fixture_version": "v2"}), "fixture-version-mismatch"),

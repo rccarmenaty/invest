@@ -70,7 +70,7 @@ class JsonFixtureReader:
 
         keys = [(bar.symbol, bar.date) for bar in bars_payload.bars]
         if len(keys) != len(set(keys)):
-            raise FixtureValidationError(RejectionReason.FIXTURE_INVALID)
+            raise FixtureValidationError(RejectionReason.DUPLICATE_BAR)
 
         last_date_by_symbol: dict[str, date] = {}
         for bar in bars_payload.bars:
