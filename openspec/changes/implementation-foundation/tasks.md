@@ -41,9 +41,9 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Journal, CLI, and Packaging (PR 3)
 
-- [ ] 3.1 RED then GREEN: Add `tests/adapters/test_journal_memory.py`; implement `src/invest/adapters/journal_memory.py` to store accepted/rejected events exactly once in deterministic order.
-- [ ] 3.2 RED then GREEN: Add `tests/application/test_scan_run.py`; implement `src/invest/application/scan_run.py` mapping decisions to deterministic IDs/contracts and journaling every rejection.
-- [ ] 3.3 RED: Add `tests/adapters/test_cli.py` proving success prints only the event list and malformed fixtures print exactly one `scan.failed.v1` record with non-zero exit and no partial output.
-- [ ] 3.4 GREEN: Implement `src/invest/adapters/cli.py` and `invest-scan` entrypoint; REFACTOR I/O to remain outside domain.
-- [ ] 3.5 RED then GREEN: Add container-scope test and `Dockerfile` exposing `invest-scan`; prove build metadata needs no cluster access and repository adds no Kubernetes/Helm/provisioning assets.
-- [ ] 3.6 Run `uv run pytest` and `uv run ruff check .`; document local/container commands while keeping Kubernetes infrastructure out of scope.
+- [x] 3.1 RED then GREEN: Add `tests/adapters/test_journal_memory.py`; implement `src/invest/adapters/journal_memory.py` to store accepted/rejected events exactly once in deterministic order.
+- [x] 3.2 RED then GREEN: Add `tests/application/test_scan_run.py`; implement `src/invest/application/scan_run.py` mapping decisions to deterministic IDs/contracts and journaling every rejection.
+- [x] 3.3 RED: Add `tests/adapters/test_cli.py` proving success prints only the event list and malformed fixtures print exactly one `scan.failed.v1` record with non-zero exit and no partial output.
+- [x] 3.4 GREEN: Implement `src/invest/adapters/cli.py` and `invest-scan` entrypoint; REFACTOR I/O to remain outside domain.
+- [x] 3.5 RED then GREEN: Add container-scope test and `Dockerfile` exposing `invest-scan`; prove build metadata needs no cluster access and repository adds no Kubernetes/Helm/provisioning assets.
+- [x] 3.6 Run `uv run pytest` and `uv run ruff check .`; document local/container commands while keeping Kubernetes infrastructure out of scope.
