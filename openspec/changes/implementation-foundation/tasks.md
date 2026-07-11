@@ -33,11 +33,11 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: Deterministic Scanner (PR 2)
 
-- [ ] 2.1 RED: Add `tests/domain/test_scanner.py` proving the momentum rule accepts a fixture candidate and produces identical ordered results twice.
-- [ ] 2.2 GREEN: Implement `src/invest/domain/scanner.py` with the 20-day volume/high/MA and ATR(14) rule; sort inputs and decisions deterministically.
-- [ ] 2.3 RED: Extend scanner tests for `insufficient-history`, `missing-data`, `unsupported-input`, `domain-invariant-violation`, and `no-signal`, each with its exact stable reason.
-- [ ] 2.4 GREEN: Emit one decision per valid symbol; REFACTOR calculations while preserving the scanner interface.
-- [ ] 2.5 RED then GREEN: Add `tests/test_boundaries.py` and remove any forbidden domain imports, I/O, network, randomness, SDK, or wall-clock calls.
+- [x] 2.1 RED: Add `tests/domain/test_scanner.py` proving the momentum rule accepts a fixture candidate and produces identical ordered results twice.
+- [x] 2.2 GREEN: Implement `src/invest/domain/scanner.py` with the 20-day volume/high/MA and ATR(14) rule; sort inputs and decisions deterministically.
+- [x] 2.3 RED: Extend scanner tests for `insufficient-history`, `missing-data`, `unsupported-input`, `domain-invariant-violation`, and `no-signal`, each with its exact stable reason.
+- [x] 2.4 GREEN: Emit one decision per valid symbol; REFACTOR calculations while preserving the scanner interface.
+- [x] 2.5 RED then GREEN: Add `tests/test_boundaries.py` and remove any forbidden domain imports, I/O, network, randomness, SDK, or wall-clock calls.
 
 ## Phase 3: Journal, CLI, and Packaging (PR 3)
 
