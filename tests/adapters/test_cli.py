@@ -14,6 +14,19 @@ def test_cli_success_prints_only_event_list(capsys) -> None:
     assert captured.err == ""
 
 
+def test_cli_emits_accepted_event_for_momentum_candidate(capsys) -> None:
+    result = main(["--universe", "fixtures/v1/universe.json", "--bars", "fixtures/v1/bars.json", "--format", "json"])
+    captured = capsys.readouterr()
+    assert result == 0
+    payload = json.loads(captured.out)
+    events_by_symbol = {event["symbol"]: event for event in payload}
+    accepted = events_by_symbol["MOMO"]
+    assert accepted["event_type"] == "candidate.accepted.v1"
+    assert accepted["decision"] == "accepted"
+    assert "reason" not in accepted
+    assert events_by_symbol["ACME"]["event_type"] == "candidate.rejected.v1"
+
+
 def test_cli_failure_prints_one_failed_record_without_partial_output(tmp_path: Path, capsys) -> None:
     malformed = tmp_path / "bars.json"
     malformed.write_text("not-json", encoding="utf-8")
