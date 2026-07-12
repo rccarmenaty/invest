@@ -98,3 +98,63 @@ def test_scanner_rejects_valid_candidate_without_signal() -> None:
     decision = MomentumScanner().scan(Universe("v1", ("ACME",)), tuple(bars))[0]
 
     assert decision.reason is RejectionReason.NO_SIGNAL
+
+
+def _oscillating_history(symbol: str, start: date) -> list[DailyBar]:
+    bars: list[DailyBar] = []
+    price = Decimal("50")
+    for index in range(20):
+        day = start + timedelta(days=index)
+        high = price + Decimal("1.5") if index % 2 == 0 else price + Decimal("0.5")
+        low = price - Decimal("1.0") if index % 2 == 0 else price - Decimal("0.3")
+        close = price + Decimal("0.2")
+        bars.append(DailyBar(symbol=symbol, date=day, open=price, high=high, low=low, close=close, volume=1000))
+        price = close
+    return bars
+
+
+def test_scanner_regression_snapshot_survives_atr_extraction() -> None:
+    """Baseline snapshot captured against the pre-extraction scanner (ATR still inline).
+
+    Locks in exact decisions on ATR-sensitive data so the byte-mechanical move of
+    `_average_true_range` into `domain/indicators.py` cannot silently change scan output.
+    """
+    start = date(2026, 1, 1)
+
+    accepted_bars = _oscillating_history("REG1", start)
+    breakout_price = accepted_bars[-1].close
+    accepted_bars.append(
+        DailyBar(
+            symbol="REG1",
+            date=start + timedelta(days=20),
+            open=breakout_price,
+            high=breakout_price + Decimal("5"),
+            low=breakout_price - Decimal("0.1"),
+            close=breakout_price + Decimal("4.5"),
+            volume=5000,
+        )
+    )
+
+    no_signal_bars = _oscillating_history("REG2", start)
+    weak_price = no_signal_bars[-1].close
+    no_signal_bars.append(
+        DailyBar(
+            symbol="REG2",
+            date=start + timedelta(days=20),
+            open=weak_price,
+            high=weak_price + Decimal("0.3"),
+            low=weak_price - Decimal("0.1"),
+            close=weak_price + Decimal("0.05"),
+            volume=500,
+        )
+    )
+
+    universe = Universe(fixture_version="v1", symbols=("REG1", "REG2"))
+    bars = tuple(accepted_bars + no_signal_bars)
+
+    decisions = MomentumScanner().scan(universe, bars)
+
+    assert [(decision.symbol, decision.decision_date, decision.accepted, decision.reason) for decision in decisions] == [
+        ("REG1", start + timedelta(days=20), True, None),
+        ("REG2", start + timedelta(days=20), False, RejectionReason.NO_SIGNAL),
+    ]

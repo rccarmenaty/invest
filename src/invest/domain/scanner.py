@@ -2,11 +2,11 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 
+from invest.domain.indicators import average_true_range
 from invest.domain.models import DailyBar, ScanDecision, Universe
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 HISTORY_DAYS = 20
-ATR_DAYS = 14
 RELATIVE_VOLUME_MULTIPLIER = Decimal("2")
 UPWARD_MOVE_ATR_MULTIPLIER = Decimal("1.5")
 MAX_MOVING_AVERAGE_MULTIPLIER = Decimal("1.15")
@@ -42,7 +42,7 @@ class MomentumScanner:
         average_volume = Decimal(sum(bar.volume for bar in history)) / len(history)
         moving_average = sum((bar.close for bar in history), Decimal()) / len(history)
         prior_high = max(bar.high for bar in history)
-        atr = self._average_true_range(history)
+        atr = average_true_range(history)
         accepted = (
             Decimal(candidate.volume) >= RELATIVE_VOLUME_MULTIPLIER * average_volume
             and candidate.close - history[-1].close >= UPWARD_MOVE_ATR_MULTIPLIER * atr
@@ -55,15 +55,6 @@ class MomentumScanner:
             accepted=accepted,
             reason=None if accepted else RejectionReason.NO_SIGNAL,
         )
-
-    @staticmethod
-    def _average_true_range(history: list[DailyBar]) -> Decimal:
-        ranges: list[Decimal] = []
-        for index, bar in enumerate(history):
-            previous_close = history[index - 1].close if index else bar.open
-            ranges.append(max(bar.high - bar.low, abs(bar.high - previous_close), abs(bar.low - previous_close)))
-        recent_ranges = ranges[-ATR_DAYS:]
-        return sum(recent_ranges, Decimal()) / len(recent_ranges)
 
     @staticmethod
     def _valid_bar(bar: DailyBar) -> bool:
