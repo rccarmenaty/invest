@@ -1,0 +1,8 @@
+{
+  "fixture_version": "backtest-v1",
+  "symbols": [
+    "WIN",
+    "LOSS",
+    "OPENEND"
+  ]
+}

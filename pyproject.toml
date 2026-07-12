@@ -11,6 +11,7 @@ dependencies = [
 invest-scan = "invest.adapters.cli:main"
 invest-fetch = "invest.adapters.cli:fetch_main"
 invest-execute = "invest.adapters.cli:execute_main"
+invest-backtest = "invest.adapters.cli:backtest_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2,<9", "ruff>=0.5,<1"]

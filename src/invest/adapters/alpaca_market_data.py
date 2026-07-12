@@ -63,10 +63,17 @@ class AlpacaMarketDataReader:
         self._sleep = sleep
 
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs:
+        return self._paginate(universe, as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS), as_of)
+
+    def fetch_range(self, universe: Universe, start: date, end: date) -> FixtureInputs:
+        """Bulk historical range fetch, additive to `fetch()`: no CALENDAR_BUFFER_DAYS trimming."""
+        return self._paginate(universe, start, end)
+
+    def _paginate(self, universe: Universe, start: date, end: date) -> FixtureInputs:
         bars_by_symbol: dict[str, list[DailyBar]] = {}
         page_token: str | None = None
         for page_number in range(1, self.MAX_PAGES + 1):
-            params = self._request_params(universe, as_of)
+            params = self._request_params(universe, start, end)
             if page_token is not None:
                 params["page_token"] = page_token
             response = self._send_with_retry(params)
@@ -146,12 +153,12 @@ class AlpacaMarketDataReader:
             },
         )
 
-    def _request_params(self, universe: Universe, as_of: date) -> dict[str, str | int]:
+    def _request_params(self, universe: Universe, start: date, end: date) -> dict[str, str | int]:
         return {
             "symbols": ",".join(universe.symbols),
             "timeframe": "1Day",
-            "start": (as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS)).isoformat(),
-            "end": as_of.isoformat(),
+            "start": start.isoformat(),
+            "end": end.isoformat(),
             "feed": self._feed,
             "adjustment": "split",
             "limit": 10000,

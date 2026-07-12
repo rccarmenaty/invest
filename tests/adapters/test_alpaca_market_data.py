@@ -18,6 +18,117 @@ def test_live_market_data_smoke() -> None:
     assert result.bars
 
 
+def test_fetch_regression_baseline_params_and_output_unchanged_before_refactor(monkeypatch) -> None:
+    """Pins fetch()'s existing params/output as a baseline the _paginate/fetch_range
+    extraction must preserve byte-identically."""
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["start"] == "2026-04-22"
+        assert request.url.params["end"] == "2026-06-01"
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "ACME": [
+                        {"t": "2026-05-29T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": 11, "v": 1234}
+                    ]
+                },
+                "next_page_token": None,
+            },
+        )
+
+    reader = AlpacaMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = reader.fetch(Universe("v1", ("ACME",)), date(2026, 6, 1))
+
+    assert result == FixtureInputs(
+        universe=Universe("v1", ("ACME",)),
+        bars=(
+            DailyBar(
+                symbol="ACME",
+                date=date(2026, 5, 29),
+                open=Decimal("10"),
+                high=Decimal("12"),
+                low=Decimal("9"),
+                close=Decimal("11"),
+                volume=1234,
+            ),
+        ),
+    )
+
+
+def test_fetch_range_returns_untrimmed_caller_supplied_window(monkeypatch) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["start"] == "2024-01-01"
+        assert request.url.params["end"] == "2024-12-31"
+        assert request.url.params["symbols"] == "ACME"
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "ACME": [
+                        {"t": "2024-06-15T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": 11, "v": 500}
+                    ]
+                },
+                "next_page_token": None,
+            },
+        )
+
+    reader = AlpacaMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 12, 31))
+
+    assert result == FixtureInputs(
+        universe=Universe("v1", ("ACME",)),
+        bars=(
+            DailyBar(
+                symbol="ACME",
+                date=date(2024, 6, 15),
+                open=Decimal("10"),
+                high=Decimal("12"),
+                low=Decimal("9"),
+                close=Decimal("11"),
+                volume=500,
+            ),
+        ),
+    )
+
+
+def test_fetch_range_paginates_and_shares_retry_machinery(monkeypatch) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        token = request.url.params.get("page_token")
+        if token is None:
+            return httpx.Response(
+                200,
+                json={
+                    "bars": {"ACME": [{"t": "2024-01-02T04:00:00Z", "o": 9, "h": 11, "l": 8, "c": 10, "v": 100}]},
+                    "next_page_token": "page-2",
+                },
+            )
+        assert token == "page-2"
+        return httpx.Response(
+            200,
+            json={
+                "bars": {"ACME": [{"t": "2024-01-03T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": 11, "v": 200}]},
+                "next_page_token": None,
+            },
+        )
+
+    reader = AlpacaMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 12, 31))
+
+    assert len(requests) == 2
+    assert [bar.date for bar in result.bars] == [date(2024, 1, 2), date(2024, 1, 3)]
+
+
 def test_reader_satisfies_port_and_maps_single_page(monkeypatch) -> None:
     monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
     monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
