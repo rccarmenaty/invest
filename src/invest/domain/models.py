@@ -36,3 +36,24 @@ class ScanDecision:
     decision_date: date
     accepted: bool
     reason: "RejectionReason | None" = None
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    equity: Decimal
+    last_equity: Decimal
+    buying_power: Decimal
+    open_position_count: int
+    deployed_value: Decimal
+    trading_blocked: bool
+    account_blocked: bool
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    symbol: str
+    decision_date: date
+    qty: int
+    entry: Decimal
+    stop: Decimal
+    take_profit: Decimal
