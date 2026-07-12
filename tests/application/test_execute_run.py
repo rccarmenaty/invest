@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -35,6 +36,17 @@ class FakeBroker:
         self.submit_calls += 1
         self.submitted_client_order_ids.append(client_order_id)
         return self.ack
+
+
+class SequenceBroker(FakeBroker):
+    def __init__(self, snapshot: AccountSnapshot, acks: list[BrokerAck]) -> None:
+        super().__init__(snapshot)
+        self._acks = iter(acks)
+
+    def submit_bracket(self, intent: OrderIntent, client_order_id: str) -> BrokerAck:
+        self.submit_calls += 1
+        self.submitted_client_order_ids.append(client_order_id)
+        return next(self._acks)
 
 
 def _accepted_bars(symbol: str) -> tuple[DailyBar, ...]:
@@ -182,6 +194,10 @@ def test_execute_run_execute_mode_already_submitted_journals_skip_with_no_duplic
     skips = [event for event in events if event.event_type == "execution.skipped.v1"]
     assert len(skips) == 1
     assert skips[0].reason == "already-submitted"
+    intent = next(event for event in events if event.event_type == "order.intent.v1")
+    assert skips[0].event_id == hashlib.sha256(
+        f"{intent.event_id}|already-submitted|broker-existing".encode()
+    ).hexdigest()
     assert not any(event.event_type == "order.submitted.v1" for event in events)
     assert broker.submit_calls == 1
 
@@ -194,3 +210,36 @@ def test_execute_run_halted_with_execute_flag_still_submits_nothing() -> None:
 
     assert [event.event_type for event in events] == ["execution.halted.v1", "execution.skipped.v1"]
     assert broker.submit_calls == 0
+
+
+def test_execute_projection_does_not_count_rejected_order_as_open() -> None:
+    broker = SequenceBroker(
+        _snapshot(),
+        [
+            BrokerAck(broker_order_id=None, status="rejected", reason="invalid order"),
+            BrokerAck(broker_order_id="broker-2", status="submitted"),
+        ],
+    )
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME", "BETA"), execute=True)
+
+    assert [event.symbol for event in events if event.event_type == "order.rejected.v1"] == ["ACME"]
+    assert [event.symbol for event in events if event.event_type == "order.submitted.v1"] == ["BETA"]
+    assert broker.submit_calls == 2
+
+
+def test_execute_projection_depletes_buying_power_after_submission() -> None:
+    broker = SequenceBroker(
+        _snapshot(buying_power=Decimal("2000"), deployed_value=Decimal("-1000")),
+        [BrokerAck(broker_order_id="broker-1", status="submitted")],
+    )
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME", "BETA"), execute=True)
+
+    assert [event.symbol for event in events if event.event_type == "order.submitted.v1"] == ["ACME"]
+    assert [(event.symbol, event.reason) for event in events if event.event_type == "execution.skipped.v1"] == [
+        ("BETA", "insufficient-buying-power")
+    ]
+    assert broker.submit_calls == 1

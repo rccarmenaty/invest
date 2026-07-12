@@ -81,6 +81,19 @@ def test_compute_intent_skips_with_sizing_invalid_at_zero_qty() -> None:
     assert reason is GateReason.SIZING_INVALID
 
 
+def test_compute_intent_skips_with_sizing_invalid_when_atr_makes_stop_distance_zero() -> None:
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("100000"),
+        history=_history(14, close=Decimal("100"), true_range=Decimal("0")),
+        last_close=Decimal("100"),
+    )
+
+    assert intent is None
+    assert reason is GateReason.SIZING_INVALID
+
+
 def test_quantize_price_uses_whole_cents_at_or_above_one_dollar() -> None:
     quantized = quantize_price(Decimal("1.00"))
 
@@ -254,3 +267,8 @@ def test_evaluate_halt_gates_broker_account_restricted_when_account_blocked() ->
 
 def test_evaluate_halt_gates_passes_when_account_healthy() -> None:
     assert evaluate_halt_gates(_snapshot()) is None
+
+
+def test_evaluate_halt_gates_fails_closed_without_positive_drawdown_baseline() -> None:
+    assert evaluate_halt_gates(_snapshot(last_equity=Decimal("0"))) is GateReason.KILL_SWITCH
+    assert evaluate_halt_gates(_snapshot(last_equity=Decimal("-1"))) is GateReason.KILL_SWITCH

@@ -65,10 +65,11 @@ def compute_intent(
 
 def evaluate_halt_gates(snapshot: AccountSnapshot) -> GateReason | None:
     """Evaluated once from the account snapshot, before any candidate sizing."""
-    if snapshot.last_equity != 0:
-        drawdown = (snapshot.equity - snapshot.last_equity) / snapshot.last_equity
-        if drawdown <= KILL_SWITCH_DRAWDOWN:
-            return GateReason.KILL_SWITCH
+    if snapshot.last_equity <= 0:
+        return GateReason.KILL_SWITCH
+    drawdown = (snapshot.equity - snapshot.last_equity) / snapshot.last_equity
+    if drawdown <= KILL_SWITCH_DRAWDOWN:
+        return GateReason.KILL_SWITCH
     if snapshot.trading_blocked or snapshot.account_blocked:
         return GateReason.BROKER_ACCOUNT_RESTRICTED
     return None
@@ -80,6 +81,7 @@ def evaluate_gates(
     snapshot: AccountSnapshot,
     open_position_count: int,
     deployed_value: Decimal,
+    available_buying_power: Decimal | None = None,
 ) -> GateReason | None:
     """Per-candidate predicate chain; first failure wins.
 
@@ -92,6 +94,8 @@ def evaluate_gates(
         return sizing_reason if sizing_reason is not None else GateReason.SIZING_INVALID
     if deployed_value + intent.qty * intent.entry >= MAX_EQUITY_DEPLOYED_RATIO * snapshot.equity:
         return GateReason.MAX_EQUITY_DEPLOYED
-    if intent.qty * intent.entry > snapshot.buying_power:
+    if intent.qty * intent.entry > (
+        snapshot.buying_power if available_buying_power is None else available_buying_power
+    ):
         return GateReason.INSUFFICIENT_BUYING_POWER
     return None
