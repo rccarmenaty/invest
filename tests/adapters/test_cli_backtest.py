@@ -104,6 +104,52 @@ def test_backtest_live_range_infra_failure_prints_one_record_and_exits_two(monke
     assert captured.err == ""
 
 
+def test_backtest_live_range_missing_symbol_bars_fails_closed_with_one_record(monkeypatch, capsys) -> None:
+    """A universe symbol that Alpaca silently omits (delisted, feed gap, partial upstream
+    omission) must never be silently dropped from the report: fail closed instead of
+    printing a complete-looking report that omitted a symbol without a trace."""
+    from decimal import Decimal
+    from datetime import date as date_cls
+
+    from invest.domain.models import DailyBar, FixtureInputs, Universe
+
+    universe = Universe(fixture_version="v1", symbols=("WIN", "LOSS"))
+    bars = (
+        DailyBar(
+            symbol="WIN",
+            date=date_cls(2024, 1, 2),
+            open=Decimal("10"),
+            high=Decimal("10.40"),
+            low=Decimal("9.60"),
+            close=Decimal("10"),
+            volume=100,
+        ),
+    )
+    incomplete_inputs = FixtureInputs(universe=universe, bars=bars)
+
+    class MissingSymbolReader:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def fetch_range(self, universe, start, end) -> FixtureInputs:
+            return incomplete_inputs
+
+    monkeypatch.setattr(cli, "AlpacaMarketDataReader", MissingSymbolReader)
+
+    result = cli.backtest_main(
+        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--format", "json"]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    payload = json.loads(captured.out)
+    assert payload["reason"] == "symbol-missing-at-fetch"
+    assert "LOSS" in payload.get("message", "")
+    assert "trade_count" not in payload
+    assert captured.err == ""
+
+
 def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> None:
     from invest.adapters.fixtures_json import JsonFixtureReader
     from invest.domain.models import FixtureInputs, Universe

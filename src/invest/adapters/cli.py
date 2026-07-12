@@ -153,6 +153,15 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
                 raise MarketDataFetchError("fixture-invalid") from None
             universe = Universe(fixture_version=payload.fixture_version, symbols=tuple(payload.symbols))
             inputs = AlpacaMarketDataReader().fetch_range(universe, args.start, args.end)
+            missing = sorted(set(inputs.universe.symbols) - {bar.symbol for bar in inputs.bars})
+            if missing:
+                # Alpaca can silently omit a symbol (delisted ticker, feed gap, partial
+                # upstream omission -- not an HTTP error): fetch_range then returns
+                # FixtureInputs with zero bars for it, and the scanner would just reject
+                # it as INSUFFICIENT_HISTORY, vanishing from decisions with no trace. Fail
+                # closed instead, mirroring SnapshotWriter's identical guard in
+                # alpaca_market_data.py.
+                raise MarketDataFetchError("symbol-missing-at-fetch", ",".join(missing))
 
         trades = BacktestRun().replay(inputs)
         metrics = compute_metrics(trades, args.slippage_bps, args.tax_rate)

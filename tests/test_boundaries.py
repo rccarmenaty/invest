@@ -68,11 +68,85 @@ def test_paper_execute_marker_is_registered() -> None:
     )
 
 
+BANNED_BROKER_MODULES = {"invest.adapters.alpaca_broker"}
+BANNED_BROKER_NAMES = {"AlpacaBroker", "BrokerFetchError", "BrokerPort"}
+
+
+def _find_broker_references(tree: ast.AST, label: str) -> list[str]:
+    """Walk `tree` for any reference to the banned broker module/names, including the
+    evasive `from invest.adapters import alpaca_broker` + `alpaca_broker.AlpacaBroker(...)`
+    pattern: a parent-package ImportFrom naming the submodule as an alias, and any
+    ast.Attribute whose `.attr` matches a banned name regardless of the base object."""
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in BANNED_BROKER_MODULES:
+            violations.append(f"{label}: import from {node.module}")
+        elif isinstance(node, ast.ImportFrom) and node.module == "invest.adapters":
+            violations.extend(
+                f"{label}: import from invest.adapters import {alias.name}"
+                for alias in node.names
+                if alias.name == "alpaca_broker"
+            )
+        elif isinstance(node, ast.Import):
+            violations.extend(
+                f"{label}: import {alias.name}"
+                for alias in node.names
+                if alias.name in BANNED_BROKER_MODULES
+            )
+        elif isinstance(node, ast.Name) and node.id in BANNED_BROKER_NAMES:
+            violations.append(f"{label}: references {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in BANNED_BROKER_NAMES:
+            violations.append(f"{label}: references .{node.attr}")
+    return violations
+
+
+def test_strengthened_broker_reference_checker_catches_module_attribute_evasion() -> None:
+    """`from invest.adapters import alpaca_broker` then `alpaca_broker.AlpacaBroker(...)`
+    produces an ast.Attribute node whose value is ast.Name(id='alpaca_broker') and an
+    ast.ImportFrom whose module is the parent package `invest.adapters` -- neither is a
+    bare `ast.Name` matching the old banned_names set, so the old check never caught it.
+    The strengthened checker must flag both the module-import-as-attribute-access pattern
+    and the `.attr` access itself."""
+    snippet = (
+        "from invest.adapters import alpaca_broker\n"
+        "\n"
+        "def build():\n"
+        "    return alpaca_broker.AlpacaBroker()\n"
+    )
+    tree = ast.parse(snippet, filename="<synthetic>")
+    violations = _find_broker_references(tree, "<synthetic>")
+    assert violations != []
+
+
+def test_strengthened_broker_reference_checker_has_no_false_positives_on_real_backtest_sources() -> None:
+    """Regression guard: the strengthened check must not flag the actual backtest sources.
+    backtest_run.py/backtest_metrics.py legitimately never reference alpaca_broker at all.
+    cli.py DOES import AlpacaBroker/BrokerFetchError module-wide for `execute_main` (a
+    separate, legitimate code path) -- so this checks only the backtest-scoped functions,
+    exactly like the real boundary test does, not the whole cli.py module."""
+    for path in (
+        Path("src/invest/application/backtest_run.py"),
+        Path("src/invest/domain/backtest_metrics.py"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert _find_broker_references(tree, str(path)) == []
+
+    cli_path = Path("src/invest/adapters/cli.py")
+    cli_tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
+    backtest_function_names = {"backtest_main", "_backtest_parser", "_backtest_report"}
+    for node in ast.walk(cli_tree):
+        if isinstance(node, ast.FunctionDef) and node.name in backtest_function_names:
+            assert _find_broker_references(node, f"cli.py::{node.name}") == []
+
+
 def test_backtest_code_path_never_imports_broker_or_references_brokerport() -> None:
     """The backtest replay path never touches the broker: mirrors the market-data adapter's
-    hardcoded-paper-URL negative test, but for the day-0 replay harness/metrics/CLI."""
-    banned_modules = {"invest.adapters.alpaca_broker"}
-    banned_names = {"AlpacaBroker", "BrokerFetchError", "BrokerPort"}
+    hardcoded-paper-URL negative test, but for the day-0 replay harness/metrics/CLI.
+
+    Uses the strengthened `_find_broker_references` checker so this stays consistent
+    with `test_strengthened_broker_reference_checker_*` above: it also catches the
+    `from invest.adapters import alpaca_broker` + `alpaca_broker.AlpacaBroker(...)`
+    evasion, not just bare-Name references."""
     violations: list[str] = []
 
     for path in (
@@ -80,24 +154,14 @@ def test_backtest_code_path_never_imports_broker_or_references_brokerport() -> N
         Path("src/invest/domain/backtest_metrics.py"),
     ):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module in banned_modules:
-                violations.append(f"{path}: import from {node.module}")
-            elif isinstance(node, ast.Import):
-                violations.extend(
-                    f"{path}: import {alias.name}" for alias in node.names if alias.name in banned_modules
-                )
-            elif isinstance(node, ast.Name) and node.id in banned_names:
-                violations.append(f"{path}: references {node.id}")
+        violations.extend(_find_broker_references(tree, str(path)))
 
     cli_path = Path("src/invest/adapters/cli.py")
     cli_tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
     backtest_function_names = {"backtest_main", "_backtest_parser", "_backtest_report"}
     for node in ast.walk(cli_tree):
         if isinstance(node, ast.FunctionDef) and node.name in backtest_function_names:
-            for inner in ast.walk(node):
-                if isinstance(inner, ast.Name) and inner.id in banned_names:
-                    violations.append(f"cli.py::{node.name}: references {inner.id}")
+            violations.extend(_find_broker_references(node, f"cli.py::{node.name}"))
 
     assert violations == [], "Backtest code path touches broker/BrokerPort:\n" + "\n".join(violations)
 
