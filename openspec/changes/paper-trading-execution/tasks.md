@@ -110,3 +110,13 @@ Chain strategy: stacked-to-main
 - [x] 9.2 GREEN: register `paper_execute: submits a real paper order to Alpaca` marker in `pyproject.toml`.
 - [x] 9.3 RED then GREEN: extend `test_boundaries.py`'s forbidden-import scan — `domain/sizing.py` and `domain/indicators.py` stay free of `httpx`/Alpaca imports (existing AST test, no structural change needed beyond covering new files).
 - [x] 9.4 RED then GREEN: `@pytest.mark.paper_execute` smoke test submitting one real paper bracket order and cancelling it; skipped unless `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` are set. (Deviation, deliberate: implemented as a read-only `AlpacaBroker.snapshot()` smoke plus a full dry-run `invest-execute` CLI smoke against the real paper API — both marked `paper_execute` and skipped by default. No test submits or cancels a real order, per explicit instruction to avoid a smoke test that mutates the real paper account.)
+
+## 4R correction notes
+
+- [x] PRES-001: preserve and print the complete journal after a mid-run broker infrastructure failure, skip the failed and remaining candidates with the infrastructure reason, and exit 2.
+- [x] PRES-002: classify a mutating POST transport error as `submission-uncertain`; GET transport errors remain `network-failure`.
+- [x] PREL-001: advance execute-mode position/deployed projections only for submitted or already-submitted acknowledgements.
+- [x] PREL-002: fail closed with `kill-switch` when `last_equity <= 0`.
+- [x] PREL-003: bind already-submitted skip ids to `intent_id|already-submitted|broker_order_id`.
+- [x] PREL-004: characterize zero stop distance as `sizing-invalid` with no intent.
+- [x] PRES-003: deplete projected buying power after successful execute-mode submissions.

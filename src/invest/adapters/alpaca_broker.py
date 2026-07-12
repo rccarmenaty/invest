@@ -104,7 +104,7 @@ class AlpacaBroker:
         try:
             response = self._client.send(self._request("POST", "/v2/orders", json=payload))
         except httpx.RequestError:
-            raise BrokerFetchError("network-failure") from None
+            raise BrokerFetchError("submission-uncertain") from None
         if response.status_code == 422:
             try:
                 rejection = response.json()

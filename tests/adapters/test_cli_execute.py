@@ -7,12 +7,13 @@ from invest.adapters import cli
 from invest.domain.models import AccountSnapshot, BrokerAck
 
 
-def _accepted_fixture(tmp_path: Path, symbol: str = "ACME") -> tuple[Path, Path]:
+def _accepted_fixture(tmp_path: Path, symbol: str | tuple[str, ...] = "ACME") -> tuple[Path, Path]:
     """A universe/bars pair that produces one accepted momentum candidate."""
     start = date(2026, 1, 1)
+    symbols = (symbol,) if isinstance(symbol, str) else symbol
     bars = [
         {
-            "symbol": symbol,
+            "symbol": item,
             "date": (start + timedelta(days=index)).isoformat(),
             "open": 10,
             "high": 10.40,
@@ -20,11 +21,12 @@ def _accepted_fixture(tmp_path: Path, symbol: str = "ACME") -> tuple[Path, Path]
             "close": 10,
             "volume": 100,
         }
+        for item in symbols
         for index in range(20)
     ]
-    bars.append(
+    bars.extend(
         {
-            "symbol": symbol,
+            "symbol": item,
             "date": (start + timedelta(days=20)).isoformat(),
             "open": 10,
             "high": 11.50,
@@ -32,11 +34,12 @@ def _accepted_fixture(tmp_path: Path, symbol: str = "ACME") -> tuple[Path, Path]
             "close": 11.40,
             "volume": 250,
         }
+        for item in symbols
     )
     universe_path = tmp_path / "universe.json"
     bars_path = tmp_path / "bars.json"
     universe_path.write_text(
-        json.dumps({"fixture_version": "v1", "symbols": [symbol]}), encoding="utf-8"
+        json.dumps({"fixture_version": "v1", "symbols": list(symbols)}), encoding="utf-8"
     )
     bars_path.write_text(json.dumps({"fixture_version": "v1", "bars": bars}), encoding="utf-8")
     return universe_path, bars_path
@@ -227,3 +230,40 @@ def test_execute_rejected_business_outcome_exits_zero(tmp_path, monkeypatch, cap
     assert result == 0
     payload = json.loads(captured.out)
     assert any(event["event_type"] == "order.rejected.v1" for event in payload)
+
+
+def test_execute_mid_run_infra_failure_prints_full_journal_and_exits_two(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from invest.adapters.alpaca_broker import BrokerFetchError
+
+    universe, bars = _accepted_fixture(tmp_path, ("ACME", "BETA", "CHARLIE"))
+
+    class FailingBroker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def snapshot(self) -> AccountSnapshot:
+            return _snapshot(
+                equity=Decimal("100000"),
+                buying_power=Decimal("100000"),
+                deployed_value=Decimal("-30000"),
+            )
+
+        def submit_bracket(self, intent, client_order_id: str) -> BrokerAck:
+            self.calls += 1
+            if self.calls == 2:
+                raise BrokerFetchError("submission-uncertain")
+            return BrokerAck(broker_order_id=f"broker-{self.calls}", status="submitted")
+
+    monkeypatch.setattr(cli, "AlpacaBroker", FailingBroker)
+
+    result = cli.execute_main(
+        ["--universe", str(universe), "--bars", str(bars), "--format", "json", "--execute"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 2
+    assert any(event["event_type"] == "order.submitted.v1" and event["symbol"] == "ACME" for event in payload)
+    skips = [(event["symbol"], event["reason"]) for event in payload if event["event_type"] == "execution.skipped.v1"]
+    assert skips == [("BETA", "submission-uncertain"), ("CHARLIE", "submission-uncertain")]

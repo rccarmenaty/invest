@@ -165,24 +165,29 @@ class ExecutionSkipped(ExecutionEventBase):
     symbol: str
     decision: Literal["skipped"]
     intent_id: str | None
-    reason: GateReason
+    reason: str
 
     @classmethod
     def from_reason(
         cls,
         *,
         intent_id_or_symbol: str,
-        reason: GateReason,
+        reason: GateReason | str,
+        broker_order_id: str | None = None,
         **common: object,
     ) -> "ExecutionSkipped":
-        event_id = hashlib.sha256(f"{intent_id_or_symbol}|{reason.value}".encode()).hexdigest()
+        reason_value = reason.value if isinstance(reason, GateReason) else reason
+        id_parts = [intent_id_or_symbol, reason_value]
+        if broker_order_id is not None:
+            id_parts.append(broker_order_id)
+        event_id = hashlib.sha256("|".join(id_parts).encode()).hexdigest()
         return cls(
             schema_version="1",
             event_type="execution.skipped.v1",
             event_id=event_id,
             decision="skipped",
             intent_id=intent_id_or_symbol if intent_id_or_symbol != common.get("symbol") else None,
-            reason=reason,
+            reason=reason_value,
             **common,
         )
 

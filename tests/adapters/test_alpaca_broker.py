@@ -135,8 +135,9 @@ def test_submit_bracket_never_retries_timeout() -> None:
 
     broker = AlpacaBroker(client=httpx.Client(transport=httpx.MockTransport(handler)))
     intent = OrderIntent("AAPL", date(2025, 1, 2), 1, Decimal("10"), Decimal("9"), Decimal("12"))
-    with pytest.raises(BrokerFetchError, match="network-failure"):
+    with pytest.raises(BrokerFetchError) as caught:
         broker.submit_bracket(intent, client_order_id="intent-1")
+    assert caught.value.reason == "submission-uncertain"
     assert post_count == 1
 
 

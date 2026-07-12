@@ -59,6 +59,12 @@ Before submission, the system MUST evaluate pre-trade risk gates as pure predica
 - THEN no order MUST be submitted for that run, with halt reason `kill-switch`
 - AND the run MUST continue reporting remaining skips rather than crashing
 
+#### Scenario: Missing drawdown baseline fails closed
+
+- GIVEN the account snapshot reports `last_equity` of zero or less
+- WHEN halt gates are evaluated
+- THEN the run MUST halt with reason `kill-switch` (no drawdown baseline means no drawdown protection; the system MUST NOT trade unprotected)
+
 #### Scenario: Broker guard blocks submission on restricted account
 
 - GIVEN the account reports `trading_blocked`, `account_blocked`, or insufficient buying power
@@ -125,11 +131,26 @@ Every order MUST use `order_class=bracket` with a stop-market stop-loss leg (no 
 - WHEN gates pass for an intent
 - THEN the CLI MUST submit the order, and a broker-acknowledgement event MUST be journaled
 
-#### Scenario: Infrastructure failure emits one machine-readable record
+#### Scenario: Pre-submission infrastructure failure emits one machine-readable record
 
-- GIVEN an infrastructure failure (auth, network, rate limit, malformed response, invalid input files)
+- GIVEN an infrastructure failure (auth, network, rate limit, malformed response, invalid input files) BEFORE any candidate has been processed
 - WHEN the failure occurs
 - THEN the CLI MUST print exactly one machine-readable record with a stable kebab-case reason and exit non-zero
+
+#### Scenario: Mid-run infrastructure failure preserves the journal
+
+- GIVEN an infrastructure failure occurs after one or more orders have already been submitted in the same run
+- WHEN the failure occurs
+- THEN every event journaled so far (including submitted-order acknowledgements) MUST be printed
+- AND the run MUST stop submitting further candidates, journaling the failure reason for the affected candidate and skips for the remainder
+- AND the CLI MUST exit non-zero
+
+#### Scenario: Ambiguous submission outcome is marked uncertain
+
+- GIVEN the order-submission POST fails with a transport error after the broker may have accepted the order
+- WHEN the failure is journaled
+- THEN the affected candidate's record MUST carry reason `submission-uncertain` (distinct from `network-failure`)
+- AND a subsequent run's idempotency check MUST detect any order the broker actually accepted
 
 #### Scenario: Order-family outcomes complete the run with exit zero
 

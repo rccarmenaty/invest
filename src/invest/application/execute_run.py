@@ -3,6 +3,7 @@ from datetime import date
 
 from pydantic import BaseModel
 
+from invest.adapters.alpaca_broker import BrokerFetchError
 from invest.application.ports import BrokerPort, Journal
 from invest.contracts.events import (
     ExecutionHalted,
@@ -30,8 +31,10 @@ class ExecuteRun:
         self._journal = journal
         self._broker = broker
         self._rule_version = rule_version
+        self.failed_reason: str | None = None
 
     def execute(self, inputs: FixtureInputs, *, execute: bool = False) -> list[BaseModel]:
+        self.failed_reason = None
         snapshot = self._broker.snapshot()
         halt_reason = evaluate_halt_gates(snapshot)
         decisions = [decision for decision in self._scanner.scan(inputs.universe, inputs.bars) if decision.accepted]
@@ -66,7 +69,8 @@ class ExecuteRun:
 
         open_position_count = snapshot.open_position_count
         deployed_value = snapshot.deployed_value
-        for decision in decisions:
+        available_buying_power = snapshot.buying_power
+        for candidate_index, decision in enumerate(decisions):
             bars = by_symbol[decision.symbol]
             history = bars[:-1]
             intent, sizing_reason = compute_intent(
@@ -90,6 +94,7 @@ class ExecuteRun:
                 snapshot,
                 open_position_count,
                 deployed_value,
+                available_buying_power,
             )
             if reason is not None:
                 self._journal.append(
@@ -105,10 +110,41 @@ class ExecuteRun:
                 continue
             if intent is not None:
                 self._journal.append(intent_event)
-                open_position_count += 1
-                deployed_value += intent.qty * intent.entry
                 if execute:
-                    self._submit(intent_event, intent, decision, inputs)
+                    try:
+                        opens_position = self._submit(intent_event, intent, decision, inputs)
+                    except BrokerFetchError as error:
+                        self.failed_reason = error.reason
+                        self._journal.append(
+                            ExecutionSkipped.from_reason(
+                                intent_id_or_symbol=intent_event.event_id,
+                                reason=error.reason,
+                                symbol=decision.symbol,
+                                decision_date=decision.decision_date,
+                                fixture_version=inputs.universe.fixture_version,
+                                rule_version=self._rule_version,
+                            )
+                        )
+                        for remaining in decisions[candidate_index + 1 :]:
+                            self._journal.append(
+                                ExecutionSkipped.from_reason(
+                                    intent_id_or_symbol=remaining.symbol,
+                                    reason=error.reason,
+                                    symbol=remaining.symbol,
+                                    decision_date=remaining.decision_date,
+                                    fixture_version=inputs.universe.fixture_version,
+                                    rule_version=self._rule_version,
+                                )
+                            )
+                        break
+                    if opens_position:
+                        open_position_count += 1
+                        notional = intent.qty * intent.entry
+                        deployed_value += notional
+                        available_buying_power -= notional
+                else:
+                    open_position_count += 1
+                    deployed_value += intent.qty * intent.entry
 
         return self._journal.events()
 
@@ -118,7 +154,7 @@ class ExecuteRun:
         intent: OrderIntent,
         decision: ScanDecision,
         inputs: FixtureInputs,
-    ) -> None:
+    ) -> bool:
         ack = self._broker.submit_bracket(intent, client_order_id=intent_event.client_order_id)
         common = dict(
             symbol=decision.symbol,
@@ -134,14 +170,17 @@ class ExecuteRun:
                     **common,
                 )
             )
+            return True
         elif ack.status == "already-submitted":
             self._journal.append(
                 ExecutionSkipped.from_reason(
                     intent_id_or_symbol=intent_event.event_id,
                     reason=GateReason.ALREADY_SUBMITTED,
+                    broker_order_id=ack.broker_order_id or "",
                     **common,
                 )
             )
+            return True
         else:
             self._journal.append(
                 OrderRejected.from_ack(
@@ -151,3 +190,4 @@ class ExecuteRun:
                     **common,
                 )
             )
+            return False

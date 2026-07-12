@@ -99,7 +99,7 @@ def execute_main(argv: Sequence[str] | None = None) -> int:
         run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, RULE_VERSION)
         events = run.execute(inputs, execute=args.execute)
         print(json.dumps([event.model_dump(mode="json") for event in events], sort_keys=True))
-        return 0
+        return 2 if run.failed_reason is not None else 0
     except (FixtureValidationError, UnsupportedInputError) as error:
         print(json.dumps({"reason": error.reason.value}, sort_keys=True))
         return 2
