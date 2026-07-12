@@ -5,7 +5,13 @@ from datetime import date
 from pathlib import Path
 from typing import Sequence
 
-from invest.adapters.fixtures_json import FixtureValidationError, JsonFixtureReader
+from pydantic import ValidationError
+
+from invest.adapters.fixtures_json import (
+    FixtureValidationError,
+    JsonFixtureReader,
+    _UniversePayload,
+)
 from invest.adapters.alpaca_market_data import (
     AlpacaMarketDataReader,
     MarketDataFetchError,
@@ -53,10 +59,15 @@ def _fetch_parser() -> argparse.ArgumentParser:
 def fetch_main(argv: Sequence[str] | None = None) -> int:
     args = _fetch_parser().parse_args(argv)
     try:
-        payload = json.loads(args.universe.read_text(encoding="utf-8"))
+        try:
+            payload = _UniversePayload.model_validate_json(
+                args.universe.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValidationError):
+            raise MarketDataFetchError("fixture-invalid") from None
         universe = Universe(
-            fixture_version=str(payload["fixture_version"]),
-            symbols=tuple(str(symbol) for symbol in payload["symbols"]),
+            fixture_version=payload.fixture_version,
+            symbols=tuple(payload.symbols),
         )
         inputs = AlpacaMarketDataReader(feed=args.feed).fetch(universe, args.as_of)
         SnapshotWriter(feed=args.feed).write(inputs, args.as_of, args.out)

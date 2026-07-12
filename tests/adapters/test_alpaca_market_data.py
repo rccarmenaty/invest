@@ -103,6 +103,29 @@ def test_reader_merges_paginated_bars(monkeypatch) -> None:
     assert [bar.date for bar in result.bars] == [date(2026, 5, 28), date(2026, 5, 29)]
 
 
+def test_reader_refuses_unbounded_pagination(monkeypatch) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            json={"bars": {"ACME": []}, "next_page_token": f"page-{requests + 1}"},
+        )
+
+    reader = AlpacaMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch(Universe("v1", ("ACME",)), date(2026, 6, 1))
+
+    assert caught.value.reason == "malformed-response"
+    assert requests == AlpacaMarketDataReader.MAX_PAGES
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_auth_failure_is_stable_and_not_retried(monkeypatch, status: int) -> None:
     monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
@@ -322,7 +345,31 @@ def test_snapshot_write_failure_leaves_no_partial_snapshot(tmp_path, monkeypatch
 
     monkeypatch.setattr(Path, "write_bytes", fail_second_write)
     inputs = FixtureInputs(Universe("source", ("ACME",)), _bars("ACME"))
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(MarketDataFetchError) as caught:
         SnapshotWriter().write(inputs, date(2026, 6, 1), tmp_path)
+    assert caught.value.reason == "storage-failure"
+    assert str(caught.value) == "storage-failure"
     assert not (tmp_path / "2026-06-01").exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_snapshot_publication_race_maps_to_snapshot_exists(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    from invest.adapters.alpaca_market_data import SnapshotWriter
+
+    original_replace = Path.replace
+    destination = tmp_path / "2026-06-01"
+
+    def race_replace(staging: Path, target: Path) -> Path:
+        target.mkdir()
+        (target / "winner.txt").write_text("winner", encoding="utf-8")
+        return original_replace(staging, target)
+
+    monkeypatch.setattr(Path, "replace", race_replace)
+    inputs = FixtureInputs(Universe("source", ("ACME",)), _bars("ACME"))
+    with pytest.raises(MarketDataFetchError) as caught:
+        SnapshotWriter().write(inputs, date(2026, 6, 1), tmp_path)
+
+    assert caught.value.reason == "snapshot-exists"
+    assert (destination / "winner.txt").read_text(encoding="utf-8") == "winner"
+    assert list(tmp_path.iterdir()) == [destination]

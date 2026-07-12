@@ -124,6 +124,31 @@ Fetch failures MUST be classified with a stable, machine-readable reason and MUS
 - WHEN validation runs
 - THEN it MUST fail with reason `malformed-response` and write no fixture
 
+#### Scenario: Unbounded pagination is refused
+
+- GIVEN an API that keeps returning a non-null `next_page_token` beyond a bounded page limit
+- WHEN the fetch paginates
+- THEN it MUST fail with reason `malformed-response` and write no fixture
+
+#### Scenario: Existing snapshot is not overwritten
+
+- GIVEN a snapshot directory already exists for the requested as-of date
+- WHEN a fetch is attempted for that date
+- THEN it MUST fail with reason `snapshot-exists` and leave the existing snapshot untouched
+
+#### Scenario: Local storage failure
+
+- GIVEN the snapshot destination cannot be written (disk failure, permissions)
+- WHEN the snapshot writer runs
+- THEN it MUST fail with reason `storage-failure` and leave no partial snapshot
+
+#### Scenario: Invalid universe input file
+
+- GIVEN a missing, unreadable, or schema-invalid universe file
+- WHEN a fetch CLI invocation starts
+- THEN it MUST fail with reason `fixture-invalid` before any network request
+- AND every fetch CLI failure above MUST print exactly one machine-readable record and exit non-zero
+
 ### Requirement: Snapshot-time and scan-time rejection boundary
 
 Zero-volume halted-session bars MUST still snapshot successfully when the symbol itself is present; the existing scan-time `missing-data` rejection for insufficient/zero-volume history remains unchanged this slice.
