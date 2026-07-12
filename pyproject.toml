@@ -2,7 +2,10 @@
 name = "invest"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.7,<3"]
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.7,<3",
+]
 
 [project.scripts]
 invest-scan = "invest.adapters.cli:main"
