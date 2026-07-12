@@ -1,0 +1,15 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "gate": "post-apply",
+  "target": {
+    "kind": "current-changes",
+    "intended_untracked": []
+  },
+  "store_revision": "sha256:9f63f94350a1c1a1d1c696de719152b93b165831fc7801b790300711aea8c745",
+  "genesis_revision": "sha256:83b3d1c41c1b77685306f9c9002db4f13f07436627c8b4dda554955f1efe6e40",
+  "chain_identity": "sha256:a35792aecebb6909d278aeecfaa6dcf29f5c6860f511d00f907cbfa21a63206f",
+  "bundle_digest": "sha256:54b14da4103cfc431e81c9ad544508f7a3c452e6a8b22bab52c39655f6a6d557",
+  "policy_artifact": "/Users/rcty/invest/openspec/changes/paper-trading-execution/reviews/policy.md",
+  "ledger_artifact": "/Users/rcty/invest/openspec/changes/paper-trading-execution/reviews/ledger.json",
+  "evidence_artifact": "/Users/rcty/invest/openspec/changes/paper-trading-execution/verify-report.md"
+}

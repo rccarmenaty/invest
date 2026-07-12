@@ -1,0 +1,125 @@
+{
+  "schema": "gentle-ai.review-transaction/v1",
+  "lineage_id": "paper-trading-execution-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "state": "approved",
+  "snapshot": {
+    "kind": "current-changes",
+    "base_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+    "candidate_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+    "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "paths": [],
+    "identity": "sha256:75ab632320ba2192f31ac14a549e1182927961279e2ad38f40e2518cef84eb58"
+  },
+  "base_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+  "initial_review_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "final_candidate_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:8401797032ef58be664c0b2e0958ce4bad249458c6eb954c00de13572135ffe8",
+  "ledger_hash": "sha256:504380ac63b47e031eee4e144fe5442dd07af946cb323f92366f1067849683fb",
+  "ledger_findings_hash": "sha256:5055720a85c99118782554518f5fa8b788c286d311fa65874d0f5f070664b7d7",
+  "evidence_hash": "sha256:c104cc1e5fc383f34cea2282ace6915a65907fe81e25b5bb7bd2e37d2fdb3605",
+  "judge_proofs": [],
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "findings": [
+    {
+      "id": "TPTE-001",
+      "lens": "resilience",
+      "location": "src/invest/application/execute_run.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PRES-001 BLOCKER): mid-run BrokerFetchError previously vaporized already-journaled events; the full event list is now preserved and printed, the failing candidate carries the infra reason, remaining candidates are skipped, exit 2.",
+      "proof_refs": [
+        "tests/adapters/test_cli_execute.py"
+      ]
+    },
+    {
+      "id": "TPTE-002",
+      "lens": "resilience",
+      "location": "src/invest/adapters/alpaca_broker.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PRES-002 CRITICAL): POST transport errors now surface submission-uncertain distinct from network-failure, so ambiguous broker acceptance is visible for reconciliation.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_broker.py"
+      ]
+    },
+    {
+      "id": "TPTE-003",
+      "lens": "reliability",
+      "location": "src/invest/application/execute_run.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PREL-001 CRITICAL): running caps projection now advances only on submitted/already-submitted acknowledgements; rejected orders no longer consume position slots or deployed capital.",
+      "proof_refs": [
+        "tests/application/test_execute_run.py"
+      ]
+    },
+    {
+      "id": "TPTE-004",
+      "lens": "reliability",
+      "location": "src/invest/domain/sizing.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PREL-002 CRITICAL): last_equity of zero or less now halts with kill-switch per the fail-closed spec scenario; the drawdown gate can no longer silently disable itself.",
+      "proof_refs": [
+        "tests/domain/test_sizing.py"
+      ]
+    },
+    {
+      "id": "TPTE-005",
+      "lens": "reliability",
+      "location": "src/invest/contracts/events.py",
+      "severity": "SUGGESTION",
+      "claim": "RESOLVED (PR #15, was PREL-003/PREL-004/PRES-003): already-submitted event id includes broker_order_id per design; zero-ATR path characterized; buying power depletes in the running projection.",
+      "proof_refs": [
+        "tests/contracts/test_events.py"
+      ]
+    },
+    {
+      "id": "TPTE-006",
+      "lens": "risk",
+      "location": "src/invest/contracts/events.py:65-79",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was PRISK-001): client_order_id hashes rule_version, so a rule-version bump re-orders already-executed days \u2014 dedup is per-rule-version, not per-symbol/day. Explicit decision required before any live-trading slice (operational deploy rule vs broker-side same-symbol/day guard). Engram topic trading-system/order-idempotency-scope.",
+      "proof_refs": [
+        "src/invest/contracts/events.py:65-79",
+        "src/invest/adapters/cli.py:29"
+      ]
+    },
+    {
+      "id": "TPTE-007",
+      "lens": "readability",
+      "location": "src/invest/contracts/events.py; src/invest/adapters/cli.py",
+      "severity": "SUGGESTION",
+      "claim": "OPEN follow-ups (was PREAD-001..007): duplicated EventBase/ExecutionEventBase definitions; three divergent CLI failure output shapes across entrypoints; BrokerFetchError free-form reason strings vs StrEnum idiom; intent_id_or_symbol parameter naming; duplicated parser boilerplate; repeated skip-construction sites; fetch_main uses module-private _UniversePayload.",
+      "proof_refs": [
+        "src/invest/contracts/events.py:13",
+        "src/invest/adapters/cli.py:48"
+      ]
+    }
+  ],
+  "classifications": {},
+  "outcomes": {
+    "TPTE-001": "info",
+    "TPTE-002": "info",
+    "TPTE-003": "info",
+    "TPTE-004": "info",
+    "TPTE-005": "info",
+    "TPTE-006": "info",
+    "TPTE-007": "info"
+  },
+  "fix_finding_ids": [],
+  "pending_refuter_ids": [],
+  "fix_caused_findings": [],
+  "follow_ups": []
+}

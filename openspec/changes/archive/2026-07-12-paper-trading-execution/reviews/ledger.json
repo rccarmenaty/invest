@@ -1,0 +1,93 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "lineage_id": "paper-trading-execution-clean",
+  "snapshot_commit": "8b8149a",
+  "findings": [
+    {
+      "id": "TPTE-001",
+      "lens": "resilience",
+      "location": "src/invest/application/execute_run.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PRES-001 BLOCKER): mid-run BrokerFetchError previously vaporized already-journaled events; the full event list is now preserved and printed, the failing candidate carries the infra reason, remaining candidates are skipped, exit 2.",
+      "proof_refs": [
+        "tests/adapters/test_cli_execute.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-002",
+      "lens": "resilience",
+      "location": "src/invest/adapters/alpaca_broker.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PRES-002 CRITICAL): POST transport errors now surface submission-uncertain distinct from network-failure, so ambiguous broker acceptance is visible for reconciliation.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_broker.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-003",
+      "lens": "reliability",
+      "location": "src/invest/application/execute_run.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PREL-001 CRITICAL): running caps projection now advances only on submitted/already-submitted acknowledgements; rejected orders no longer consume position slots or deployed capital.",
+      "proof_refs": [
+        "tests/application/test_execute_run.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-004",
+      "lens": "reliability",
+      "location": "src/invest/domain/sizing.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #15, was PREL-002 CRITICAL): last_equity of zero or less now halts with kill-switch per the fail-closed spec scenario; the drawdown gate can no longer silently disable itself.",
+      "proof_refs": [
+        "tests/domain/test_sizing.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-005",
+      "lens": "reliability",
+      "location": "src/invest/contracts/events.py",
+      "severity": "SUGGESTION",
+      "claim": "RESOLVED (PR #15, was PREL-003/PREL-004/PRES-003): already-submitted event id includes broker_order_id per design; zero-ATR path characterized; buying power depletes in the running projection.",
+      "proof_refs": [
+        "tests/contracts/test_events.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-006",
+      "lens": "risk",
+      "location": "src/invest/contracts/events.py:65-79",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was PRISK-001): client_order_id hashes rule_version, so a rule-version bump re-orders already-executed days \u2014 dedup is per-rule-version, not per-symbol/day. Explicit decision required before any live-trading slice (operational deploy rule vs broker-side same-symbol/day guard). Engram topic trading-system/order-idempotency-scope.",
+      "proof_refs": [
+        "src/invest/contracts/events.py:65-79",
+        "src/invest/adapters/cli.py:29"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TPTE-007",
+      "lens": "readability",
+      "location": "src/invest/contracts/events.py; src/invest/adapters/cli.py",
+      "severity": "SUGGESTION",
+      "claim": "OPEN follow-ups (was PREAD-001..007): duplicated EventBase/ExecutionEventBase definitions; three divergent CLI failure output shapes across entrypoints; BrokerFetchError free-form reason strings vs StrEnum idiom; intent_id_or_symbol parameter naming; duplicated parser boilerplate; repeated skip-construction sites; fetch_main uses module-private _UniversePayload.",
+      "proof_refs": [
+        "src/invest/contracts/events.py:13",
+        "src/invest/adapters/cli.py:48"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}
