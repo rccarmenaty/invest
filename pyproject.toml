@@ -9,6 +9,7 @@ dependencies = [
 
 [project.scripts]
 invest-scan = "invest.adapters.cli:main"
+invest-fetch = "invest.adapters.cli:fetch_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2,<9", "ruff>=0.5,<1"]
@@ -22,6 +23,7 @@ packages = ["src/invest"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+markers = ["live: calls the real Alpaca market-data API"]
 
 [tool.ruff]
 target-version = "py312"

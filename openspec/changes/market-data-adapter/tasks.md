@@ -43,21 +43,21 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Snapshot Writer + Provenance (PR B)
 
-- [ ] 3.1 RED: universe symbol with zero returned bars expects pre-write abort, reason `symbol-missing-at-fetch` naming the missing symbols, no fixture written.
-- [ ] 3.2 GREEN: implement fail-closed check in `SnapshotWriter.write` before any file I/O.
-- [ ] 3.3 RED: complete-universe fixture expects `fixtures/snapshots/{as-of}/universe.json` + `bars.json` (byte-compatible `_UniversePayload`/`_BarsPayload`) and `provenance.json` with `feed`, `adjustment`, `timeframe`, `endpoint`, `as_of`, `fetch_timestamp`, `symbol_count`, `bar_count`, `universe_sha256`, `bars_sha256`, `fixture_version`, and boolean `degraded`.
-- [ ] 3.4 GREEN: implement `SnapshotWriter` writing all three files under `fixtures/snapshots/{as-of}/` — deviation: supersedes proposal's `fixtures/{as_of_date}/`, keeping generated snapshots separate from static `fixtures/v1/`; set `degraded = (feed == "iex")`.
-- [ ] 3.5 RED then GREEN: `iex` config expects provenance `feed: iex`, `degraded: true`; `sip` default expects `degraded: false`.
-- [ ] 3.6 RED then GREEN: integration round trip — written snapshot loads unchanged via `JsonFixtureReader`; `MomentumScanner` runs against it.
-- [ ] 3.7 RED then GREEN: halted-session zero-volume bar (symbol present) passes snapshot write; scanner still rejects that symbol as `missing-data`, unchanged.
+- [x] 3.1 RED: universe symbol with zero returned bars expects pre-write abort, reason `symbol-missing-at-fetch` naming the missing symbols, no fixture written.
+- [x] 3.2 GREEN: implement fail-closed check in `SnapshotWriter.write` before any file I/O.
+- [x] 3.3 RED: complete-universe fixture expects `fixtures/snapshots/{as-of}/universe.json` + `bars.json` (byte-compatible `_UniversePayload`/`_BarsPayload`) and `provenance.json` with `feed`, `adjustment`, `timeframe`, `endpoint`, `as_of`, `fetch_timestamp`, `symbol_count`, `bar_count`, `universe_sha256`, `bars_sha256`, `fixture_version`, and boolean `degraded`.
+- [x] 3.4 GREEN: implement `SnapshotWriter` writing all three files under `fixtures/snapshots/{as-of}/` — deviation: supersedes proposal's `fixtures/{as_of_date}/`, keeping generated snapshots separate from static `fixtures/v1/`; set `degraded = (feed == "iex")`.
+- [x] 3.5 RED then GREEN: `iex` config expects provenance `feed: iex`, `degraded: true`; `sip` default expects `degraded: false`.
+- [x] 3.6 RED then GREEN: integration round trip — written snapshot loads unchanged via `JsonFixtureReader`; `MomentumScanner` runs against it.
+- [x] 3.7 RED then GREEN: halted-session zero-volume bar (symbol present) passes snapshot write; scanner still rejects that symbol as `missing-data`, unchanged.
 
 ## Phase 4: `invest-fetch` CLI + Packaging (PR B)
 
-- [ ] 4.1 RED: `tests/adapters/test_cli_fetch.py` — missing `--as-of` errors before any fetch attempt; success path exits 0 and writes snapshot; mocked `auth-failure` exits 2 printing the reason, no partial files.
-- [ ] 4.2 GREEN: implement `fetch_main` (`--universe`, `--as-of` required, `--feed sip|iex`, `--out`) wiring `AlpacaMarketDataReader` + `SnapshotWriter`; add `invest-fetch` console script and `httpx` dependency to `pyproject.toml`.
+- [x] 4.1 RED: `tests/adapters/test_cli_fetch.py` — missing `--as-of` errors before any fetch attempt; success path exits 0 and writes snapshot; mocked `auth-failure` exits 2 printing the reason, no partial files.
+- [x] 4.2 GREEN: implement `fetch_main` (`--universe`, `--as-of` required, `--feed sip|iex`, `--out`) wiring `AlpacaMarketDataReader` + `SnapshotWriter`; add `invest-fetch` console script and `httpx` dependency to `pyproject.toml`.
 
 ## Phase 5: Boundary + Live/Calendar Coverage (PR B)
 
-- [ ] 5.1 RED then GREEN: extend `tests/test_boundaries.py` forbidding `httpx` and Alpaca imports under `src/invest/domain`.
-- [ ] 5.2 RED then GREEN: add `@pytest.mark.live` smoke test, skipped unless `ALPACA_API_KEY_ID` is set, fetching a tiny real universe.
-- [ ] 5.3 RED then GREEN: calendar-buffer test pinning the as_of−40d…as_of window across a holiday cluster (e.g. Thanksgiving weekend) yields ≥21 trading bars per symbol.
+- [x] 5.1 RED then GREEN: extend `tests/test_boundaries.py` forbidding `httpx` and Alpaca imports under `src/invest/domain`.
+- [x] 5.2 RED then GREEN: add `@pytest.mark.live` smoke test, skipped unless `ALPACA_API_KEY_ID` is set, fetching a tiny real universe.
+- [x] 5.3 RED then GREEN: calendar-buffer test pinning the as_of−40d…as_of window across a holiday cluster (e.g. Thanksgiving weekend) yields ≥21 trading bars per symbol.
