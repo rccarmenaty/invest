@@ -4,6 +4,7 @@ from pathlib import Path
 
 FORBIDDEN_IMPORT_ROOTS = {
     "alpaca",
+    "httpx",
     "invest.adapters",
     "invest.application",
     "nats",
@@ -46,3 +47,13 @@ def _call_name(node: ast.expr) -> str:
         prefix = _call_name(node.value)
         return f"{prefix}.{node.attr}" if prefix else node.attr
     return ""
+
+
+def test_domain_boundary_explicitly_forbids_market_data_dependencies() -> None:
+    assert {"httpx", "alpaca"} <= FORBIDDEN_IMPORT_ROOTS
+
+
+def test_live_marker_is_registered() -> None:
+    import tomllib
+    config = tomllib.loads(Path("pyproject.toml").read_text())
+    assert "live: calls the real Alpaca market-data API" in config["tool"]["pytest"]["ini_options"]["markers"]

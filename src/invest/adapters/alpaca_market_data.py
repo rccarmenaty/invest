@@ -1,7 +1,12 @@
 import os
 import time
-from datetime import date, datetime, timedelta
+import hashlib
+import json
+import shutil
+import tempfile
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -11,9 +16,9 @@ from invest.domain.models import DailyBar, FixtureInputs, Universe
 
 
 class MarketDataFetchError(RuntimeError):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, detail: str | None = None) -> None:
         self.reason = reason
-        super().__init__(reason)
+        super().__init__(reason if detail is None else f"{reason}: {detail}")
 
 
 class _BarPayload(BaseModel):
@@ -40,6 +45,7 @@ class _BarsResponse(BaseModel):
 
 class AlpacaMarketDataReader:
     ENDPOINT = "https://data.alpaca.markets/v2/stocks/bars"
+    CALENDAR_BUFFER_DAYS = 40
 
     def __init__(
         self,
@@ -137,9 +143,75 @@ class AlpacaMarketDataReader:
         return {
             "symbols": ",".join(universe.symbols),
             "timeframe": "1Day",
-            "start": (as_of - timedelta(days=40)).isoformat(),
+            "start": (as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS)).isoformat(),
             "end": as_of.isoformat(),
             "feed": self._feed,
             "adjustment": "split",
             "limit": 10000,
         }
+
+
+class SnapshotWriter:
+    def __init__(self, *, feed: str = "sip") -> None:
+        self._feed = feed
+
+    def write(self, inputs: FixtureInputs, as_of: date, out: Path) -> Path:
+        missing = sorted(set(inputs.universe.symbols) - {bar.symbol for bar in inputs.bars})
+        if missing:
+            raise MarketDataFetchError("symbol-missing-at-fetch", ",".join(missing))
+
+        version = as_of.isoformat()
+        universe_bytes = self._json_bytes(
+            {"fixture_version": version, "symbols": list(inputs.universe.symbols)}
+        )
+        bars_bytes = self._json_bytes(
+            {
+                "fixture_version": version,
+                "bars": [
+                    {
+                        "symbol": bar.symbol,
+                        "date": bar.date.isoformat(),
+                        "open": str(bar.open),
+                        "high": str(bar.high),
+                        "low": str(bar.low),
+                        "close": str(bar.close),
+                        "volume": bar.volume,
+                    }
+                    for bar in inputs.bars
+                ],
+            }
+        )
+        provenance_bytes = self._json_bytes(
+            {
+                "feed": self._feed,
+                "adjustment": "split",
+                "timeframe": "1Day",
+                "endpoint": AlpacaMarketDataReader.ENDPOINT,
+                "as_of": version,
+                "fetch_timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol_count": len(inputs.universe.symbols),
+                "bar_count": len(inputs.bars),
+                "universe_sha256": hashlib.sha256(universe_bytes).hexdigest(),
+                "bars_sha256": hashlib.sha256(bars_bytes).hexdigest(),
+                "fixture_version": version,
+                "degraded": self._feed == "iex",
+            }
+        )
+        directory = out / version
+        if directory.exists():
+            raise FileExistsError(directory)
+        out.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{version}-", dir=out))
+        try:
+            (staging / "universe.json").write_bytes(universe_bytes)
+            (staging / "bars.json").write_bytes(bars_bytes)
+            (staging / "provenance.json").write_bytes(provenance_bytes)
+            staging.replace(directory)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return directory
+
+    @staticmethod
+    def _json_bytes(payload: object) -> bytes:
+        return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
