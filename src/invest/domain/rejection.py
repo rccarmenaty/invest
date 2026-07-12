@@ -12,3 +12,12 @@ class RejectionReason(StrEnum):
     UNSUPPORTED_INPUT = "unsupported-input"
     NO_SIGNAL = "no-signal"
     DOMAIN_INVARIANT_VIOLATION = "domain-invariant-violation"
+
+
+class UnsupportedInputError(ValueError):
+    """Scan inputs violate a run-level precondition the scanner cannot settle per symbol."""
+
+    def __init__(self, symbols: tuple[str, ...]) -> None:
+        self.reason = RejectionReason.UNSUPPORTED_INPUT
+        self.symbols = symbols
+        super().__init__(f"bars present for symbols outside the universe: {', '.join(symbols)}")

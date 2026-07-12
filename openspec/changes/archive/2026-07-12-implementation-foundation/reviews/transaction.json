@@ -1,0 +1,74 @@
+{
+  "schema": "gentle-ai.review-transaction/v1",
+  "lineage_id": "implementation-foundation-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "state": "approved",
+  "snapshot": {
+    "kind": "current-changes",
+    "base_tree": "537ef64863b421dc889f4136688475e5b10db583",
+    "candidate_tree": "87efd652e6237687fcecd620dfb70885de7db3ac",
+    "paths_digest": "sha256:7feb9f292f26fabfca615de78baf8191d45194e09e3b0818b3b809e3b304fc31",
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "paths": [
+      "openspec/changes/implementation-foundation/design.md",
+      "src/invest/adapters/cli.py",
+      "src/invest/domain/rejection.py",
+      "src/invest/domain/scanner.py",
+      "tests/adapters/test_cli.py",
+      "tests/domain/test_scanner.py"
+    ],
+    "identity": "sha256:a1951b6c5a1c4707d9026148e0138db2aa32c513b98e311e7a6abeac0c5e4224"
+  },
+  "genesis_paths": [
+    "openspec/changes/implementation-foundation/design.md",
+    "src/invest/adapters/cli.py",
+    "src/invest/domain/rejection.py",
+    "src/invest/domain/scanner.py",
+    "tests/adapters/test_cli.py",
+    "tests/domain/test_scanner.py"
+  ],
+  "base_tree": "537ef64863b421dc889f4136688475e5b10db583",
+  "paths_digest": "sha256:7feb9f292f26fabfca615de78baf8191d45194e09e3b0818b3b809e3b304fc31",
+  "initial_review_tree": "87efd652e6237687fcecd620dfb70885de7db3ac",
+  "final_candidate_tree": "87efd652e6237687fcecd620dfb70885de7db3ac",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:ec0e5578762bc2c3f707689298c5692c854a0d53730620a2281fab1402b4c827",
+  "ledger_hash": "sha256:0692cd57ba88472d4f6473fcc772cfa62cf2e73226cee6bf4ef742cba73ca49e",
+  "ledger_findings_hash": "sha256:b23c381e22247fa8d4a7b5bcd7a389ac3ae65f0a170a670951909c5277065458",
+  "evidence_hash": "sha256:ca3e4c379a80383f3ee0d2769bd7de2e60da00fea15b58596c4aca70e43b1e67",
+  "judge_proofs": [],
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "findings": [
+    {
+      "id": "CREL-001",
+      "lens": "reliability",
+      "location": "src/invest/domain/rejection.py:20-23",
+      "severity": "WARNING",
+      "claim": "UnsupportedInputError sorts symbols but the only test supplies one out-of-universe symbol, so the sort-order contract is unverified for multi-symbol inputs; dropping sorted() would still pass.",
+      "proof_refs": [
+        "src/invest/domain/rejection.py:20-23",
+        "src/invest/domain/scanner.py:21-23",
+        "tests/domain/test_scanner.py:66-73"
+      ]
+    }
+  ],
+  "classifications": {},
+  "outcomes": {
+    "CREL-001": "info"
+  },
+  "fix_finding_ids": [],
+  "pending_refuter_ids": [],
+  "fix_caused_findings": [],
+  "follow_ups": []
+}
