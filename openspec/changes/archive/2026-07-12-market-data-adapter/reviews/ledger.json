@@ -1,0 +1,91 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "lineage_id": "market-data-adapter-clean",
+  "snapshot_commit": "e78c933",
+  "findings": [
+    {
+      "id": "TMDA-001",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MREL-001 BLOCKER): universe file failures previously crashed raw; now edge-validated, single fixture-invalid record before any network request.",
+      "proof_refs": [
+        "tests/adapters/test_cli_fetch.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-002",
+      "lens": "reliability",
+      "location": "src/invest/adapters/alpaca_market_data.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MREL-002/MRES-001 CRITICAL): pre-existing snapshot dir and mid-write OSError previously escaped uncaught; now snapshot-exists / storage-failure records with staged cleanup and no partials.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-003",
+      "lens": "risk",
+      "location": "src/invest/adapters/alpaca_market_data.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MRISK-001/MRISK-002): pagination now capped at MAX_PAGES=64 mapping to malformed-response; publication race collapses to snapshot-exists/storage-failure, never raw OSError.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-004",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py:44-54",
+      "severity": "SUGGESTION",
+      "claim": "MREL-003 reclassified info: argparse usage errors for missing/invalid --as-of write usage text to stderr with exit 2; the delta spec does not impose the machine-readable-record contract on argument parsing, only on fetch failures.",
+      "proof_refs": [
+        "openspec/changes/market-data-adapter/specs/trading-system/spec.md:99-101"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-005",
+      "lens": "resilience",
+      "location": "src/invest/adapters/alpaca_market_data.py:204-212",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was MRES-002): orphaned staging directories can accumulate after SIGKILL/power loss between mkdtemp and rename; no startup sweep reclaims them.",
+      "proof_refs": [
+        "src/invest/adapters/alpaca_market_data.py:204-212"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-006",
+      "lens": "readability",
+      "location": "src/invest/adapters/alpaca_market_data.py:33-37",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was MREAD-001): OHLC price-relationship validator duplicated across alpaca_market_data.py and fixtures_json.py instead of one shared rule.",
+      "proof_refs": [
+        "src/invest/adapters/fixtures_json.py:38-42"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TMDA-007",
+      "lens": "readability",
+      "location": "tests/adapters/test_alpaca_market_data.py",
+      "severity": "SUGGESTION",
+      "claim": "OPEN follow-ups (was MREAD-004/005): inline __import__ idiom and scattered in-function imports in the adapter test module; MREAD-002 (retry magic numbers) and MREAD-003 (raw universe parsing) were resolved by PR #9.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py:242"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}
