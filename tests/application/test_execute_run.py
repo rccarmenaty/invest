@@ -20,6 +20,8 @@ class FakeBroker:
         self.snapshot_calls = 0
         self.find_calls = 0
         self.submit_calls = 0
+        self.submitted_client_order_ids: list[str] = []
+        self.ack = BrokerAck(broker_order_id="broker-1", status="submitted")
 
     def snapshot(self) -> AccountSnapshot:
         self.snapshot_calls += 1
@@ -31,7 +33,8 @@ class FakeBroker:
 
     def submit_bracket(self, intent: OrderIntent, client_order_id: str) -> BrokerAck:
         self.submit_calls += 1
-        return BrokerAck(broker_order_id="broker-1", status="submitted")
+        self.submitted_client_order_ids.append(client_order_id)
+        return self.ack
 
 
 def _accepted_bars(symbol: str) -> tuple[DailyBar, ...]:
@@ -127,3 +130,67 @@ def test_execute_run_continues_after_candidate_gate_failure_with_running_project
         ("BETA", "max-equity-deployed")
     ]
     assert broker.find_calls == broker.submit_calls == 0
+
+
+def test_execute_run_dry_run_default_omits_execute_kwarg_and_never_submits() -> None:
+    broker = FakeBroker(_snapshot())
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"))
+
+    assert [event.event_type for event in events] == ["order.intent.v1"]
+    assert broker.submit_calls == 0
+
+
+def test_execute_run_execute_mode_submits_passing_intent_and_journals_order_submitted() -> None:
+    broker = FakeBroker(_snapshot())
+    broker.ack = BrokerAck(broker_order_id="broker-1", status="submitted")
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"), execute=True)
+
+    intent_event = next(event for event in events if event.event_type == "order.intent.v1")
+    submitted = next(event for event in events if event.event_type == "order.submitted.v1")
+    assert submitted.intent_id == intent_event.event_id
+    assert submitted.broker_order_id == "broker-1"
+    assert submitted.symbol == "ACME"
+    assert broker.submit_calls == 1
+    assert broker.submitted_client_order_ids == [intent_event.client_order_id]
+
+
+def test_execute_run_execute_mode_rejection_journals_order_rejected() -> None:
+    broker = FakeBroker(_snapshot())
+    broker.ack = BrokerAck(broker_order_id=None, status="rejected", reason="invalid order")
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"), execute=True)
+
+    intent_event = next(event for event in events if event.event_type == "order.intent.v1")
+    rejected = next(event for event in events if event.event_type == "order.rejected.v1")
+    assert rejected.intent_id == intent_event.event_id
+    assert rejected.reason == "invalid order"
+    assert not any(event.event_type == "order.submitted.v1" for event in events)
+
+
+def test_execute_run_execute_mode_already_submitted_journals_skip_with_no_duplicate_submit() -> None:
+    broker = FakeBroker(_snapshot())
+    broker.ack = BrokerAck(broker_order_id="broker-existing", status="already-submitted")
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"), execute=True)
+
+    skips = [event for event in events if event.event_type == "execution.skipped.v1"]
+    assert len(skips) == 1
+    assert skips[0].reason == "already-submitted"
+    assert not any(event.event_type == "order.submitted.v1" for event in events)
+    assert broker.submit_calls == 1
+
+
+def test_execute_run_halted_with_execute_flag_still_submits_nothing() -> None:
+    broker = FakeBroker(_snapshot(trading_blocked=True))
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"), execute=True)
+
+    assert [event.event_type for event in events] == ["execution.halted.v1", "execution.skipped.v1"]
+    assert broker.submit_calls == 0

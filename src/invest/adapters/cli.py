@@ -17,7 +17,9 @@ from invest.adapters.alpaca_market_data import (
     MarketDataFetchError,
     SnapshotWriter,
 )
+from invest.adapters.alpaca_broker import AlpacaBroker, BrokerFetchError
 from invest.adapters.journal_memory import MemoryJournal
+from invest.application.execute_run import ExecuteRun
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
@@ -77,6 +79,32 @@ def fetch_main(argv: Sequence[str] | None = None) -> int:
         if str(error) != error.reason:
             failure["message"] = str(error)
         print(json.dumps(failure, sort_keys=True))
+        return 2
+
+
+def _execute_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="invest-execute")
+    parser.add_argument("--universe", type=Path, required=True)
+    parser.add_argument("--bars", type=Path, required=True)
+    parser.add_argument("--format", choices=("json",), default="json")
+    parser.add_argument("--execute", action="store_true")
+    return parser
+
+
+def execute_main(argv: Sequence[str] | None = None) -> int:
+    args = _execute_parser().parse_args(argv)
+    try:
+        inputs = JsonFixtureReader().load(args.universe, args.bars)
+        broker = AlpacaBroker()
+        run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, RULE_VERSION)
+        events = run.execute(inputs, execute=args.execute)
+        print(json.dumps([event.model_dump(mode="json") for event in events], sort_keys=True))
+        return 0
+    except (FixtureValidationError, UnsupportedInputError) as error:
+        print(json.dumps({"reason": error.reason.value}, sort_keys=True))
+        return 2
+    except BrokerFetchError as error:
+        print(json.dumps({"reason": error.reason}, sort_keys=True))
         return 2
 
 

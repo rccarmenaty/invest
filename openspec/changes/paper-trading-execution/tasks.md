@@ -96,17 +96,17 @@ Chain strategy: stacked-to-main
 
 ## Phase 8: ExecuteRun --execute Wiring + CLI (PR B)
 
-- [ ] 8.1 RED: `tests/application/test_execute_run.py` — `--execute` path: passing intent submits via `BrokerPort.submit_bracket`; 201-equivalent ack journals `order.submitted.v1`; broker rejection journals `order.rejected.v1`; `find_order` hit journals `execution.skipped.v1` (reason=`already-submitted`), no duplicate submit.
-- [ ] 8.2 GREEN: implement the `--execute` branch in `ExecuteRun` (idempotency check -> submit -> ack/reject/skip journaling).
-- [ ] 8.3 RED: `tests/adapters/test_cli_execute.py` — dry-run default prints computed intents and makes zero broker mutation calls.
-- [ ] 8.4 RED: `--execute` flag opts into submission; a broker-acknowledgement event is journaled when gates pass.
-- [ ] 8.5 RED: infrastructure-failure test — auth/network/rate-limit/malformed-response/fixture-invalid each print exactly one machine-readable `{"reason": ...}` record and exit 2.
-- [ ] 8.6 RED: business-outcome test — a run where every candidate is skipped/halted/already-submitted/rejected exits 0 with the full event list printed.
-- [ ] 8.7 GREEN: implement `adapters/cli.py::execute_main` (`--universe`, `--bars`, `--snapshot`, `--format json`, `--execute`) mirroring `fetch_main`; wire `AlpacaBroker` + `ExecuteRun`; add `invest-execute` console script to `pyproject.toml`.
+- [x] 8.1 RED: `tests/application/test_execute_run.py` — `--execute` path: passing intent submits via `BrokerPort.submit_bracket`; 201-equivalent ack journals `order.submitted.v1`; broker rejection journals `order.rejected.v1`; `find_order` hit journals `execution.skipped.v1` (reason=`already-submitted`), no duplicate submit.
+- [x] 8.2 GREEN: implement the `--execute` branch in `ExecuteRun` (idempotency check -> submit -> ack/reject/skip journaling).
+- [x] 8.3 RED: `tests/adapters/test_cli_execute.py` — dry-run default prints computed intents and makes zero broker mutation calls.
+- [x] 8.4 RED: `--execute` flag opts into submission; a broker-acknowledgement event is journaled when gates pass.
+- [x] 8.5 RED: infrastructure-failure test — auth/network/rate-limit/malformed-response/fixture-invalid each print exactly one machine-readable `{"reason": ...}` record and exit 2.
+- [x] 8.6 RED: business-outcome test — a run where every candidate is skipped/halted/already-submitted/rejected exits 0 with the full event list printed.
+- [x] 8.7 GREEN: implement `adapters/cli.py::execute_main` (`--universe`, `--bars`, `--format json`, `--execute`) mirroring `fetch_main`; wire `AlpacaBroker` + `ExecuteRun`; add `invest-execute` console script to `pyproject.toml`. (Note: `--snapshot DIR` from the design sketch was dropped — no snapshot-reading adapter exists anywhere in the codebase and no spec scenario references it; the account snapshot always comes from the live `AlpacaBroker.snapshot()` call, in both dry-run and `--execute` modes.)
 
 ## Phase 9: Marker Registration + Boundary + Smoke (PR B)
 
-- [ ] 9.1 RED: `tests/test_boundaries.py` — `test_paper_execute_marker_is_registered` fails, `paper_execute` marker absent from `pyproject.toml`.
-- [ ] 9.2 GREEN: register `paper_execute: submits a real paper order to Alpaca` marker in `pyproject.toml`.
-- [ ] 9.3 RED then GREEN: extend `test_boundaries.py`'s forbidden-import scan — `domain/sizing.py` and `domain/indicators.py` stay free of `httpx`/Alpaca imports (existing AST test, no structural change needed beyond covering new files).
-- [ ] 9.4 RED then GREEN: `@pytest.mark.paper_execute` smoke test submitting one real paper bracket order and cancelling it; skipped unless `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` are set.
+- [x] 9.1 RED: `tests/test_boundaries.py` — `test_paper_execute_marker_is_registered` fails, `paper_execute` marker absent from `pyproject.toml`.
+- [x] 9.2 GREEN: register `paper_execute: submits a real paper order to Alpaca` marker in `pyproject.toml`.
+- [x] 9.3 RED then GREEN: extend `test_boundaries.py`'s forbidden-import scan — `domain/sizing.py` and `domain/indicators.py` stay free of `httpx`/Alpaca imports (existing AST test, no structural change needed beyond covering new files).
+- [x] 9.4 RED then GREEN: `@pytest.mark.paper_execute` smoke test submitting one real paper bracket order and cancelling it; skipped unless `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` are set. (Deviation, deliberate: implemented as a read-only `AlpacaBroker.snapshot()` smoke plus a full dry-run `invest-execute` CLI smoke against the real paper API — both marked `paper_execute` and skipped by default. No test submits or cancels a real order, per explicit instruction to avoid a smoke test that mutates the real paper account.)

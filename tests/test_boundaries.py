@@ -57,3 +57,12 @@ def test_live_marker_is_registered() -> None:
     import tomllib
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert "live: calls the real Alpaca market-data API" in config["tool"]["pytest"]["ini_options"]["markers"]
+
+
+def test_paper_execute_marker_is_registered() -> None:
+    import tomllib
+    config = tomllib.loads(Path("pyproject.toml").read_text())
+    assert (
+        "paper_execute: submits a real paper order to Alpaca"
+        in config["tool"]["pytest"]["ini_options"]["markers"]
+    )
