@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v1",
+  "lineage_id": "implementation-foundation-code",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "base_tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "initial_review_tree": "537ef64863b421dc889f4136688475e5b10db583",
+  "final_candidate_tree": "c0b99bd7d65aab6f964a321d185871b169656f43",
+  "paths_digest": "sha256:d9b7fffbfca38075a630e65a08f0e8b3ac9bac532326ed266b6a663db47eed5c",
+  "fix_delta_hash": "sha256:3fc3188a0a696cb6158f2cd1a7fb79632454c00f1a82439ee3d002f3ea095e24",
+  "policy_hash": "sha256:dea7c95e15a7ef751dc1c3db28a7a6fab5b6461700b3de445194b4e04159d227",
+  "ledger_hash": "sha256:8890f02dbfca91354ae6c46a459d49f32012e89027a57f90e2e706def292dcd9",
+  "evidence_hash": "sha256:c1b53ed79ba4b0c42eb914a16b9f017ad8fda691885293a47f21897d426455ad",
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 1,
+    "fix_batches": 1,
+    "scoped_fix_validations": 1,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "terminal_state": "approved"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "lineage_id": "implementation-foundation-clean",
+  "snapshot_commit": "85bfcf0+worktree-final",
+  "findings": [
+    {
+      "id": "CREL-001",
+      "lens": "reliability",
+      "location": "src/invest/domain/rejection.py:20-23",
+      "severity": "WARNING",
+      "claim": "UnsupportedInputError sorts symbols but the only test supplies one out-of-universe symbol, so the sort-order contract is unverified for multi-symbol inputs; dropping sorted() would still pass.",
+      "proof_refs": [
+        "src/invest/domain/rejection.py:20-23",
+        "src/invest/domain/scanner.py:21-23",
+        "tests/domain/test_scanner.py:66-73"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}

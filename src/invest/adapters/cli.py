@@ -9,7 +9,7 @@ from invest.adapters.fixtures_json import FixtureValidationError, JsonFixtureRea
 from invest.adapters.journal_memory import MemoryJournal
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
-from invest.domain.rejection import RejectionReason
+from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
 
 RULE_VERSION = "momentum-v1"
@@ -30,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         events = ScanRun(MomentumScanner(), MemoryJournal(), RULE_VERSION).execute(inputs)
         print(json.dumps([event.model_dump(mode="json") for event in events], sort_keys=True))
         return 0
-    except FixtureValidationError as error:
+    except (FixtureValidationError, UnsupportedInputError) as error:
         print(json.dumps(_failed(error.reason).model_dump(mode="json"), sort_keys=True))
         return 2
 

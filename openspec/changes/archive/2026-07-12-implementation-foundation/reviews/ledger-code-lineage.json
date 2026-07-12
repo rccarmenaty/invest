@@ -1,0 +1,126 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "lineage_id": "implementation-foundation-code",
+  "snapshot_commit": "85bfcf0",
+  "findings": [
+    {
+      "id": "REL-001",
+      "lens": "reliability",
+      "location": "src/invest/domain/scanner.py:21-25",
+      "severity": "BLOCKER",
+      "claim": "MomentumScanner.scan() applies a single global UNSUPPORTED_INPUT forced reason to every universe symbol whenever any out-of-universe symbol appears in the bars input, silently rejecting otherwise-valid signals batch-wide; tests encode the contaminated behavior as expected.",
+      "proof_refs": [
+        "src/invest/domain/scanner.py:21-25",
+        "src/invest/domain/scanner.py:34-36",
+        "tests/domain/test_scanner.py:64-69"
+      ],
+      "evidence_class": "deterministic",
+      "status": "open"
+    },
+    {
+      "id": "RES-001",
+      "lens": "resilience",
+      "location": "src/invest/adapters/fixtures_json.py:32-59",
+      "severity": "CRITICAL",
+      "claim": "JSON literal Infinity in OHLC fields passes pydantic Field(gt=0) and OHLC ordering validation, reaches MomentumScanner ATR arithmetic, and raises uncaught decimal.InvalidOperation, violating the single scan.failed.v1 failure contract.",
+      "proof_refs": [
+        "src/invest/adapters/fixtures_json.py:32-42",
+        "src/invest/adapters/fixtures_json.py:58-59",
+        "src/invest/domain/scanner.py:72",
+        "src/invest/adapters/cli.py:33"
+      ],
+      "evidence_class": "inferential",
+      "status": "open"
+    },
+    {
+      "id": "READ-001",
+      "lens": "readability",
+      "location": "src/invest/application/scan_run.py:23-26",
+      "severity": "WARNING",
+      "claim": "Schema-version literal '1' and event_id hashing formula duplicated across scan_run.py and cli.py with no shared constant.",
+      "proof_refs": [
+        "src/invest/contracts/events.py:14",
+        "src/invest/application/scan_run.py:23-26",
+        "src/invest/adapters/cli.py:39-40"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "READ-002",
+      "lens": "readability",
+      "location": "src/invest/adapters/cli.py:40",
+      "severity": "WARNING",
+      "claim": "date.min used as undocumented sentinel decision_date ('0001-01-01') in serialized failure events with no named constant or contract note.",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:40",
+        "src/invest/domain/scanner.py:34"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "READ-003",
+      "lens": "readability",
+      "location": "src/invest/application/scan_run.py:24",
+      "severity": "SUGGESTION",
+      "claim": "Event construction statements pack 7-8 values into single unbroken lines, obscuring the duplicated schema-version literal.",
+      "proof_refs": [
+        "src/invest/application/scan_run.py:24",
+        "src/invest/application/scan_run.py:26"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "REL-002",
+      "lens": "reliability",
+      "location": "src/invest/domain/scanner.py:54-59",
+      "severity": "WARNING",
+      "claim": "No tests exercise exact boundary values of the four momentum thresholds; comparison-operator regressions would be undetected.",
+      "proof_refs": [
+        "src/invest/domain/scanner.py:54-59",
+        "tests/domain/test_scanner.py:22-26"
+      ],
+      "evidence_class": "insufficient",
+      "status": "info"
+    },
+    {
+      "id": "REL-003",
+      "lens": "reliability",
+      "location": "src/invest/domain/scanner.py:34",
+      "severity": "WARNING",
+      "claim": "Empty-history path (universe symbol with zero bars, date.min decision_date) has no test coverage.",
+      "proof_refs": [
+        "src/invest/domain/scanner.py:34"
+      ],
+      "evidence_class": "insufficient",
+      "status": "info"
+    },
+    {
+      "id": "RES-002",
+      "lens": "resilience",
+      "location": "src/invest/adapters/fixtures_json.py:58-59",
+      "severity": "WARNING",
+      "claim": "All distinct load failures collapse into generic fixture-invalid with no retained diagnostic detail for operators.",
+      "proof_refs": [
+        "src/invest/adapters/fixtures_json.py:58-59",
+        "src/invest/adapters/cli.py:33-35"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "RISK-000",
+      "lens": "risk",
+      "location": "repository",
+      "severity": "SUGGESTION",
+      "claim": "Risk lens sweep completed with zero findings; recorded for lens completeness.",
+      "proof_refs": [
+        "review sweep at commit 85bfcf0"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}

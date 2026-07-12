@@ -1,9 +1,11 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from invest.domain.models import DailyBar, Universe
 from invest.domain.scanner import MomentumScanner
-from invest.domain.rejection import RejectionReason
+from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 
 def _bar(symbol: str, day: date, close: str, volume: int = 100) -> DailyBar:
@@ -61,12 +63,14 @@ def test_scanner_rejects_zero_volume_as_missing_data() -> None:
     assert decision.reason is RejectionReason.MISSING_DATA
 
 
-def test_scanner_rejects_bars_for_symbols_outside_universe() -> None:
+def test_scanner_raises_for_bars_outside_universe() -> None:
     bars = (*_accepted_history("ACME", date(2026, 1, 1)), *_accepted_history("UNKNOWN", date(2026, 1, 1)))
 
-    decision = MomentumScanner().scan(Universe("v1", ("ACME",)), bars)[0]
+    with pytest.raises(UnsupportedInputError) as error:
+        MomentumScanner().scan(Universe("v1", ("ACME",)), bars)
 
-    assert decision.reason is RejectionReason.UNSUPPORTED_INPUT
+    assert error.value.reason is RejectionReason.UNSUPPORTED_INPUT
+    assert error.value.symbols == ("UNKNOWN",)
 
 
 def test_scanner_rejects_domain_invariant_violation() -> None:

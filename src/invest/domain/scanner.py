@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 
 from invest.domain.models import DailyBar, ScanDecision, Universe
-from invest.domain.rejection import RejectionReason
+from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 HISTORY_DAYS = 20
 ATR_DAYS = 14
@@ -19,21 +19,13 @@ class MomentumScanner:
             grouped[bar.symbol].append(bar)
 
         unsupported = set(grouped).difference(universe.symbols)
-        forced_reason = RejectionReason.UNSUPPORTED_INPUT if unsupported else None
-        decisions = [
-            self._scan_symbol(symbol, grouped.get(symbol, []), forced_reason) for symbol in universe.symbols
-        ]
+        if unsupported:
+            raise UnsupportedInputError(tuple(sorted(unsupported)))
+        decisions = [self._scan_symbol(symbol, grouped.get(symbol, [])) for symbol in universe.symbols]
         return sorted(decisions, key=lambda item: (item.decision_date, item.symbol))
 
-    def _scan_symbol(
-        self,
-        symbol: str,
-        bars: list[DailyBar],
-        forced_reason: RejectionReason | None = None,
-    ) -> ScanDecision:
+    def _scan_symbol(self, symbol: str, bars: list[DailyBar]) -> ScanDecision:
         decision_date = bars[-1].date if bars else date.min
-        if forced_reason is not None:
-            return ScanDecision(symbol, decision_date, False, forced_reason)
         if len(bars) < HISTORY_DAYS + 1:
             return ScanDecision(symbol, decision_date, False, RejectionReason.INSUFFICIENT_HISTORY)
         if any(bar.volume == 0 for bar in bars):

@@ -1,0 +1,14 @@
+{
+  "schema": "gentle-ai.review-fix-validation/v1",
+  "lineage_id": "implementation-foundation-final",
+  "ledger_ids": [
+    "FREL-001",
+    "FREL-002"
+  ],
+  "result": "approve",
+  "tests": "uv run --extra dev pytest: 38 passed; tests/adapters/test_cli.py 5 passed; tests/domain/test_scanner.py 6 passed",
+  "quality": "uv run --extra dev ruff check .: All checks passed",
+  "scope": "fix delta exactly 2 files (tests/adapters/test_cli.py new characterization test; design.md single decision-row rewrite); prior REL-001 correction verified intact",
+  "regression_pin": "removing loader guard surfaces unsupported-input (fails reason assertion); removing both guards emits decision list (fails event_type assertion); partial output fails count==1",
+  "docs": "rewritten design row matches verified code: loader fixture-symbol-missing is the CLI-observable path; scanner raise is defense in depth"
+}
