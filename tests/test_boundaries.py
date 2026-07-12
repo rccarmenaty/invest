@@ -66,3 +66,63 @@ def test_paper_execute_marker_is_registered() -> None:
         "paper_execute: submits a real paper order to Alpaca"
         in config["tool"]["pytest"]["ini_options"]["markers"]
     )
+
+
+def test_backtest_code_path_never_imports_broker_or_references_brokerport() -> None:
+    """The backtest replay path never touches the broker: mirrors the market-data adapter's
+    hardcoded-paper-URL negative test, but for the day-0 replay harness/metrics/CLI."""
+    banned_modules = {"invest.adapters.alpaca_broker"}
+    banned_names = {"AlpacaBroker", "BrokerFetchError", "BrokerPort"}
+    violations: list[str] = []
+
+    for path in (
+        Path("src/invest/application/backtest_run.py"),
+        Path("src/invest/domain/backtest_metrics.py"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in banned_modules:
+                violations.append(f"{path}: import from {node.module}")
+            elif isinstance(node, ast.Import):
+                violations.extend(
+                    f"{path}: import {alias.name}" for alias in node.names if alias.name in banned_modules
+                )
+            elif isinstance(node, ast.Name) and node.id in banned_names:
+                violations.append(f"{path}: references {node.id}")
+
+    cli_path = Path("src/invest/adapters/cli.py")
+    cli_tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
+    backtest_function_names = {"backtest_main", "_backtest_parser", "_backtest_report"}
+    for node in ast.walk(cli_tree):
+        if isinstance(node, ast.FunctionDef) and node.name in backtest_function_names:
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Name) and inner.id in banned_names:
+                    violations.append(f"cli.py::{node.name}: references {inner.id}")
+
+    assert violations == [], "Backtest code path touches broker/BrokerPort:\n" + "\n".join(violations)
+
+
+def test_out_of_scope_guard_no_gap_strategy_confirmation_module_or_live_trading_url() -> None:
+    """Reconcile item 1: gap-trading (rejected Named Decision 3) and confirmation-service
+    (out of scope per Named Decision 1) must never materialize as strategy modules, and the
+    new backtest files must never contain a non-paper Alpaca URL string."""
+    violations: list[str] = []
+
+    for path in Path("src/invest").rglob("*.py"):
+        stem = path.stem.lower()
+        if "gap" in stem:
+            violations.append(f"gap-trading strategy module suspected: {path}")
+        if "confirmation" in stem:
+            violations.append(f"confirmation-service module suspected: {path}")
+
+    backtest_files = (
+        Path("src/invest/application/backtest_run.py"),
+        Path("src/invest/domain/backtest_metrics.py"),
+        Path("src/invest/adapters/cli.py"),
+    )
+    for path in backtest_files:
+        text = path.read_text(encoding="utf-8")
+        if '"https://api.alpaca.markets' in text or "'https://api.alpaca.markets" in text:
+            violations.append(f"non-paper Alpaca URL string found in {path}")
+
+    assert violations == [], "Out-of-scope guard violated:\n" + "\n".join(violations)

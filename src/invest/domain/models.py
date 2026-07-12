@@ -64,3 +64,19 @@ class BrokerAck:
     broker_order_id: str | None
     status: str
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class SimulatedTrade:
+    """One independent backtest trade with RAW (pre-cost) bar-derived prices.
+
+    Cost application (slippage/tax) lives exclusively in `domain.backtest_metrics`.
+    """
+
+    symbol: str
+    entry_date: date
+    exit_date: date
+    entry_price: Decimal
+    exit_price: Decimal
+    qty: int
+    exit_reason: str

@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
@@ -19,14 +20,29 @@ from invest.adapters.alpaca_market_data import (
 )
 from invest.adapters.alpaca_broker import AlpacaBroker, BrokerFetchError
 from invest.adapters.journal_memory import MemoryJournal
+from invest.application.backtest_run import BacktestRun
 from invest.application.execute_run import ExecuteRun
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
+from invest.domain.backtest_metrics import DEFAULT_SLIPPAGE_BPS, DEFAULT_TAX_RATE, compute_metrics
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
 from invest.domain.models import Universe
 
 RULE_VERSION = "momentum-v1"
+
+DAY0_DISCLAIMER = (
+    "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
+    "NOT SPEC §2.4 confirmed-entry edge."
+)
+SURVIVORSHIP_DISCLAIMER = (
+    "SURVIVORSHIP-BIASED UNIVERSE: fixed historical screen, NOT point-in-time index "
+    "membership; results are optimistically biased."
+)
+COST_MODEL_DISCLAIMER = (
+    "COST MODEL IS AN APPROXIMATION: fixed-bps slippage + zero commission + flat tax "
+    "haircut, not precision accounting."
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -106,6 +122,79 @@ def execute_main(argv: Sequence[str] | None = None) -> int:
     except BrokerFetchError as error:
         print(json.dumps({"reason": error.reason}, sort_keys=True))
         return 2
+
+
+def _backtest_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="invest-backtest")
+    parser.add_argument("--universe", type=Path, required=True)
+    parser.add_argument("--bars", type=Path)
+    parser.add_argument("--start", type=date.fromisoformat)
+    parser.add_argument("--end", type=date.fromisoformat)
+    parser.add_argument("--format", choices=("json",), default="json")
+    parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
+    parser.add_argument("--tax-rate", type=Decimal, default=DEFAULT_TAX_RATE)
+    return parser
+
+
+def backtest_main(argv: Sequence[str] | None = None) -> int:
+    """`invest-backtest`: day-by-day replay harness. Never constructs/calls BrokerPort."""
+    args = _backtest_parser().parse_args(argv)
+    try:
+        if args.bars is not None:
+            inputs = JsonFixtureReader().load(args.universe, args.bars)
+        else:
+            if args.start is None or args.end is None:
+                raise MarketDataFetchError("fixture-invalid", "either --bars or --start/--end is required")
+            try:
+                payload = _UniversePayload.model_validate_json(
+                    args.universe.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, ValidationError):
+                raise MarketDataFetchError("fixture-invalid") from None
+            universe = Universe(fixture_version=payload.fixture_version, symbols=tuple(payload.symbols))
+            inputs = AlpacaMarketDataReader().fetch_range(universe, args.start, args.end)
+
+        trades = BacktestRun().replay(inputs)
+        metrics = compute_metrics(trades, args.slippage_bps, args.tax_rate)
+        report = _backtest_report(metrics, trades)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    except (FixtureValidationError, UnsupportedInputError) as error:
+        print(json.dumps({"reason": error.reason.value}, sort_keys=True))
+        return 2
+    except MarketDataFetchError as error:
+        failure = {"reason": error.reason}
+        if str(error) != error.reason:
+            failure["message"] = str(error)
+        print(json.dumps(failure, sort_keys=True))
+        return 2
+
+
+def _backtest_report(metrics, trades) -> dict:
+    return {
+        "hit_rate": str(metrics.hit_rate),
+        "expectancy": str(metrics.expectancy),
+        "max_drawdown": str(metrics.max_drawdown),
+        "trade_count": metrics.trade_count,
+        "net_pnl": str(metrics.net_pnl),
+        "trades": [
+            {
+                "symbol": trade.symbol,
+                "entry_date": trade.entry_date.isoformat(),
+                "exit_date": trade.exit_date.isoformat(),
+                "entry_price": str(trade.entry_price),
+                "exit_price": str(trade.exit_price),
+                "qty": trade.qty,
+                "exit_reason": trade.exit_reason,
+            }
+            for trade in trades
+        ],
+        "disclaimers": {
+            "day0": DAY0_DISCLAIMER,
+            "survivorship": SURVIVORSHIP_DISCLAIMER,
+            "cost_model": COST_MODEL_DISCLAIMER,
+        },
+    }
 
 
 def _failed(reason: RejectionReason) -> FailedScan:
