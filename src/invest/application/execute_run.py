@@ -4,10 +4,16 @@ from datetime import date
 from pydantic import BaseModel
 
 from invest.application.ports import BrokerPort, Journal
-from invest.contracts.events import ExecutionHalted, ExecutionSkipped, OrderIntentEvent
-from invest.domain.models import DailyBar, FixtureInputs
+from invest.contracts.events import (
+    ExecutionHalted,
+    ExecutionSkipped,
+    OrderIntentEvent,
+    OrderRejected,
+    OrderSubmitted,
+)
+from invest.domain.models import DailyBar, FixtureInputs, OrderIntent, ScanDecision
 from invest.domain.scanner import MomentumScanner
-from invest.domain.sizing import compute_intent, evaluate_gates, evaluate_halt_gates
+from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
 
 
 class ExecuteRun:
@@ -25,7 +31,7 @@ class ExecuteRun:
         self._broker = broker
         self._rule_version = rule_version
 
-    def execute(self, inputs: FixtureInputs) -> list[BaseModel]:
+    def execute(self, inputs: FixtureInputs, *, execute: bool = False) -> list[BaseModel]:
         snapshot = self._broker.snapshot()
         halt_reason = evaluate_halt_gates(snapshot)
         decisions = [decision for decision in self._scanner.scan(inputs.universe, inputs.bars) if decision.accepted]
@@ -101,5 +107,47 @@ class ExecuteRun:
                 self._journal.append(intent_event)
                 open_position_count += 1
                 deployed_value += intent.qty * intent.entry
+                if execute:
+                    self._submit(intent_event, intent, decision, inputs)
 
         return self._journal.events()
+
+    def _submit(
+        self,
+        intent_event: OrderIntentEvent,
+        intent: OrderIntent,
+        decision: ScanDecision,
+        inputs: FixtureInputs,
+    ) -> None:
+        ack = self._broker.submit_bracket(intent, client_order_id=intent_event.client_order_id)
+        common = dict(
+            symbol=decision.symbol,
+            decision_date=decision.decision_date,
+            fixture_version=inputs.universe.fixture_version,
+            rule_version=self._rule_version,
+        )
+        if ack.status == "submitted":
+            self._journal.append(
+                OrderSubmitted.from_ack(
+                    intent_id=intent_event.event_id,
+                    broker_order_id=ack.broker_order_id or "",
+                    **common,
+                )
+            )
+        elif ack.status == "already-submitted":
+            self._journal.append(
+                ExecutionSkipped.from_reason(
+                    intent_id_or_symbol=intent_event.event_id,
+                    reason=GateReason.ALREADY_SUBMITTED,
+                    **common,
+                )
+            )
+        else:
+            self._journal.append(
+                OrderRejected.from_ack(
+                    intent_id=intent_event.event_id,
+                    reason=ack.reason or "rejected",
+                    broker_order_id=ack.broker_order_id or "",
+                    **common,
+                )
+            )
