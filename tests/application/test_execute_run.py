@@ -3,7 +3,14 @@ from decimal import Decimal
 
 from invest.adapters.journal_memory import MemoryJournal
 from invest.application.execute_run import ExecuteRun
-from invest.domain.models import AccountSnapshot, DailyBar, FixtureInputs, OrderIntent, Universe
+from invest.domain.models import (
+    AccountSnapshot,
+    BrokerAck,
+    DailyBar,
+    FixtureInputs,
+    OrderIntent,
+    Universe,
+)
 from invest.domain.scanner import MomentumScanner
 
 
@@ -22,9 +29,9 @@ class FakeBroker:
         self.find_calls += 1
         return None
 
-    def submit_bracket(self, intent: OrderIntent) -> str:
+    def submit_bracket(self, intent: OrderIntent, client_order_id: str) -> BrokerAck:
         self.submit_calls += 1
-        return "broker-1"
+        return BrokerAck(broker_order_id="broker-1", status="submitted")
 
 
 def _accepted_bars(symbol: str) -> tuple[DailyBar, ...]:

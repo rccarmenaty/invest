@@ -4,7 +4,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from invest.domain.models import AccountSnapshot, FixtureInputs, OrderIntent, Universe
+from invest.domain.models import AccountSnapshot, BrokerAck, FixtureInputs, OrderIntent, Universe
 
 
 class FixtureReader(Protocol):
@@ -21,7 +21,7 @@ class BrokerPort(Protocol):
 
     def find_order(self, client_order_id: str) -> str | None: ...
 
-    def submit_bracket(self, intent: OrderIntent) -> str: ...
+    def submit_bracket(self, intent: OrderIntent, client_order_id: str) -> BrokerAck: ...
 
 
 class Journal(Protocol):
