@@ -64,19 +64,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Contracts — Intent + Ack Event Family (PR A)
 
-- [ ] 5.1 RED: `tests/contracts/test_events.py` — `OrderIntentEvent(EventBase)` missing `qty`, `entry_price`, `stop_price`, `take_profit_price`, `client_order_id`; deterministic `event_id` must reproduce identically for identical inputs (`sha256("1|order.intent.v1|fixture_version|rule_version|symbol|decision_date|qty|stop|take_profit")`).
-- [ ] 5.2 GREEN: add `OrderIntentEvent` to `contracts/events.py`; prices serialized as `str(quantized)`.
-- [ ] 5.3 RED: `ExecutionEventBase` + `OrderSubmitted`, `OrderRejected`, `ExecutionSkipped`, `ExecutionHalted` missing; each ack id must be content-addressed (no wall-clock) and MUST NOT reuse the intent's hash scheme.
-- [ ] 5.4 GREEN: implement `ExecutionEventBase` (separate from deterministic `EventBase`) and the four ack/skip/halt event classes with their content-addressed id formulas.
+- [x] 5.1 RED: `tests/contracts/test_events.py` — `OrderIntentEvent(EventBase)` missing `qty`, `entry_price`, `stop_price`, `take_profit_price`, `client_order_id`; deterministic `event_id` must reproduce identically for identical inputs (`sha256("1|order.intent.v1|fixture_version|rule_version|symbol|decision_date|qty|stop|take_profit")`).
+- [x] 5.2 GREEN: add `OrderIntentEvent` to `contracts/events.py`; prices serialized as `str(quantized)`.
+- [x] 5.3 RED: `ExecutionEventBase` + `OrderSubmitted`, `OrderRejected`, `ExecutionSkipped`, `ExecutionHalted` missing; each ack id must be content-addressed (no wall-clock) and MUST NOT reuse the intent's hash scheme.
+- [x] 5.4 GREEN: implement `ExecutionEventBase` (separate from deterministic `EventBase`) and the four ack/skip/halt event classes with their content-addressed id formulas.
 
 ## Phase 6: BrokerPort + ExecuteRun Dry-Run Orchestration (PR A)
 
-- [ ] 6.1 RED: `tests/application/test_ports.py` (or extend) — `BrokerPort` Protocol (`snapshot`, `find_order`, `submit_bracket`) missing from `application/ports.py`; `Journal.append` still narrowly typed to `EventBase`.
-- [ ] 6.2 GREEN: add `BrokerPort` Protocol; widen `Journal.append(event: BaseModel)`.
-- [ ] 6.3 RED: `tests/application/test_execute_run.py` — `ExecuteRun` missing; happy path with a fake `BrokerPort` rescans fixture snapshot, sizes each accepted decision, journals `order.intent.v1`, zero submission calls in dry-run.
-- [ ] 6.4 GREEN: implement `application/execute_run.py::ExecuteRun` (mirrors `ScanRun`): snapshot -> halt gates once -> rescan via `MomentumScanner` -> per-candidate size+gate+journal.
-- [ ] 6.5 RED: halt-continues test — on halt, exactly ONE `execution.halted.v1` is journaled, THEN every remaining accepted candidate gets its own `execution.skipped.v1` carrying the SAME halt reason; zero submissions; run completes without raising.
-- [ ] 6.6 GREEN: implement halt-continues-fail-closed loop in `ExecuteRun` per design (never aborts on halt).
+- [x] 6.1 RED: `tests/application/test_ports.py` (or extend) — `BrokerPort` Protocol (`snapshot`, `find_order`, `submit_bracket`) missing from `application/ports.py`; `Journal.append` still narrowly typed to `EventBase`.
+- [x] 6.2 GREEN: add `BrokerPort` Protocol; widen `Journal.append(event: BaseModel)`.
+- [x] 6.3 RED: `tests/application/test_execute_run.py` — `ExecuteRun` missing; happy path with a fake `BrokerPort` rescans fixture snapshot, sizes each accepted decision, journals `order.intent.v1`, zero submission calls in dry-run.
+- [x] 6.4 GREEN: implement `application/execute_run.py::ExecuteRun` (mirrors `ScanRun`): snapshot -> halt gates once -> rescan via `MomentumScanner` -> per-candidate size+gate+journal.
+- [x] 6.5 RED: halt-continues test — on halt, exactly ONE `execution.halted.v1` is journaled, THEN every remaining accepted candidate gets its own `execution.skipped.v1` carrying the SAME halt reason; zero submissions; run completes without raising.
+- [x] 6.6 GREEN: implement halt-continues-fail-closed loop in `ExecuteRun` per design (never aborts on halt).
 
 ## Phase 7: alpaca_broker Adapter (PR B)
 

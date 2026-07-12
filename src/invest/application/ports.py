@@ -2,8 +2,9 @@ from pathlib import Path
 from datetime import date
 from typing import Protocol, runtime_checkable
 
-from invest.domain.models import FixtureInputs, Universe
-from invest.contracts.events import EventBase
+from pydantic import BaseModel
+
+from invest.domain.models import AccountSnapshot, FixtureInputs, OrderIntent, Universe
 
 
 class FixtureReader(Protocol):
@@ -15,7 +16,15 @@ class MarketDataReader(Protocol):
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs: ...
 
 
-class Journal(Protocol):
-    def append(self, event: EventBase) -> None: ...
+class BrokerPort(Protocol):
+    def snapshot(self) -> AccountSnapshot: ...
 
-    def events(self) -> list[EventBase]: ...
+    def find_order(self, client_order_id: str) -> str | None: ...
+
+    def submit_bracket(self, intent: OrderIntent) -> str: ...
+
+
+class Journal(Protocol):
+    def append(self, event: BaseModel) -> None: ...
+
+    def events(self) -> list[BaseModel]: ...
