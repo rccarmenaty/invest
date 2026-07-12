@@ -1,0 +1,15 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "gate": "post-apply",
+  "target": {
+    "kind": "current-changes",
+    "intended_untracked": []
+  },
+  "store_revision": "sha256:5951f4c4ee432651630e105f0d6f3a1f7a2c77f3fc123112597478b4950f96f9",
+  "genesis_revision": "sha256:a68b0618409762c14eedc21d10d3a58689625a087c20004c13cc9135c29c0856",
+  "chain_identity": "sha256:b330da740e1cb88daf8390f196f690ead64d7e178a9b777ba806574d4343d919",
+  "bundle_digest": "sha256:46501a55a4105f5bb5078546c5a3bb419a632a390f8c8424273dde943fb1af40",
+  "policy_artifact": "/Users/rcty/invest/openspec/changes/market-data-adapter/reviews/policy.md",
+  "ledger_artifact": "/Users/rcty/invest/openspec/changes/market-data-adapter/reviews/ledger.json",
+  "evidence_artifact": "/Users/rcty/invest/openspec/changes/market-data-adapter/verify-report.md"
+}

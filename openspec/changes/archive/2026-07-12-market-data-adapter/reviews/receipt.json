@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v1",
+  "lineage_id": "market-data-adapter-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "base_tree": "057705121138f8450d48520864e330506bae5b18",
+  "initial_review_tree": "057705121138f8450d48520864e330506bae5b18",
+  "final_candidate_tree": "057705121138f8450d48520864e330506bae5b18",
+  "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:868b08079da5f87e37d1ad45ae0791ad559d00cf992b1f7fe1506361094e299b",
+  "ledger_hash": "sha256:d7959a82970861c5f5cd09bff0db4c7d2c35371d8d360bb023dc95ab4f8f4cfe",
+  "evidence_hash": "sha256:e38d7529700f53008cc39b11d0140d3d38c32d74d4892f572758afcaa6789746",
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "terminal_state": "approved"
+}

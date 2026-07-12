@@ -1,0 +1,123 @@
+{
+  "schema": "gentle-ai.review-transaction/v1",
+  "lineage_id": "market-data-adapter-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "state": "approved",
+  "snapshot": {
+    "kind": "current-changes",
+    "base_tree": "057705121138f8450d48520864e330506bae5b18",
+    "candidate_tree": "057705121138f8450d48520864e330506bae5b18",
+    "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "paths": [],
+    "identity": "sha256:c4f5f2006c6c704835b2a49127783eda2f86e035529f0bea58dbc38d631199b9"
+  },
+  "base_tree": "057705121138f8450d48520864e330506bae5b18",
+  "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+  "initial_review_tree": "057705121138f8450d48520864e330506bae5b18",
+  "final_candidate_tree": "057705121138f8450d48520864e330506bae5b18",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:868b08079da5f87e37d1ad45ae0791ad559d00cf992b1f7fe1506361094e299b",
+  "ledger_hash": "sha256:d7959a82970861c5f5cd09bff0db4c7d2c35371d8d360bb023dc95ab4f8f4cfe",
+  "ledger_findings_hash": "sha256:487e2ccc9b04427d0993fdcb9906e2c13af890f5a7b911ed33f14ca82fed250d",
+  "evidence_hash": "sha256:e38d7529700f53008cc39b11d0140d3d38c32d74d4892f572758afcaa6789746",
+  "judge_proofs": [],
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "findings": [
+    {
+      "id": "TMDA-001",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MREL-001 BLOCKER): universe file failures previously crashed raw; now edge-validated, single fixture-invalid record before any network request.",
+      "proof_refs": [
+        "tests/adapters/test_cli_fetch.py"
+      ]
+    },
+    {
+      "id": "TMDA-002",
+      "lens": "reliability",
+      "location": "src/invest/adapters/alpaca_market_data.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MREL-002/MRES-001 CRITICAL): pre-existing snapshot dir and mid-write OSError previously escaped uncaught; now snapshot-exists / storage-failure records with staged cleanup and no partials.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py"
+      ]
+    },
+    {
+      "id": "TMDA-003",
+      "lens": "risk",
+      "location": "src/invest/adapters/alpaca_market_data.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #9, was MRISK-001/MRISK-002): pagination now capped at MAX_PAGES=64 mapping to malformed-response; publication race collapses to snapshot-exists/storage-failure, never raw OSError.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py"
+      ]
+    },
+    {
+      "id": "TMDA-004",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py:44-54",
+      "severity": "SUGGESTION",
+      "claim": "MREL-003 reclassified info: argparse usage errors for missing/invalid --as-of write usage text to stderr with exit 2; the delta spec does not impose the machine-readable-record contract on argument parsing, only on fetch failures.",
+      "proof_refs": [
+        "openspec/changes/market-data-adapter/specs/trading-system/spec.md:99-101"
+      ]
+    },
+    {
+      "id": "TMDA-005",
+      "lens": "resilience",
+      "location": "src/invest/adapters/alpaca_market_data.py:204-212",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was MRES-002): orphaned staging directories can accumulate after SIGKILL/power loss between mkdtemp and rename; no startup sweep reclaims them.",
+      "proof_refs": [
+        "src/invest/adapters/alpaca_market_data.py:204-212"
+      ]
+    },
+    {
+      "id": "TMDA-006",
+      "lens": "readability",
+      "location": "src/invest/adapters/alpaca_market_data.py:33-37",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was MREAD-001): OHLC price-relationship validator duplicated across alpaca_market_data.py and fixtures_json.py instead of one shared rule.",
+      "proof_refs": [
+        "src/invest/adapters/fixtures_json.py:38-42"
+      ]
+    },
+    {
+      "id": "TMDA-007",
+      "lens": "readability",
+      "location": "tests/adapters/test_alpaca_market_data.py",
+      "severity": "SUGGESTION",
+      "claim": "OPEN follow-ups (was MREAD-004/005): inline __import__ idiom and scattered in-function imports in the adapter test module; MREAD-002 (retry magic numbers) and MREAD-003 (raw universe parsing) were resolved by PR #9.",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_market_data.py:242"
+      ]
+    }
+  ],
+  "classifications": {},
+  "outcomes": {
+    "TMDA-001": "info",
+    "TMDA-002": "info",
+    "TMDA-003": "info",
+    "TMDA-004": "info",
+    "TMDA-005": "info",
+    "TMDA-006": "info",
+    "TMDA-007": "info"
+  },
+  "fix_finding_ids": [],
+  "pending_refuter_ids": [],
+  "fix_caused_findings": [],
+  "follow_ups": []
+}
