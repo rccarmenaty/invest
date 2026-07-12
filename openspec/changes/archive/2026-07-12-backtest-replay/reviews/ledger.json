@@ -1,0 +1,80 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "lineage_id": "backtest-replay-clean",
+  "snapshot_commit": "4fc94bd",
+  "findings": [
+    {
+      "id": "TBTR-001",
+      "lens": "risk",
+      "location": "src/invest/adapters/cli.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #18, was BRISK-001 CRITICAL): boundary test evadable via module-then-attribute import (from invest.adapters import alpaca_broker + attribute access); strengthened with a shared _find_broker_references AST helper catching both patterns.",
+      "proof_refs": [
+        "tests/test_boundaries.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TBTR-002",
+      "lens": "resilience",
+      "location": "src/invest/adapters/cli.py",
+      "severity": "WARNING",
+      "claim": "RESOLVED (PR #18, was BRES-001 CRITICAL): live fetch_range path could silently omit a universe symbol's data and report a complete-looking zero-signal backtest; now fails closed with symbol-missing-at-fetch, exit 2, no report printed.",
+      "proof_refs": [
+        "tests/adapters/test_cli_backtest.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TBTR-003",
+      "lens": "risk",
+      "location": "tests/test_boundaries.py:105-128",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was BRISK-002): out-of-scope guard is filename-substring grep, evadable by a differently-named module implementing forbidden logic.",
+      "proof_refs": [
+        "tests/test_boundaries.py:112-116"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TBTR-004",
+      "lens": "resilience",
+      "location": "src/invest/adapters/alpaca_market_data.py:80-83,105-106",
+      "severity": "WARNING",
+      "claim": "OPEN follow-up (was BRES-002): malformed-response conflates real schema failures with hitting MAX_PAGES with a still-valid next_page_token.",
+      "proof_refs": [
+        "src/invest/adapters/alpaca_market_data.py:80-83"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TBTR-005",
+      "lens": "resilience",
+      "location": "src/invest/application/backtest_run.py:38-46",
+      "severity": "SUGGESTION",
+      "claim": "OPEN follow-up (was BRES-003): scan_decisions rescans the entire merged bar window per trading day, O(days x total_bars), unguarded for real multi-year backtests.",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:38-46"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "TBTR-006",
+      "lens": "readability",
+      "location": "src/invest/adapters/cli.py; src/invest/application/backtest_run.py",
+      "severity": "WARNING",
+      "claim": "OPEN follow-ups (was BREAD-001..006): ExitReason StrEnum decorative vs hardcoded literals; four CLI entrypoints emit two incompatible failure shapes (third cycle flagging this pattern -- warrants a dedicated cleanup slice); duplicated OHLC validator across two adapters; minor missing type hints.",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:87",
+        "src/invest/adapters/cli.py"
+      ],
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}

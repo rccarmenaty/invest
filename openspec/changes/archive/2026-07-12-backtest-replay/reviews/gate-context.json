@@ -1,0 +1,15 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "gate": "post-apply",
+  "target": {
+    "kind": "current-changes",
+    "intended_untracked": []
+  },
+  "store_revision": "sha256:96a1e76e19bf6969cf573045a98545af445093bc302b722c22cfe674c026fd44",
+  "genesis_revision": "sha256:e446e4de112647136c03c3d9c936510dd116bc34fe4120de62dca11dbdeff20e",
+  "chain_identity": "sha256:1476864ccf31bd43afef6d868308868bb861834375e6ec0a1cfdaff603c240bc",
+  "bundle_digest": "sha256:90632fd1cb521ff9966822bcc1c654f72210d9d4c6e613a4744aab1769db434a",
+  "policy_artifact": "/Users/rcty/invest/openspec/changes/backtest-replay/reviews/policy.md",
+  "ledger_artifact": "/Users/rcty/invest/openspec/changes/backtest-replay/reviews/ledger.json",
+  "evidence_artifact": "/Users/rcty/invest/openspec/changes/backtest-replay/verify-report.md"
+}
