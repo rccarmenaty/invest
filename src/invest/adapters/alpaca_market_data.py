@@ -46,6 +46,10 @@ class _BarsResponse(BaseModel):
 class AlpacaMarketDataReader:
     ENDPOINT = "https://data.alpaca.markets/v2/stocks/bars"
     CALENDAR_BUFFER_DAYS = 40
+    MAX_PAGES = 64
+    MAX_ATTEMPTS = 3
+    BACKOFF_BASE_SECONDS = 0.5
+    BACKOFF_CAP_SECONDS = 4.0
 
     def __init__(
         self,
@@ -61,7 +65,7 @@ class AlpacaMarketDataReader:
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs:
         bars_by_symbol: dict[str, list[DailyBar]] = {}
         page_token: str | None = None
-        while True:
+        for page_number in range(1, self.MAX_PAGES + 1):
             params = self._request_params(universe, as_of)
             if page_token is not None:
                 params["page_token"] = page_token
@@ -91,13 +95,16 @@ class AlpacaMarketDataReader:
                     for bar in bars_by_symbol.get(symbol, ())
                 )
                 return FixtureInputs(universe=universe, bars=bars)
+            if page_number == self.MAX_PAGES:
+                raise MarketDataFetchError("malformed-response")
+        raise AssertionError("pagination loop must return or raise")
 
     def _send_with_retry(self, params: dict[str, str | int]) -> httpx.Response:
-        for attempt in range(3):
+        for attempt in range(self.MAX_ATTEMPTS):
             try:
                 response = self._client.send(self._build_request(params))
             except httpx.RequestError:
-                if attempt == 2:
+                if attempt == self.MAX_ATTEMPTS - 1:
                     raise MarketDataFetchError("network-failure") from None
                 self._sleep(self._backoff(attempt, None))
                 continue
@@ -105,12 +112,12 @@ class AlpacaMarketDataReader:
             if response.status_code in {401, 403}:
                 raise MarketDataFetchError("auth-failure")
             if response.status_code == 429:
-                if attempt == 2:
+                if attempt == self.MAX_ATTEMPTS - 1:
                     raise MarketDataFetchError("rate-limited")
                 self._sleep(self._backoff(attempt, response.headers.get("Retry-After")))
                 continue
             if response.status_code >= 500:
-                if attempt == 2:
+                if attempt == self.MAX_ATTEMPTS - 1:
                     raise MarketDataFetchError("network-failure")
                 self._sleep(self._backoff(attempt, response.headers.get("Retry-After")))
                 continue
@@ -119,14 +126,14 @@ class AlpacaMarketDataReader:
             return response
         raise AssertionError("retry loop must return or raise")
 
-    @staticmethod
-    def _backoff(attempt: int, retry_after: str | None) -> float:
+    @classmethod
+    def _backoff(cls, attempt: int, retry_after: str | None) -> float:
         if retry_after is not None:
             try:
-                return min(max(float(retry_after), 0.0), 4.0)
+                return min(max(float(retry_after), 0.0), cls.BACKOFF_CAP_SECONDS)
             except ValueError:
                 pass
-        return min(0.5 * (2**attempt), 4.0)
+        return min(cls.BACKOFF_BASE_SECONDS * (2**attempt), cls.BACKOFF_CAP_SECONDS)
 
     def _build_request(self, params: dict[str, str | int]) -> httpx.Request:
         return self._client.build_request(
@@ -199,16 +206,23 @@ class SnapshotWriter:
         )
         directory = out / version
         if directory.exists():
-            raise FileExistsError(directory)
-        out.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=f".{version}-", dir=out))
+            raise MarketDataFetchError("snapshot-exists")
+        staging: Path | None = None
         try:
+            out.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(prefix=f".{version}-", dir=out))
             (staging / "universe.json").write_bytes(universe_bytes)
             (staging / "bars.json").write_bytes(bars_bytes)
             (staging / "provenance.json").write_bytes(provenance_bytes)
             staging.replace(directory)
+        except OSError:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            reason = "snapshot-exists" if directory.exists() else "storage-failure"
+            raise MarketDataFetchError(reason) from None
         except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
             raise
         return directory
 
