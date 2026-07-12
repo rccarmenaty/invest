@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v1",
+  "lineage_id": "paper-trading-execution-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "base_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "initial_review_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "final_candidate_tree": "3bda57cc0933dc0e6f42f7e1cca1aa7338f60a52",
+  "paths_digest": "sha256:2286a180488f90f2e97062d500a629bc747716d55a34c2861a8309e1b02589a1",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:8401797032ef58be664c0b2e0958ce4bad249458c6eb954c00de13572135ffe8",
+  "ledger_hash": "sha256:504380ac63b47e031eee4e144fe5442dd07af946cb323f92366f1067849683fb",
+  "evidence_hash": "sha256:c104cc1e5fc383f34cea2282ace6915a65907fe81e25b5bb7bd2e37d2fdb3605",
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "terminal_state": "approved"
+}
