@@ -80,19 +80,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 7: alpaca_broker Adapter (PR B)
 
-- [ ] 7.1 RED: `tests/adapters/test_alpaca_broker.py` — hardcoded-paper-URL test: assert no live-trading URL string exists anywhere under `src/` (rg-style negative scan) and `AlpacaBroker` constructs requests only against `https://paper-api.alpaca.markets`.
-- [ ] 7.2 RED: `snapshot()` missing — `MockTransport` fixture for GET `/v2/account` + GET `/v2/positions` expects mapped `AccountSnapshot` (equity, last_equity, buying_power, open_position_count, deployed_value, trading_blocked, account_blocked).
-- [ ] 7.3 GREEN: implement `adapters/alpaca_broker.py::AlpacaBroker.snapshot()`.
-- [ ] 7.4 RED: `find_order(client_order_id)` — existing order returns its broker order id; missing order returns `None`.
-- [ ] 7.5 RED: bracket POST JSON-shape test pinned to verified fields: `order_class="bracket"`, `take_profit.limit_price`, `stop_loss.stop_price` present, no `stop_loss.limit_price` (stop-market), `time_in_force="day"`, `extended_hours` absent/false.
-- [ ] 7.6 GREEN: implement `find_order` (GET by `client_order_id`) and `submit_bracket` (single POST) per the pinned shape.
-- [ ] 7.7 RED: GET-before-POST idempotency test — existing order found -> no POST call recorded, reports `already-submitted`.
-- [ ] 7.8 RED: POST-never-retried test — injected failing transport counts POST invocations; failure/timeout on the mutating POST must record exactly one POST call, no auto-retry.
-- [ ] 7.9 GREEN: wire idempotency check before every `submit_bracket` call; ensure only GETs pass through the retry path.
-- [ ] 7.10 RED: GET bounded-retry + error-taxonomy test mirroring market-data constants (`MAX_ATTEMPTS=3`, backoff 0.5s->4s, `Retry-After` honored): 401/403->`auth-failure` (no retry), 429->`rate-limited`, 5xx/timeout->`network-failure`, bad JSON->`malformed-response`.
-- [ ] 7.11 GREEN: implement bounded retry/backoff and error mapping for GETs only, reusing the `alpaca_market_data.py` pattern.
-- [ ] 7.12 RED: credential-redaction test (traceback formatting) — `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` values never appear in error/log output, identical discipline to the market-data adapter.
-- [ ] 7.13 GREEN: apply the same redaction discipline to `alpaca_broker.py` error formatting.
+- [x] 7.1 RED: `tests/adapters/test_alpaca_broker.py` — hardcoded-paper-URL test: assert no live-trading URL string exists anywhere under `src/` (rg-style negative scan) and `AlpacaBroker` constructs requests only against `https://paper-api.alpaca.markets`.
+- [x] 7.2 RED: `snapshot()` missing — `MockTransport` fixture for GET `/v2/account` + GET `/v2/positions` expects mapped `AccountSnapshot` (equity, last_equity, buying_power, open_position_count, deployed_value, trading_blocked, account_blocked).
+- [x] 7.3 GREEN: implement `adapters/alpaca_broker.py::AlpacaBroker.snapshot()`.
+- [x] 7.4 RED: `find_order(client_order_id)` — existing order returns its broker order id; missing order returns `None`.
+- [x] 7.5 RED: bracket POST JSON-shape test pinned to verified fields: `order_class="bracket"`, `take_profit.limit_price`, `stop_loss.stop_price` present, no `stop_loss.limit_price` (stop-market), `time_in_force="day"`, `extended_hours` absent/false.
+- [x] 7.6 GREEN: implement `find_order` (GET by `client_order_id`) and `submit_bracket` (single POST) per the pinned shape.
+- [x] 7.7 RED: GET-before-POST idempotency test — existing order found -> no POST call recorded, reports `already-submitted`.
+- [x] 7.8 RED: POST-never-retried test — injected failing transport counts POST invocations; failure/timeout on the mutating POST must record exactly one POST call, no auto-retry.
+- [x] 7.9 GREEN: wire idempotency check before every `submit_bracket` call; ensure only GETs pass through the retry path.
+- [x] 7.10 RED: GET bounded-retry + error-taxonomy test mirroring market-data constants (`MAX_ATTEMPTS=3`, backoff 0.5s->4s, `Retry-After` honored): 401/403->`auth-failure` (no retry), 429->`rate-limited`, 5xx/timeout->`network-failure`, bad JSON->`malformed-response`.
+- [x] 7.11 GREEN: implement bounded retry/backoff and error mapping for GETs only, reusing the `alpaca_market_data.py` pattern.
+- [x] 7.12 RED: credential-redaction test (traceback formatting) — `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` values never appear in error/log output, identical discipline to the market-data adapter.
+- [x] 7.13 GREEN: apply the same redaction discipline to `alpaca_broker.py` error formatting.
 
 ## Phase 8: ExecuteRun --execute Wiring + CLI (PR B)
 

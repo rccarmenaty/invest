@@ -57,3 +57,10 @@ class OrderIntent:
     entry: Decimal
     stop: Decimal
     take_profit: Decimal
+
+
+@dataclass(frozen=True)
+class BrokerAck:
+    broker_order_id: str | None
+    status: str
+    reason: str | None = None
