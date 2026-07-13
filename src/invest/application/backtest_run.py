@@ -27,6 +27,12 @@ from invest.domain.backtest_metrics import (
     entry_fill,
     exit_proceeds,
 )
+from invest.domain.market_context import (
+    ContextOutcome,
+    ContextOutcomeType,
+    MarketContext,
+    MarketContextIncompleteError,
+)
 from invest.domain.models import (
     AccountSnapshot,
     BacktestResult,
@@ -37,11 +43,13 @@ from invest.domain.models import (
     ScanDecision,
     SimulatedTrade,
     SkippedEntry,
+    Universe,
 )
 from invest.domain.scanner import MomentumScanner
 from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
 
 NOMINAL_EQUITY = Decimal("100000")
+POINT_IN_TIME_CONTEXT_VALIDATED = "point-in-time-market-context-validated"
 
 
 @dataclass
@@ -60,6 +68,7 @@ class BacktestRun:
     def __init__(
         self,
         *,
+        market_context: MarketContext,
         scanner: MomentumScanner | None = None,
         equity: Decimal = NOMINAL_EQUITY,
         cash: Decimal | None = None,
@@ -67,6 +76,7 @@ class BacktestRun:
         slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
         tax_rate: Decimal = DEFAULT_TAX_RATE,
     ) -> None:
+        self._market_context = market_context
         self._scanner = scanner or MomentumScanner()
         self._equity = equity
         self._cash = equity if cash is None else cash
@@ -85,13 +95,17 @@ class BacktestRun:
         dates = sorted({bar.date for bar in bars})
         collected: list[ScanDecision] = []
         for d in dates:
-            window = tuple(bar for bar in bars if bar.date <= d)
-            for decision in self._scanner.scan(inputs.universe, window):
+            replay_universe = self._filtered_universe(inputs.universe, d)
+            eligible_symbols = set(replay_universe.symbols)
+            window = tuple(bar for bar in bars if bar.date <= d and bar.symbol in eligible_symbols)
+            for decision in self._scanner.scan(replay_universe, window):
                 if decision.accepted and decision.decision_date == d:
                     collected.append(decision)
         return collected
 
     def replay(self, inputs: FixtureInputs, *, split_date: date | None = None) -> BacktestResult:
+        replay_dates = sorted({bar.date for bar in inputs.bars})
+        self._market_context.require_complete(replay_dates, inputs.universe.symbols)
         decisions = self.scan_decisions(inputs)
         by_symbol: dict[str, list[DailyBar]] = defaultdict(list)
         for bar in sorted(inputs.bars, key=lambda item: (item.symbol, item.date)):
@@ -109,6 +123,7 @@ class BacktestRun:
 
         trades: list[SimulatedTrade] = []
         skipped_entries: list[SkippedEntry] = []
+        context_outcomes: list[ContextOutcome] = []
         gate_counts: Counter[str] = Counter()
         positions: dict[str, _OpenPosition] = {}
         cash = self._cash
@@ -118,17 +133,10 @@ class BacktestRun:
 
         for current_date in sorted(bars_by_date):
             todays_bars = bars_by_date[current_date]
+            self._process_unsafe_positions(current_date, positions, todays_bars, trades, context_outcomes)
+            cash = self._settle_closed_positions(current_date, positions, trades, cash)
             self._process_exits(positions, todays_bars, trades)
-            for trade in trades:
-                if trade.exit_date == current_date:
-                    cash += exit_proceeds(
-                        positions[trade.symbol].entry_price,
-                        trade.exit_price,
-                        trade.qty,
-                        self._slippage_bps,
-                        self._tax_rate,
-                    )
-                    positions.pop(trade.symbol, None)
+            cash = self._settle_closed_positions(current_date, positions, trades, cash)
 
             missing_bar_carried_forward |= any(symbol not in todays_bars for symbol in positions)
             marked_equity = cash + self._mark_positions(positions, todays_bars)
@@ -153,6 +161,12 @@ class BacktestRun:
                             current_date,
                             GateReason.ALREADY_SUBMITTED.value,
                         )
+                    )
+                    continue
+                status = self._market_context.status(decision.symbol, current_date)
+                if not status.is_safe:
+                    context_outcomes.append(
+                        ContextOutcome.from_status(status, ContextOutcomeType.ENTRY_BLOCKED)
                     )
                     continue
                 entry_bar = todays_bars[decision.symbol]
@@ -230,6 +244,7 @@ class BacktestRun:
         return BacktestResult(
             trades=ordered_trades,
             skipped_entries=tuple(skipped_entries),
+            context_outcomes=tuple(context_outcomes),
             metrics=metrics,
             portfolio=PortfolioSummary(
                 starting_capital=self._equity,
@@ -248,11 +263,69 @@ class BacktestRun:
             ),
             warnings=(
                 "portfolio-gates-simulated",
-                "static-universe-oos",
+                POINT_IN_TIME_CONTEXT_VALIDATED,
                 "broker-execution-realism-out-of-scope",
             )
             + (("missing-bar-carried-forward",) if missing_bar_carried_forward else ()),
         )
+
+    def _filtered_universe(self, universe: Universe, as_of: date) -> Universe:
+        return Universe(
+            fixture_version=universe.fixture_version,
+            symbols=self._market_context.eligible_symbols(universe.symbols, as_of),
+        )
+
+    def _process_unsafe_positions(
+        self,
+        current_date: date,
+        positions: dict[str, _OpenPosition],
+        bars: dict[str, DailyBar],
+        trades: list[SimulatedTrade],
+        context_outcomes: list[ContextOutcome],
+    ) -> None:
+        for symbol, position in sorted(positions.items()):
+            status = self._market_context.status(symbol, current_date)
+            if status.is_safe:
+                continue
+            bar = bars.get(symbol)
+            if bar is None:
+                raise MarketContextIncompleteError(
+                    f"unsafe position missing same-day bar for {symbol} on {current_date.isoformat()}"
+                )
+            trades.append(
+                SimulatedTrade(
+                    symbol=position.symbol,
+                    entry_date=position.entry_date,
+                    exit_date=current_date,
+                    entry_price=position.entry_price,
+                    exit_price=bar.low,
+                    qty=position.qty,
+                    exit_reason=ContextOutcomeType.POSITION_FORCED_CLOSED.value,
+                )
+            )
+            context_outcomes.append(
+                ContextOutcome.from_status(status, ContextOutcomeType.POSITION_FORCED_CLOSED)
+            )
+
+    def _settle_closed_positions(
+        self,
+        current_date: date,
+        positions: dict[str, _OpenPosition],
+        trades: list[SimulatedTrade],
+        cash: Decimal,
+    ) -> Decimal:
+        for trade in trades:
+            if trade.exit_date != current_date or trade.symbol not in positions:
+                continue
+            position = positions.pop(trade.symbol)
+            cash += exit_proceeds(
+                position.entry_price,
+                trade.exit_price,
+                trade.qty,
+                self._slippage_bps,
+                self._tax_rate,
+            )
+        return cash
 
     def _mark_positions(self, positions: dict[str, _OpenPosition], bars: dict[str, DailyBar]) -> Decimal:
         for position in positions.values():
