@@ -68,6 +68,26 @@ def test_rejects_unsupported_schema_version(tmp_path: Path) -> None:
     assert error.value.reason == "market-context-invalid"
 
 
+def test_rejects_integer_eligibility_as_market_context_invalid(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["symbols"][0]["eligibility"][0]["eligible"] = 1
+
+    with pytest.raises(MarketContextInvalidError) as error:
+        BacktestContextJsonReader().load(_write_context(tmp_path / "market-context.json", payload))
+
+    assert error.value.reason == "market-context-invalid"
+
+
+def test_rejects_numeric_date_as_market_context_invalid(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["symbols"][0]["coverage"][0]["start"] = 1_704_067_200
+
+    with pytest.raises(MarketContextInvalidError) as error:
+        BacktestContextJsonReader().load(_write_context(tmp_path / "market-context.json", payload))
+
+    assert error.value.reason == "market-context-invalid"
+
+
 def test_rejects_overlapping_semantic_intervals(tmp_path: Path) -> None:
     payload = _valid_payload()
     symbol_payload = payload["symbols"][0]

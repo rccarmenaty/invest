@@ -64,9 +64,52 @@ def test_status_resolves_complete_matrix_and_exact_outcome_values() -> None:
     )
 
 
-def test_require_complete_fails_for_missing_requested_symbol_or_date() -> None:
-    context = _context(
-        eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 2), eligible=True),)
+def test_require_complete_accepts_a_complete_multi_symbol_matrix() -> None:
+    context = MarketContext(
+        {
+            "ACME": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 2)),),
+                eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 2), eligible=True),),
+            ),
+            "BETA": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 2)),),
+                eligibility=(
+                    EligibilityWindow(date(2024, 1, 1), date(2024, 1, 1), eligible=True),
+                    EligibilityWindow(date(2024, 1, 2), date(2024, 1, 2), eligible=False),
+                ),
+            ),
+        }
+    )
+
+    context.require_complete(
+        dates=(date(2024, 1, 1), date(2024, 1, 2)),
+        symbols=("ACME", "BETA"),
+    )
+
+    assert tuple(
+        (context.status(symbol, as_of).eligible, context.status(symbol, as_of).reason)
+        for symbol in ("ACME", "BETA")
+        for as_of in (date(2024, 1, 1), date(2024, 1, 2))
+    ) == (
+        (True, None),
+        (True, None),
+        (True, None),
+        (False, ContextReason.SYMBOL_INELIGIBLE),
+    )
+
+
+def test_require_complete_checks_later_symbols_for_missing_dates() -> None:
+    context = MarketContext(
+        {
+            "ACME": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
+                eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 3), eligible=True),),
+            ),
+            "BETA": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
+                eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 2), eligible=True),),
+            ),
+        }
     )
 
     with pytest.raises(MarketContextIncompleteError) as error:
@@ -76,6 +119,7 @@ def test_require_complete_fails_for_missing_requested_symbol_or_date() -> None:
         )
 
     assert error.value.reason == "market-context-incomplete"
+    assert str(error.value) == "missing eligibility for BETA on 2024-01-03"
 
 
 def test_future_eligibility_mutations_do_not_change_prior_day_status() -> None:

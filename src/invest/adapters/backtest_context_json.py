@@ -19,7 +19,7 @@ Symbol = Annotated[str, StringConstraints(min_length=1)]
 
 
 class _DateRangePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     start: date
     end: date
@@ -40,7 +40,7 @@ class _BlockerPayload(_DateRangePayload):
 
 
 class _SymbolContextPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     symbol: Symbol
     coverage: list[_DateRangePayload] = Field(min_length=1)
@@ -49,7 +49,7 @@ class _SymbolContextPayload(BaseModel):
 
 
 class _MarketContextPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal["market-context-v1"]
     symbols: list[_SymbolContextPayload] = Field(min_length=1)
