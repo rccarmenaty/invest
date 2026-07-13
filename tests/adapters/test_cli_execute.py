@@ -267,3 +267,9 @@ def test_execute_mid_run_infra_failure_prints_full_journal_and_exits_two(
     assert any(event["event_type"] == "order.submitted.v1" and event["symbol"] == "ACME" for event in payload)
     skips = [(event["symbol"], event["reason"]) for event in payload if event["event_type"] == "execution.skipped.v1"]
     assert skips == [("BETA", "submission-uncertain"), ("CHARLIE", "submission-uncertain")]
+
+
+def test_execute_parser_does_not_accept_market_context_argument() -> None:
+    options = {action.dest for action in cli._execute_parser()._actions}
+
+    assert "market_context" not in options

@@ -1,0 +1,48 @@
+# Tasks: Point-in-Time Market Context
+
+## Review Workload Forecast
+
+| Field | Value |
+|---|---|
+| Actual authored churn | 1,223 lines (800-line budget + 423) |
+| 800-line budget risk | High |
+| Chained PRs recommended | Yes |
+| Suggested split | Child PR 1 → Child PR 2 → Child PR 3, coordinated by a draft/no-merge tracker |
+| Delivery strategy | User-selected chained PRs |
+| Chain strategy | feature-branch-chain |
+
+Decision needed before apply: No
+Chained PRs recommended: Yes
+Chain strategy: feature-branch-chain
+800-line budget risk: High
+
+The tracker branch accumulates the integrated feature and is the only branch intended to merge to main. Child PR 1 targets the tracker branch; Child PR 2 targets Child PR 1's branch; Child PR 3 targets Child PR 2's branch. Retarget or rebase any child whose diff includes prior slices. This phase creates no branches, commits, or PRs.
+
+### Suggested Work Units
+
+| Unit | Goal | Likely PR | Focused test command | Runtime harness | Rollback boundary |
+|---|---|---|---|---|---|
+| 1 | Immutable `MarketContext` plus JSON adapter, fixture, and tests | Child PR 1; base = tracker branch | `pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py` | N/A: pure domain/file-decoder boundary | Remove the context domain, JSON adapter, fixture, and their tests |
+| 2 | Replay integration plus context outcomes and tests | Child PR 2; base = Child PR 1 branch | `pytest tests/application/test_backtest_run.py` | N/A: application behavior is exercised through focused replay tests | Revert `backtest_run.py`, `models.py`, and replay-test additions while retaining Unit 1 |
+| 3 | CLI/reporting plus boundary safety and tests | Child PR 3; base = Child PR 2 branch | `pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py` | `invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` | Revert CLI/reporting and boundary-safety test additions while retaining Units 1–2 |
+
+## Phase 1: Context Domain and File Adapter
+
+- [x] 1.1 RED: Create `tests/domain/test_market_context.py` for complete/missing/contradictory matrices, future-mutation immunity, inclusive blockers, and exact outcome/reason values.
+- [x] 1.2 GREEN: Create `src/invest/domain/market_context.py` with immutable `status()`/`require_complete()` semantics and stable incomplete/invalid failures.
+- [x] 1.3 RED: Create `tests/adapters/test_backtest_context_json.py` for unreadable, malformed, unsupported-version, overlapping, and semantically incomplete JSON.
+- [x] 1.4 GREEN: Create strict `src/invest/adapters/backtest_context_json.py` and fully covered `fixtures/backtest/market-context.json`.
+- [x] 1.5 REFACTOR: Keep Pydantic/file concerns out of `market_context.py`; rerun Unit 1 tests.
+
+## Phase 2: Replay Integration
+
+- [x] 2.1 RED: Extend `tests/application/test_backtest_run.py` for date-filtered scans, blocked entries, first-unsafe-date forced closes before exits/entries at `bar.low`, missing-D-bar abort, determinism, and all-eligible parity.
+- [x] 2.2 GREEN: Update `src/invest/domain/models.py` and `src/invest/application/backtest_run.py` to require coverage, expose context outcomes, and preserve scanner, accounting, costs, and gate telemetry.
+- [x] 2.3 REFACTOR: Centralize date/context sequencing without modifying scanner, provider, broker, execution, accounting, or cost modules; rerun Unit 2 tests.
+
+## Phase 3: CLI and Boundary Safety
+
+- [x] 3.1 RED: Extend `tests/adapters/test_cli_backtest.py` for required context, one exit-2 context error, no partial report, PIT statement replacement, outcomes, and zero broker calls.
+- [x] 3.2 RED: Extend `tests/test_boundaries.py`, `tests/application/test_execute_run.py`, `tests/adapters/test_cli_execute.py`, and `tests/adapters/test_alpaca_broker.py` to preserve bars-only Alpaca, `--execute`, paper endpoint, and live gates.
+- [x] 3.3 GREEN: Update `src/invest/adapters/cli.py` to load `--market-context`, map stable failures, and emit one PIT report with context outcomes.
+- [x] 3.4 REFACTOR: Keep context backtest-only; run all focused commands, full `pytest`, and the Unit 3 runtime harness.

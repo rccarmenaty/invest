@@ -190,3 +190,13 @@ def test_out_of_scope_guard_no_gap_strategy_confirmation_module_or_live_trading_
             violations.append(f"non-paper Alpaca URL string found in {path}")
 
     assert violations == [], "Out-of-scope guard violated:\n" + "\n".join(violations)
+
+
+def test_market_context_flag_is_backtest_only_and_never_added_to_execute_parser() -> None:
+    from invest.adapters.cli import _backtest_parser, _execute_parser
+
+    backtest_options = {action.dest for action in _backtest_parser()._actions}
+    execute_options = {action.dest for action in _execute_parser()._actions}
+
+    assert "market_context" in backtest_options
+    assert "market_context" not in execute_options
