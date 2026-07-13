@@ -10,7 +10,7 @@
 | Suggested split | Child PR 1 → Child PR 2 → Child PR 3, coordinated by a draft/no-merge tracker |
 | Delivery strategy | User-selected chained PRs |
 | Chain strategy | feature-branch-chain |
-| Verification snapshot | full suite 202 passed, 3 skipped; Ruff passed |
+| Verification snapshot | source chain full suite 202 passed, 3 skipped; Ruff passed. Integrated candidate full suite 210 passed, 3 skipped; Ruff passed; runtime harness exit 0; clean tree. |
 
 Decision needed before apply: No
 Chained PRs recommended: Yes
@@ -27,6 +27,14 @@ The tracker branch accumulates the integrated feature and is the only branch int
 | Domain / JSON | tracker | `feat/pit-market-context-domain` | `dd444b8` | 593 | Local only; no push / no PR |
 | Replay integration | domain child | `feat/pit-market-context-replay` | `6bdd9bb` | 327 | Local only; no push / no PR |
 | CLI / boundaries | replay child | `feat/pit-market-context-cli` | `1a39a4f` | 782 | Local only; current branch; no push / no PR |
+
+### Integrated Candidate
+
+- Integrated branch: `feat/point-in-time-market-context-integrated` @ `3141020a08170c589d8847892d5f5a9cfdb2776b`
+- Cherry-picked reviewed corrections with matching patch IDs: domain `d2ca0bf3989e974ae133a2ca5ebcfca55ffc92fe`; replay `a95daafe7dd46b5b7458270d156c3f1ebcb495c5`; CLI `3141020a08170c589d8847892d5f5a9cfdb2776b`
+- Source review lineages are terminal `approved`: domain chain identity `sha256:5c4a6b76c36b43c15a4a8d0f44aa146db23f44e7e05fa56a28be7795d59cf2d1`; replay chain identity `sha256:13b0eb8ee82333f68b7c1f452c0d172e9975cddc3762f4325bad86070e93cb06`; CLI chain identity `sha256:c85c2687d2e8607406b9b49e74b692f2f0869975059fa85b44e9e237982e1616`
+- Integrated verification evidence: full `pytest` previously recorded as `210 passed, 3 skipped`; Ruff passed; runtime harness exit `0`; worktree clean after verification
+- Remote state: no push / no PR; independent `sdd-verify` remains pending for this integrated candidate
 
 ### Suggested Work Units
 

@@ -2,11 +2,12 @@
 
 **Change**: `point-in-time-market-context`
 **Mode**: Strict TDD
-**Delivery**: local feature-branch chain
+**Delivery**: local feature-branch chain materialized and re-integrated as a clean candidate
 **Chain Strategy**: `feature-branch-chain`
-**Boundary**: completed implementation is now materialized as three dependent local review slices: domain/JSON → replay integration → CLI/reporting and boundary safety
+**Boundary**: completed implementation remains materialized as three dependent local review slices: domain/JSON → replay integration → CLI/reporting and boundary safety; the reviewed correction deltas are now cherry-picked onto a clean integrated branch
 **Review Budget**: integrated tracker→CLI diff = 1,702 changed lines; materialized slice reviews = 593 / 327 / 782; the CLI slice remains 382 lines above the default 400-line review budget
-**Chain State**: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8` (review size 593); replay child `feat/pit-market-context-replay` @ `6bdd9bb` (review size 327); CLI child `feat/pit-market-context-cli` @ `1a39a4f` (review size 782, current branch); no pushes or PRs
+**Source Chain State**: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8` (review size 593); replay child `feat/pit-market-context-replay` @ `6bdd9bb` (review size 327); CLI child `feat/pit-market-context-cli` @ `1a39a4f` (review size 782, current branch); no pushes or PRs
+**Integrated Candidate**: `feat/point-in-time-market-context-integrated` @ `3141020a08170c589d8847892d5f5a9cfdb2776b`; reviewed corrections cherry-picked as `d2ca0bf3989e974ae133a2ca5ebcfca55ffc92fe`, `a95daafe7dd46b5b7458270d156c3f1ebcb495c5`, and `3141020a08170c589d8847892d5f5a9cfdb2776b`; no push / no PR
 
 ## Completed Tasks
 
@@ -41,7 +42,8 @@
 | `tests/application/test_execute_run.py` | Modified | Added regression guard that execution flow stays free of market-context dependency. |
 | `tests/adapters/test_cli_execute.py` | Modified | Added regression guard that execute CLI does not accept backtest market-context input. |
 | `tests/adapters/test_alpaca_broker.py` | Modified | Added regression guard that broker adapter remains market-context-free. |
-| `openspec/changes/point-in-time-market-context/tasks.md` | Modified | Marked all 12 tasks complete and synchronized the exact local review-chain branch, commit, review-size, and no-remote state. |
+| `openspec/changes/point-in-time-market-context/tasks.md` | Modified | Marked all 12 tasks complete and synchronized the exact local review-chain and integrated-candidate branch, commit, verification, approval, and no-remote state. |
+| `openspec/changes/point-in-time-market-context/apply-progress.md` | Modified | Preserved TDD/review-boundary evidence and appended the integrated candidate branch, lineage, verification, and pending-verify metadata. |
 
 ## TDD Cycle Evidence
 
@@ -70,7 +72,8 @@
 - **Full suite**: `uv run --extra dev pytest` → 202 passed, 3 skipped in 7.43s
 - **Linter**: `uv run --extra dev ruff check .` → all checks passed
 - **Runtime harness**: `uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` → exit 0; `trade_count=1`; `context_outcomes=[]`; warnings include `point-in-time-market-context-validated`
-- **Command provenance**: focused commands, runtime harness, full suite, and Ruff were recorded during local chain materialization; no commands were run during this artifact synchronization pass.
+- **Integrated candidate verification**: clean linked worktree `feat/point-in-time-market-context-integrated` @ `3141020a08170c589d8847892d5f5a9cfdb2776b` previously recorded `uv run --extra dev pytest` → 210 passed, 3 skipped; `uv run --extra dev ruff check .` → all checks passed; runtime harness exit 0; clean tree after verification.
+- **Command provenance**: focused commands, runtime harness, full suite, and Ruff above were recorded during local chain materialization; integrated candidate verification was recorded later in the clean linked worktree; no commands were run during this artifact synchronization pass.
 
 ## Materialized Local Review Chain
 
@@ -79,7 +82,15 @@
 - **Local chain state**: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8` (review size 593); replay child `feat/pit-market-context-replay` @ `6bdd9bb` (review size 327); CLI child `feat/pit-market-context-cli` @ `1a39a4f` (review size 782, current branch).
 - **Remote state**: no matching remote heads and no PRs exist for the tracker or child branches.
 - **Verification snapshot**: full suite `202 passed, 3 skipped`; `uv run --extra dev ruff check .` passed.
-- **Next phase constraint**: proceed with independent verification/review from the current local chain; remote review artifacts remain intentionally absent.
+- **Next phase constraint**: preserve the local review slices as source evidence; independent `sdd-verify` remains pending against the clean integrated candidate.
+
+## Integrated Candidate
+
+- **Branch / HEAD**: `feat/point-in-time-market-context-integrated` @ `3141020a08170c589d8847892d5f5a9cfdb2776b`
+- **Cherry-picked reviewed corrections**: domain `d2ca0bf3989e974ae133a2ca5ebcfca55ffc92fe`; replay `a95daafe7dd46b5b7458270d156c3f1ebcb495c5`; CLI `3141020a08170c589d8847892d5f5a9cfdb2776b`; matching patch IDs were confirmed during integration.
+- **Source lineage terminal receipts**: domain `approved` with chain identity `sha256:5c4a6b76c36b43c15a4a8d0f44aa146db23f44e7e05fa56a28be7795d59cf2d1`; replay `approved` with chain identity `sha256:13b0eb8ee82333f68b7c1f452c0d172e9975cddc3762f4325bad86070e93cb06`; CLI `approved` with chain identity `sha256:c85c2687d2e8607406b9b49e74b692f2f0869975059fa85b44e9e237982e1616`.
+- **Integrated verification evidence**: full `pytest` previously recorded as `210 passed, 3 skipped`; Ruff passed; runtime harness exit `0`; worktree remained clean after verification.
+- **Remote / verify state**: no push / no PR; independent `sdd-verify` remains pending for this integrated candidate.
 
 ## Materialized Branch Ledger
 
@@ -112,7 +123,7 @@ None — implementation matches design.
 
 ## Issues Found
 
-- The previous artifact snapshot still claimed no materialized local branches/commits and stale review metadata; this sync replaces it with the exact local chain state.
+- The previous artifact snapshot stopped at local chain materialization and omitted the clean integrated candidate plus approved lineage identities; this sync records both without changing implementation files.
 - The initial frozen `MarketContext` exposed a mutable dictionary; chain materialization wrapped it in `MappingProxyType` and added a regression test.
 - The initial PIT report retained a legacy fixed-screen survivorship warning; chain materialization now replaces both legacy static-universe disclaimer keys with the PIT statement.
 
@@ -123,11 +134,11 @@ None.
 ## Workload / PR Boundary
 
 - **Mode**: local feature-branch chain (`feature-branch-chain`)
-- **Current work unit**: artifact synchronization only; implementation already exists as three local work-unit commits
-- **Boundary**: tracker `feat/point-in-time-market-context` @ `70f4be0` → domain child `dd444b8` → replay child `6bdd9bb` → CLI child `1a39a4f`
+- **Current work unit**: artifact synchronization only; implementation already exists as three local work-unit commits plus the clean integrated candidate
+- **Boundary**: tracker `feat/point-in-time-market-context` @ `70f4be0` → domain child `dd444b8` → replay child `6bdd9bb` → CLI child `1a39a4f` → integrated candidate `feat/point-in-time-market-context-integrated` @ `3141020a08170c589d8847892d5f5a9cfdb2776b`
 - **Review status**: slice reviews = 593 / 327 / 782; integrated tracker→CLI diff = 1,702 changed lines; the CLI slice still exceeds the 400-line target by 382
-- **Chain state**: current branch `feat/pit-market-context-cli`; no pushes or PRs
+- **Chain state**: source review chain retained for evidence; integrated branch `feat/point-in-time-market-context-integrated`; no pushes or PRs
 
 ## Status
 
-12/12 tasks complete. Local chain state, TDD evidence, and verification results are synchronized; ready for sdd-verify.
+12/12 tasks complete. Local chain state, TDD evidence, and integrated candidate verification metadata are synchronized; independent `sdd-verify` remains pending.
