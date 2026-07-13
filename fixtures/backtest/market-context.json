@@ -1,0 +1,56 @@
+{
+  "schema_version": "market-context-v1",
+  "symbols": [
+    {
+      "symbol": "WIN",
+      "coverage": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24"
+        }
+      ],
+      "eligibility": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24",
+          "eligible": true
+        }
+      ],
+      "blockers": []
+    },
+    {
+      "symbol": "LOSS",
+      "coverage": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24"
+        }
+      ],
+      "eligibility": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24",
+          "eligible": true
+        }
+      ],
+      "blockers": []
+    },
+    {
+      "symbol": "OPENEND",
+      "coverage": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24"
+        }
+      ],
+      "eligibility": [
+        {
+          "start": "2024-01-02",
+          "end": "2024-01-24",
+          "eligible": true
+        }
+      ],
+      "blockers": []
+    }
+  ]
+}
