@@ -1,0 +1,292 @@
+{
+  "schema": "gentle-ai.final-verification/v1",
+  "created_at_utc": "2026-07-13T16:43:09Z",
+  "lineage": "point-in-time-market-context-integrated-clean",
+  "worktree": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-review-worktree",
+  "mode": "read-only-independent-final-verification",
+  "verdict": "PASS",
+  "candidate": {
+    "base_commit": "70f4be02b167e4187c764aeaa6bb25fb1798d2d8",
+    "base_tree": "8bf837998eb2ef5c51535dd142c815a99ddb27a6",
+    "target_commit": "f7ee101af6d1474c2af2d7f3c66d905d8702c30c",
+    "target_tree": "9bdcfb0c0e0df464017c9a432e57ebede91bc73c",
+    "index_tree": "9bdcfb0c0e0df464017c9a432e57ebede91bc73c",
+    "index_equals_target": true,
+    "snapshot": "sha256:70c1e57124b8d12e071ce37acdce571b39bbc211ad9ab74a0ea8a09bc99efc3d",
+    "snapshot_matches": true,
+    "path_count": 22,
+    "unstaged_changes": false,
+    "untracked_paths": [],
+    "diff_check_passed": true,
+    "candidate_patch_sha256": "sha256:2088fd7e46266276f59f3e588e832aa0ab015d74df087229677a83a99c913e77",
+    "target_patch_sha256": "sha256:2088fd7e46266276f59f3e588e832aa0ab015d74df087229677a83a99c913e77",
+    "patches_identical": true
+  },
+  "lifecycle": {
+    "state": "final_verifying",
+    "store_authority": "repository-git-common-dir",
+    "store_revision": "sha256:984f54ac99290d3a5c9d3813de203a72122e9d2ea9a2a7b49161db903bf1c07a",
+    "chain_identity": "sha256:2e88deda61071993cd8583af50f54a3e20b66e2b56b2d24f05315de9df62e95a",
+    "ledger_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/point-in-time-market-context-integrated-clean-info-ledger.json",
+    "ledger_raw_sha256": "sha256:a4823645eeb795603908a22c68e7a6467cdc0ee695b894800ca497e182df9dd6",
+    "ledger_findings_sha256": "sha256:836c9aa7ca2134b51509a65e3c1d48a374b71a61bd29ac98a3bd1fde4da5d804",
+    "findings": 22,
+    "outcomes": 22,
+    "outcomes_all_info": true,
+    "severities": {
+      "WARNING": 16,
+      "SUGGESTION": 6,
+      "CRITICAL": 0,
+      "BLOCKER": 0
+    },
+    "pending_work": [],
+    "fix_finding_ids": [],
+    "pending_refuter_ids": [],
+    "fix_caused_findings": [],
+    "follow_ups": [],
+    "counters": {
+      "full_reviews": 1,
+      "refuter_batches": 0,
+      "fix_batches": 0,
+      "scoped_fix_validations": 0,
+      "final_verifications": 1,
+      "fix_rounds": 0,
+      "scoped_rejudgments": 0,
+      "judge_executions": 0
+    },
+    "counters_coherent": true
+  },
+  "specification": {
+    "requirements": "7/7",
+    "scenarios": "12/12",
+    "tasks": "12/12",
+    "incomplete_tasks": 0,
+    "requirement_results": [
+      {
+        "requirement": "Context authority and coverage",
+        "status": "PASS",
+        "evidence": "Strict external JSON adapter plus MarketContext.require_complete before replay; focused domain/adapter and replay suites passed."
+      },
+      {
+        "requirement": "Point-in-time eligibility",
+        "status": "PASS",
+        "evidence": "Date-contained eligibility lookup and future-mutation regression passed."
+      },
+      {
+        "requirement": "Inclusive blockers and outcomes",
+        "status": "PASS",
+        "evidence": "Inclusive interval comparisons, separated context outcomes, blocked CLI runtime, and unsafe-position replay passed."
+      },
+      {
+        "requirement": "Conservative forced close",
+        "status": "PASS",
+        "evidence": "Unsafe positions process before ordinary exits/entries at same-day bar.low; independent two-run harness matched exactly."
+      },
+      {
+        "requirement": "Preserve existing boundaries",
+        "status": "PASS",
+        "evidence": "Replay parity plus CLI, execute, broker, and AST boundary suite passed 70/70."
+      },
+      {
+        "requirement": "Survivorship-bias disclaimer",
+        "status": "PASS",
+        "evidence": "Successful PIT runtime replaces static-universe labels; context failures emit no report."
+      },
+      {
+        "requirement": "invest-backtest CLI never touches BrokerPort",
+        "status": "PASS",
+        "evidence": "CLI/boundary suite passed; success, missing, invalid, incomplete, and blocked runtimes satisfy the machine-readable contracts."
+      }
+    ],
+    "scenario_results": [
+      {"scenario": "Complete matrix", "status": "PASS", "evidence": "focused-domain"},
+      {"scenario": "Invalid matrix", "status": "PASS", "evidence": "focused-domain, focused-replay, runtime-invalid, runtime-incomplete"},
+      {"scenario": "Future mutation", "status": "PASS", "evidence": "focused-domain"},
+      {"scenario": "Blocker boundaries", "status": "PASS", "evidence": "focused-domain"},
+      {"scenario": "Unsafe position", "status": "PASS", "evidence": "focused-replay, forced-close-repeat"},
+      {"scenario": "Repeat exit", "status": "PASS", "evidence": "forced-close-repeat"},
+      {"scenario": "Preserve behavior", "status": "PASS", "evidence": "focused-replay, full-pytest"},
+      {"scenario": "Preserve boundaries", "status": "PASS", "evidence": "focused-cli-boundary"},
+      {"scenario": "Replace warning", "status": "PASS", "evidence": "runtime-success-repeat"},
+      {"scenario": "Reject uncovered claim", "status": "PASS", "evidence": "runtime-missing, runtime-invalid, runtime-incomplete"},
+      {"scenario": "Successful report", "status": "PASS", "evidence": "runtime-success-repeat, runtime-blocked"},
+      {"scenario": "Context failure", "status": "PASS", "evidence": "runtime-missing, runtime-invalid, runtime-incomplete"}
+    ]
+  },
+  "commands": [
+    {
+      "id": "environment-sync",
+      "command": "UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' uv sync --extra dev",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/environment-sync.out",
+      "output_sha256": "sha256:30680517ffffbfe8b3b5aa85ca0d0d6b8a04b3ef29cc7e41dd224b754c534c9d"
+    },
+    {
+      "id": "focused-domain",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/focused-domain.final.out",
+      "output_sha256": "sha256:dc2da23ac879d529a668b449147e37a475aa60658cf2c0eb73554de6c5f366ac",
+      "result": "15 passed"
+    },
+    {
+      "id": "focused-replay",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev pytest tests/application/test_backtest_run.py",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/focused-replay.final.out",
+      "output_sha256": "sha256:1ec78525a639715f26fb899e21a3f7ad93eb8b649aba4e7a0f25b0983c8a61dc",
+      "result": "22 passed"
+    },
+    {
+      "id": "focused-cli-boundary",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/focused-cli-boundary.final.out",
+      "output_sha256": "sha256:4364f5b729fe620fa64154d4f3c07b1759b8cb703bb2638bc41587f739a5b8f4",
+      "result": "70 passed"
+    },
+    {
+      "id": "full-pytest",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev pytest",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/full-pytest.final.out",
+      "output_sha256": "sha256:8ffdcc3fed9c6ac46be2e4fc69ebfd9f77a0a03682c881c6f385af45803d84b7",
+      "result": "210 passed, 3 skipped"
+    },
+    {
+      "id": "ruff",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev ruff check .",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/ruff.final.out",
+      "output_sha256": "sha256:82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "result": "All checks passed!"
+    },
+    {
+      "id": "runtime-success-1",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-success-1.out",
+      "output_sha256": "sha256:8317796c690390e93392a1747addfe2fdf40c269693032cfe49714fcff4b3dcf"
+    },
+    {
+      "id": "runtime-success-2",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-success-2.out",
+      "output_sha256": "sha256:8317796c690390e93392a1747addfe2fdf40c269693032cfe49714fcff4b3dcf",
+      "deterministic_match": true
+    },
+    {
+      "id": "runtime-missing-context",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --split-date 2024-01-23 --format json",
+      "exit_code": 2,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-missing-context.final.out",
+      "output_sha256": "sha256:2a7a1ea475ba11796c962b7ad09d957c16bfe07ffeee1992963b0c0a3c633336",
+      "result": {"reason": "market-context-missing"}
+    },
+    {
+      "id": "runtime-blocked-outcome",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/blocked-context.json' --split-date 2024-01-23 --format json",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-blocked.out",
+      "output_sha256": "sha256:2c0fd6493400f06bda46113c3ffffbb6b2e37c1e3c14f46b38d303259df4b697",
+      "result": "context-entry-blocked for WIN on 2024-01-23, corporate-action"
+    },
+    {
+      "id": "runtime-invalid-context",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/invalid-context.json' --split-date 2024-01-23 --format json",
+      "exit_code": 2,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-invalid-context.out",
+      "output_sha256": "sha256:153fef27402b4d7ef0a548e679665f2a4490b1520bc32d96ea84e00509c50bca"
+    },
+    {
+      "id": "runtime-incomplete-context",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/incomplete-context.json' --split-date 2024-01-23 --format json",
+      "exit_code": 2,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/runtime-incomplete-context.out",
+      "output_sha256": "sha256:64d96b25f8c564e0033d8ea42daba25d24b148e54d6fe0c4a9bdef89757e1ed5"
+    },
+    {
+      "id": "forced-close-repeat",
+      "command": "PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run --extra dev python '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/forced_close_repeat.py'",
+      "exit_code": 0,
+      "harness_sha256": "sha256:2c4e0af0080627d9b0f13e1d13f87b716a6294d5cd2d4a8e3ac02e7de21f44f6",
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/forced-close-repeat.out",
+      "output_sha256": "sha256:e9a01adf8c73d1c03d2ff4c3b92c7ff06e36b2effbce94d3c2bea3ba74a889f1",
+      "result": "two runs identical; context-position-forced-closed at 10.20"
+    },
+    {
+      "id": "review-resume",
+      "command": "gentle-ai review-resume --cwd '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-review-worktree' --lineage 'point-in-time-market-context-integrated-clean'",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/review-resume.final.out",
+      "output_sha256": "sha256:ca78fb146329863cd528e34d49ad120c6674737b4eeae9e5ce860ce1205b8c71"
+    },
+    {
+      "id": "spec-task-counts",
+      "command": "UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run python -c 'import json,re,pathlib; root=pathlib.Path(\"openspec/changes/point-in-time-market-context\"); specs=[root/\"specs/point-in-time-market-context/spec.md\",root/\"specs/trading-system/spec.md\"]; text=\"\\n\".join(p.read_text() for p in specs); tasks=(root/\"tasks.md\").read_text(); print(json.dumps({\"requirements\":len(re.findall(r\"^### Requirement:\",text,re.M)),\"scenarios\":len(re.findall(r\"^#### Scenario:\",text,re.M)),\"tasks_complete\":len(re.findall(r\"^- \\[x\\] \",tasks,re.M)),\"tasks_incomplete\":len(re.findall(r\"^- \\[ \\] \",tasks,re.M))},sort_keys=True))'",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/spec-task-counts.out",
+      "output_sha256": "sha256:0f0e483f09da2ea9c4a241300e4b256f3afc78ba2c623f063ab135c778e69eac"
+    },
+    {
+      "id": "ledger-summary",
+      "command": "jq -S '{schema, total:(.findings|length), statuses:(.findings|group_by(.status)|map({key:.[0].status,value:length})|from_entries), severities:(.findings|group_by(.severity)|map({key:.[0].severity,value:length})|from_entries), severe:[.findings[]|select(.severity==\"CRITICAL\" or .severity==\"BLOCKER\")|.id], pending:[.findings[]|select(.status!=\"info\")|.id]}' '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/point-in-time-market-context-integrated-clean-info-ledger.json'",
+      "exit_code": 0,
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/ledger-summary.out",
+      "output_sha256": "sha256:fa0bc0ca41f3ce4c69fcc6cb2ee2e55035347047fb27a60963d6aa94a5de12f8"
+    },
+    {
+      "id": "diff-integrity",
+      "command": "UV_PROJECT_ENVIRONMENT='/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/venv' UV_NO_SYNC=1 uv run python '/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/diff_integrity.py'",
+      "exit_code": 0,
+      "harness_sha256": "sha256:3100fb2efe7882f27aa8ff1da446c4813a6cb1066a27ae8bc2d923824d2d38b7",
+      "output_path": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/diff-integrity.out",
+      "output_sha256": "sha256:c6849b755bfd33b855e3e7cad73f1a29f77208aaf980f82a9173e66ae084ab98"
+    }
+  ],
+  "sdd_verify_report": {
+    "path": "openspec/changes/point-in-time-market-context/verify-report.md",
+    "machine_verdict": "pass",
+    "narrative_verdict": "PASS WITH WARNINGS",
+    "verified_head": "ed6fb4ae2c6aa5985649f0e7d98da7c1501bb38d",
+    "target_adds_only_verify_report_after_verified_head": true,
+    "implementation_commit": "3141020a08170c589d8847892d5f5a9cfdb2776b",
+    "implementation_to_verified_head_changes_only_tasks_and_apply_progress": true,
+    "semantic_results_match": true,
+    "matching_counts": {
+      "requirements": "7/7",
+      "scenarios": "12/12",
+      "tasks": "12/12",
+      "focused_domain": "15 passed",
+      "focused_replay": "22 passed",
+      "focused_cli_boundary": "70 passed",
+      "full_pytest": "210 passed, 3 skipped",
+      "ruff": "All checks passed!"
+    },
+    "exact_reproduced_hashes": {
+      "ruff": "sha256:82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "runtime_success": "sha256:8317796c690390e93392a1747addfe2fdf40c269693032cfe49714fcff4b3dcf",
+      "runtime_missing": "sha256:2a7a1ea475ba11796c962b7ad09d957c16bfe07ffeee1992963b0c0a3c633336",
+      "runtime_invalid": "sha256:153fef27402b4d7ef0a548e679665f2a4490b1520bc32d96ea84e00509c50bca",
+      "runtime_incomplete": "sha256:64d96b25f8c564e0033d8ea42daba25d24b148e54d6fe0c4a9bdef89757e1ed5",
+      "runtime_blocked": "sha256:2c0fd6493400f06bda46113c3ffffbb6b2e37c1e3c14f46b38d303259df4b697"
+    },
+    "fresh_pytest_hash_note": "Fresh raw pytest hashes differ from historical report hashes because raw output includes Python/plugin versions and elapsed durations; pass counts and scenario behavior match exactly.",
+    "forced_close_hash_note": "Independent harness output serialization differs from the historical ad hoc harness, while both prove identical forced-close reason and 10.20 price across two runs."
+  },
+  "repository_write_safety": {
+    "repository_files_edited": false,
+    "commits_created": false,
+    "lifecycle_mutated": false,
+    "temporary_environment_external": true,
+    "verifier_created_repository_venv_removed": true,
+    "final_unstaged_diff_exit": 0,
+    "final_untracked_paths": [],
+    "final_index_tree": "9bdcfb0c0e0df464017c9a432e57ebede91bc73c"
+  },
+  "excluded_attempt": {
+    "reason": "Initial parallel uv commands raced while bootstrapping a missing environment; missing dependencies made those outputs invalid as candidate evidence.",
+    "resolution": "Removed only the verifier-created ignored repository .venv, provisioned one external environment, and reran every required command from scratch."
+  }
+}

@@ -608,13 +608,20 @@ Every backtest report MUST carry an explicit label stating it measures current d
 
 ### Requirement: Survivorship-bias disclaimer
 
-Every backtest report MUST carry an explicit, unavoidable disclaimer that the universe is a fixed historical screen, not point-in-time index membership.
+Reports MUST show the static-universe warning unless the entire run has validated PIT date/symbol coverage. Only then MUST a machine-readable PIT statement replace it.
+(Previously: Every report always warned that its universe was a fixed historical screen.)
 
-#### Scenario: Report carries the survivorship disclaimer
+#### Scenario: Replace warning
 
-- GIVEN a completed backtest run
-- WHEN the report is produced
-- THEN it MUST include an explicit disclaimer stating the universe is a fixed historical screen, not point-in-time membership
+- GIVEN complete validated PIT coverage
+- WHEN reporting succeeds
+- THEN the PIT statement MUST replace the static-universe warning
+
+#### Scenario: Reject uncovered claim
+
+- GIVEN missing, incomplete, or invalid context
+- WHEN backtest starts
+- THEN it MUST fail without a success report or PIT statement
 
 ### Requirement: Cost model reported as approximation
 
@@ -638,19 +645,20 @@ The harness MUST apply fixed-bps slippage, zero commission, and a flat tax hairc
 
 ### Requirement: `invest-backtest` CLI never touches BrokerPort
 
-`invest-backtest` MUST read a bulk fixture/snapshot, replay it, and print a machine-readable report with metrics plus both mandatory labels, in the CLI's established single-record-on-failure style. It MUST NOT construct or call `BrokerPort`.
+`invest-backtest` MUST require externally prepared context, validate complete date/symbol coverage, replay the bulk fixture, and print one machine-readable report with metrics and labels. It MUST NOT use `BrokerPort`.
+(Previously: The CLI required only a bulk fixture/snapshot and always emitted both existing mandatory labels.)
 
-#### Scenario: Successful run prints one machine-readable report
+#### Scenario: Successful report
 
-- GIVEN a valid bulk fixture/snapshot
+- GIVEN valid bars, split date, and complete context
 - WHEN `invest-backtest` runs
-- THEN it MUST print one report with metrics and both mandatory labels, and call `BrokerPort` zero times
+- THEN it MUST print one report with metrics, labels, context outcomes, and zero broker calls
 
-#### Scenario: Failure prints one machine-readable record
+#### Scenario: Context failure
 
-- GIVEN an invalid or missing fixture/snapshot
-- WHEN `invest-backtest` runs
-- THEN it MUST print exactly one machine-readable error record and exit non-zero
+- GIVEN context is absent, incomplete, unreadable, malformed, contradictory, or unsupported
+- WHEN `invest-backtest` starts
+- THEN it MUST print one machine-readable context error, exit non-zero, and output no partial replay
 
 ### Requirement: Out-of-scope guard
 
@@ -749,6 +757,22 @@ Every backtest report MUST preserve existing limitation labels for day-0 candida
 - WHEN the harness evaluates entries and exits
 - THEN it MUST NOT construct or call `BrokerPort`
 - AND it MUST NOT introduce any live-trading code path or broker-enforced backtest control
+
+### Requirement: Preserve existing boundaries
+
+Context filtering MUST NOT change `MomentumScanner`, Alpaca bars, portfolio accounting, costs, broker paths, or paper-first/live gates. Alpaca MUST remain bars-only; backtests MUST make zero broker calls.
+
+#### Scenario: Preserve behavior
+
+- GIVEN complete context marks every symbol eligible and unblocked
+- WHEN the same replay runs with context filtering
+- THEN scanner outputs, accounting, costs, and ordinary exits MUST remain unchanged
+
+#### Scenario: Preserve boundaries
+
+- GIVEN a context-backed replay
+- WHEN calls are observed
+- THEN Alpaca MUST NOT supply context and `BrokerPort` MUST receive zero calls
 
 ## Source
 
