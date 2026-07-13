@@ -146,11 +146,46 @@ def test_scan_filters_universe_by_date_effective_eligibility() -> None:
         },
     )
 
-    _runner(inputs, scanner=recorder, market_context=context).scan_decisions(inputs)
+    runner = _runner(inputs, scanner=recorder, market_context=context)
+    decisions = runner.scan_decisions(inputs)
+    result = runner.replay(inputs)
 
+    assert [decision.symbol for decision in decisions] == ["ACME"]
+    assert [trade.symbol for trade in result.trades] == ["ACME"]
     universes_by_date = dict(recorder.universes)
     assert universes_by_date[start + timedelta(days=20)] == ("ACME",)
     assert universes_by_date[start + timedelta(days=21)] == ("ACME", "LATE")
+
+
+def test_replay_rejects_incomplete_context_before_scanning() -> None:
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("ACME", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
+    covered_end = start + timedelta(days=20)
+    context = MarketContext(
+        {
+            "ACME": SymbolContext(
+                coverage=(CoverageWindow(start, covered_end),),
+                eligibility=(EligibilityWindow(start, covered_end, eligible=True),),
+            )
+        }
+    )
+
+    class CountingScanner(MomentumScanner):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def scan(self, universe, bars):  # type: ignore[override]
+            self.calls += 1
+            return []
+
+    scanner = CountingScanner()
+
+    with pytest.raises(MarketContextIncompleteError) as error:
+        _runner(inputs, scanner=scanner, market_context=context).replay(inputs)
+
+    assert error.value.reason == "market-context-incomplete"
+    assert scanner.calls == 0
 
 
 def test_entry_skipped_when_no_next_session_bar_exists() -> None:
@@ -449,6 +484,77 @@ def test_unsafe_position_forces_close_before_ordinary_exit_at_bar_low() -> None:
             date=unsafe_day,
         ),
     )
+
+
+def test_forced_close_settles_before_pending_entry_uses_cash_equity_and_buying_power() -> None:
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    entry_day = start + timedelta(days=21)
+    forced_close_day = start + timedelta(days=22)
+    hold_bars = _breakout_bars("HOLD", start, extra_days=2)
+    hold_bars[-2] = DailyBar(
+        "HOLD",
+        entry_day,
+        Decimal("10.60"),
+        Decimal("11.50"),
+        Decimal("10.61"),
+        Decimal("11.40"),
+        100,
+    )
+    hold_bars[-1] = DailyBar(
+        "HOLD",
+        forced_close_day,
+        Decimal("11.40"),
+        Decimal("11.50"),
+        Decimal("10.30"),
+        Decimal("11.40"),
+        100,
+    )
+    next_bars = _breakout_bars("NEXT", start, extra_days=2)
+
+    class ScannerWithConcurrentExitAndEntry(MomentumScanner):
+        def scan(self, universe, bars):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars)
+            if current_day == start + timedelta(days=20):
+                return [ScanDecision("HOLD", current_day, True)]
+            if current_day == entry_day:
+                return [ScanDecision("NEXT", current_day, True)]
+            return []
+
+    inputs = FixtureInputs(Universe("v1", ("HOLD", "NEXT")), tuple(hold_bars + next_bars))
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            "HOLD": (
+                BlockerWindow(
+                    forced_close_day,
+                    forced_close_day,
+                    reason=ContextReason.CORPORATE_ACTION,
+                ),
+            )
+        },
+    )
+
+    result = _runner(
+        inputs,
+        scanner=ScannerWithConcurrentExitAndEntry(),
+        market_context=context,
+        equity=Decimal("100000"),
+        cash=Decimal("15000"),
+        buying_power=Decimal("2000"),
+        slippage_bps=Decimal("0"),
+        tax_rate=Decimal("0"),
+    ).replay(inputs)
+
+    assert [(trade.symbol, trade.exit_reason, trade.qty) for trade in result.trades] == [
+        ("HOLD", "context-position-forced-closed", 187),
+        ("NEXT", "open-at-end", 175),
+    ]
+    assert result.skipped_entries == ()
+    assert result.gates.counts == {}
+    assert result.portfolio.cash == Decimal("12948.90")
+    assert result.portfolio.equity == Decimal("14943.90")
 
 
 def test_unsafe_position_without_same_day_bar_aborts_as_market_context_incomplete() -> None:
