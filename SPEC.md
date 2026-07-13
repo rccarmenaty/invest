@@ -1,7 +1,7 @@
 # Momentum Breakout Trading System — Specification
 
-**Status**: Proposed — revised for data, validation, and broker-rule safeguards
-**Date**: 2026-07-11
+**Status**: Proposed — revised for data, validation, and broker-rule safeguards; strategy layer re-aligned with the evidence review in `momentum_breakout_swing_trading_research_report.md`
+**Date**: 2026-07-13 (strategy revision; original 2026-07-11)
 **Broker**: Alpaca (paper first, live only after validation gates)
 **Deployment target**: Local Kubernetes cluster
 **Style**: Event-driven microservices, hexagonal architecture per service
@@ -10,7 +10,7 @@
 
 ## 0. Current Decision
 
-Build a **paper-first swing-trading system** that detects confirmed momentum breakouts, sizes positions mechanically, submits protected bracket orders, and proves expectancy through replay/backtest plus paper trading before any live key is used.
+Build a **paper-first swing-trading system** that selects established intermediate-term winners near their 52-week high, enters on objective trading-range breakouts, sizes positions mechanically, submits protected orders, and proves expectancy through replay/backtest plus paper trading before any live key is used.
 
 The core architecture is accepted: **NATS JetStream + Postgres + small hexagonal services on local Kubernetes**. The hardening updates in this version are:
 
@@ -20,18 +20,21 @@ The core architecture is accepted: **NATS JetStream + Postgres + small hexagonal
 4. **Earnings, catalyst, corporate-action, and point-in-time universe data become explicit dependencies**.
 5. **Bracket-order edge cases are handled explicitly** through reconciliation and safety halts.
 
+**Strategy revision (2026-07-13)**: the evidence review in `momentum_breakout_swing_trading_research_report.md` re-ranks the strategy layers. The primary research model is the **Core 52-Week-High Momentum Breakout** (momentum-ranked candidate selection + 52-week-high proximity + trend/regime filters + trailing exits). The original day-0 spike detector is retained as the **benchmark control strategy** the Core model must beat in replay. Current implementation status and change sequence live in `ROADMAP.md`.
+
 ---
 
 ## 1. Purpose
 
-Detect early positive momentum (spikes) across a wide universe of liquid US stocks, verify the movement is real (not noise or a chase), enter swing trades automatically via bracket orders, and exit at a realistic take-profit, stop-loss, or time stop.
+Select liquid US stocks that are already proven intermediate-term winners trading near their 52-week high, enter swing trades automatically when an objective breakout confirms continuation, and exit via mechanical protective stops, trailing exits, and time stops.
 
 This is **not forecasting**. The system reacts to confirmed movement. Its edge comes from:
 
-1. A verification layer that rejects day-0 chases and pump-and-dumps.
-2. Mechanical exits (server-side bracket orders) that remove emotion.
-3. A journal feedback loop that measures hit rate and expectancy so filters can be tuned on evidence.
+1. **Candidate selection**: relative momentum ranking and 52-week-high proximity — the layers with the strongest academic evidence (report §3.1, §3.2).
+2. Mechanical protective exits placed server-side at the broker, removing emotion.
+3. A journal feedback loop that measures expectancy so filters can be tuned on evidence.
 4. Point-in-time replay/backtesting that prevents survivorship-biased confidence.
+5. Risk control designed in from the start: volatility-aware sizing and market-regime filters, because momentum returns are negatively skewed and crash-prone (report §3.5).
 
 ## 2. Trading Strategy
 
@@ -63,28 +66,52 @@ The system has two data tiers:
 
 Important rule: **relative volume and breakout decisions must not rely on IEX-only volume unless running an explicit degraded-data experiment**. IEX volume can diverge materially from full-market volume, so using it as the authoritative signal source can create false positives/negatives.
 
-### 2.3 Spike detection (day 0 — cheap filters, run on everything)
+### 2.3 Candidate selection (Core 52-Week-High Momentum Breakout — primary model)
 
-A symbol becomes a `CANDIDATE` when all hold on the authoritative daily close:
+Momentum is a **selection effect before it is an entry signal** (report §3.1). A symbol becomes a `CANDIDATE` when all hold on the authoritative daily close:
+
+| Layer | Baseline rule | Parameters to test |
+|---|---|---|
+| Relative momentum | Top 15% of universe by return from 252 to 21 trading days ago (12-1 month) | 6-1 / 9-1 / 12-1 lookbacks; top 10/15/20% |
+| 52-week-high proximity | Close ≥ 95% of trailing 252-day high | 90/93/95/97%; new-high-only |
+| Stock trend | Close > 50-day SMA > 200-day SMA; 200-day SMA rising over prior 20 days | EMA vs SMA; slope windows |
+| Market regime | Benchmark close above its 200-day SMA, else no new entries | none / 100-day / dual-average |
+
+Volume is **not** an entry veto. Past turnover carries information about momentum persistence (report §3.4), so volume features (turnover percentile, 5/20 volume ratio, breakout-day dollar volume) are tested as ranking/context features — never as an untested hard rule.
+
+Hourly scans may pre-stage symbols that are trending toward a trigger, but **CANDIDATE promotion is a daily-close decision only**.
+
+### 2.4 Entry trigger (objective and parsimonious)
+
+- Entry signal: daily close above the prior 20-day high (current day excluded from the lookback).
+- Execution: buy next session at the regular-hours open. Never fill at the signal close in replay unless a verifiable market-on-close process is modeled.
+- Simultaneous signals are ranked by momentum rank, high proximity, and liquidity.
+- The trigger stays simple by design: the edge is expected from selection and risk control; complex multi-condition triggers invite overfitting (report §5.2).
+
+Parameters to test: 10/20/40/55-day breakout lookbacks.
+
+### 2.5 Benchmark control strategy (day-0 spike detector — implemented)
+
+The original spike detector is retained as the **control** the Core model must beat under identical replay assumptions (report ranks it "low as a stock-selection model"). Its rules, as implemented in `domain/scanner.py`:
 
 | Rule | Threshold |
 |---|---|
 | Relative volume | today ≥ 2× 20-day average consolidated volume |
 | Price move | ≥ 1.5× ATR(14) upward |
 | Breakout | close above 20-day high |
-| Not extended | price < 15% above 20-day MA (else too late) |
+| Not extended | price < 15% above 20-day MA |
 
-Hourly scans may pre-stage symbols that are trending toward a trigger, but **CANDIDATE promotion is a daily-close decision only**.
+Any Core-model result is reported **against this benchmark**: if momentum selection and high-proximity filters do not add value over the plain spike/breakout after costs and across subperiods, they do not ship.
 
-### 2.4 Confirmation (day +1 / +2 — the actual edge)
+### 2.6 Optional confirmation layer (house hypothesis — test separately)
 
-`CANDIDATE → CONFIRMED` only if all hold:
+The follow-through idea (price holds the breakout level for 1–2 sessions before entry) is a house hypothesis, **not** research-validated. Per the report's method (§7.2), it must be tested as one incremental feature against the frozen Core model — never silently bundled.
 
-- Follow-through: price holds above the breakout level for the next 1–2 sessions. Never enter on day 0.
-- Trend filter: price > 50-day MA and 50-day MA > 200-day MA (trade with the tide only).
-- No earnings within the next 5 calendar days (binary event = coin flip, reject).
-- No overnight gap > 8% (chase, reject).
-- Catalyst presence (earnings beat, guidance raise, material news) strengthens the signal; absence is a soft flag recorded in the journal.
+Safety checks that remain regardless:
+
+- No earnings within the next 5 calendar days (binary event = coin flip, reject). Earnings-gap continuation is a **separate event strategy** (report §8), never merged into ordinary breakout entries.
+- No overnight gap > 8% at entry (chase, reject).
+- Catalyst presence is a soft journal flag, not a filter.
 
 Data requirements:
 
@@ -93,19 +120,25 @@ Data requirements:
 - Catalyst/news provider is optional for Phase 1, required before live trading if catalyst is used as a scored feature.
 - Every rejection logs `stage`, `reason`, `data_source`, and `data_freshness`.
 
-`CANDIDATE` that fails confirmation → `REJECTED`, with reason logged. Rejections are journal gold — they tune the filters.
+`CANDIDATE` that fails selection or safety checks → `REJECTED`, with reason logged. Rejections are journal gold — they tune the filters.
 
-### 2.5 Trade management (mechanical)
+### 2.7 Trade management (mechanical)
 
-| Parameter | Value |
-|---|---|
-| Entry | On confirmation, regular-hours bracket order |
-| Stop-loss | entry − 1× ATR(14) (~5–8%); stop-market by default to prioritize exit |
-| Take-profit | entry + 2× ATR(14) (2:1 reward/risk, ~8–15%) |
-| Time stop | No TP after 15 sessions → close at market during regular hours |
-| Re-entry cooldown | 10 sessions per symbol after close |
+Fixed profit targets truncate the right tail that pays for a momentum system (report §5.3). The target exit model is therefore **trailing**, not bracket-TP:
 
-Bracket-order rules:
+| Parameter | Target value (Core model) | Parameters to test |
+|---|---|---|
+| Entry | Next-session regular-hours order after signal close | close-entry vs stop-entry |
+| Initial stop | Lower of breakout-day low or entry − 2× ATR(20), stop-market | 1.5/2/2.5/3 ATR; structural |
+| Trailing exit | Close below prior 10-day low → exit next session; ratchet daily, **never loosen** | 5/10/20-day low; 20-day EMA; 3 ATR |
+| Time stop | Exit after 20 sessions if trade has not reached +0.5R or a new 20-day high | 10/20/30 sessions; none |
+| Re-entry cooldown | 10 sessions per symbol after close | — |
+
+**Implemented interim model** (`domain/sizing.py`, backtest): stop = entry − 1 ATR(14), take-profit = entry + 2 ATR(14) bracket. This is the benchmark-era exit and is superseded by the trailing model for the Core system (roadmap change B).
+
+**Open execution conflict**: Alpaca server-side bracket orders carry a fixed take-profit leg. A trailing exit means protective stop-market only, with daily cancel/replace to ratchet the stop. This weakens the "positions protected without cluster uptime" property to stop-protection-only and must be resolved before the Core model reaches paper execution (see `ROADMAP.md` §6).
+
+Order rules (any exit model):
 
 - `extended_hours` must be false/omitted.
 - `time_in_force` must be `day` or `gtc` according to the final Alpaca adapter test.
@@ -114,23 +147,28 @@ Bracket-order rules:
 - Corporate actions are not ignored: bracket orders are DNR/DNC, so the position manager must reconcile splits/dividends and cancel/replace or halt when needed.
 - Extreme volatility can cause rare OCO race conditions where both exit legs fill before cancellation. If detected, the executor/position manager must halt new entries and raise a critical alert until reconciled.
 
-### 2.6 Risk rules (enforced in code, non-negotiable)
+### 2.8 Risk rules (enforced in code, non-negotiable)
 
-- Risk per trade: 1% of account equity. Position size = equity × 0.01 / stop-distance-fraction.
-- Max 5 concurrent positions.
+- Risk per trade: baseline **0.35%** of account equity for the Core model (test 0.20%–0.75%), sized from actual stop distance: qty = floor(equity × risk ÷ (entry − stop)). The implemented interim value is 1% and must come down with roadmap change C.
+- **Volatility scaling**: risk per position falls when stock or portfolio volatility rises; never at maximum gross exposure immediately after severe market declines during violent rebounds — that is where momentum crashes live (report §3.5).
+- Max concurrent positions: 5 implemented; Core model tests 6/10/15 with an aggregate open-risk cap (~4% of equity total initial risk) and sector-concentration caps.
 - Max 25% of equity deployed.
+- Stops do not guarantee the planned loss: overnight gaps, halts, and liquidity shocks produce larger losses. Position risk stays conservative enough to survive discontinuous moves.
 - Daily kill-switch: account down 3% intraday → cancel all pending entries, no new orders until next session.
 - Broker/account-rule guard: before any order, read Alpaca account state and reject if `trading_blocked`, account restrictions, buying-power checks, margin requirements, cash-account settlement, or house rules would be violated.
 - Intraday-margin/PDT transition guard: do **not** hard-code the old “<$25k = max 3 day trades per 5 sessions” rule as the only control. FINRA's new intraday-margin framework became effective June 4, 2026, with broker phase-in through October 20, 2027. The adapter must support both legacy broker restrictions and new intraday-margin behavior during the transition.
 - Swing-system guard: the strategy is designed for overnight holds; code must never intentionally same-day round-trip unless stop-loss, broker liquidation, or emergency risk controls force it.
 
-### 2.7 Expectancy math
+### 2.9 Expectancy math
 
-Target: ~40–45% hit rate × 2:1 payoff = positive expectancy after spread, slippage, regulatory fees, borrow/margin costs if applicable, and tax sensitivity.
+With trailing exits the win rate may sit **below 50%**; profitability must come from average win materially exceeding average loss (report §6.5). Judge expectancy (average R per trade) and payoff ratio — never optimize for hit rate, which hides tail losses (report §11).
 
 Minimum gates:
 
-- Below 35% hit rate in replay or paper → filters are broken, do not go live.
+- Positive expectancy after spread, slippage, regulatory fees, and tax sensitivity — in replay **and** across subperiods, not only in aggregate.
+- The Core model must beat the benchmark spike/breakout control after costs; if it does not, the added layers are noise.
+- Robustness: neighboring parameter values (e.g. 10 vs 20-day exits) must produce similar economic behavior; a result that lives in one grid cell is data mining.
+- No single stock, sector, year, or regime may account for most profits.
 - Paper results must roughly match replay/backtest assumptions before live keys exist in the cluster.
 - Results must be reported both pre-tax and with a conservative short-term-tax sensitivity for the user's jurisdiction.
 
@@ -191,8 +229,8 @@ Operational note:
 |---|---|---|
 | **ingestor** | Market-data adapter only. Normalizes intraday and daily bars → `md.bars.*`. Zero business logic | none |
 | **ref-data** (CronJob) | Nightly universe build, point-in-time snapshots, earnings calendar, corporate actions → NATS KV + Postgres snapshots | Postgres snapshots |
-| **scanner** | Indicators (ATR, MAs, rel-vol, 20d-high) + spike rules → `sig.spike` | rolling windows, rebuilt from stream/snapshots on boot |
-| **confirmator** | Per-symbol state machine `CANDIDATE→WATCHING→CONFIRMED/REJECTED`; follow-through, trend, earnings-proximity checks → `sig.entry` | Postgres |
+| **scanner** | Indicators (ATR, MAs, 252-day momentum rank, 52-week high, rel-vol, 20d-high) + Core selection/trigger rules (§2.3–2.4), benchmark spike rules (§2.5) → `sig.spike` | rolling windows, rebuilt from stream/snapshots on boot |
+| **confirmator** | Per-symbol state machine `CANDIDATE→WATCHING→CONFIRMED/REJECTED`; safety checks (earnings proximity, gap), market-regime filter, optional follow-through hypothesis (§2.6) → `sig.entry` | Postgres |
 | **risk-gate** | **Single money authority.** Sizing, position/exposure caps, kill-switch, broker/account-rule guard → `orders.request` | account projection from `orders.events` |
 | **executor** | Only pod holding trading keys. Places bracket orders; streams trade-updates → `orders.events`. Idempotent via `client_order_id` = signal event id | none (broker is source of truth) |
 | **position-mgr** | Position lifecycle: time stops, cooldowns, corporate-action handling, EOD reconciliation vs broker | Postgres |
@@ -202,13 +240,15 @@ Operational note:
 ### 3.4 Symbol state machine (confirmator + position-mgr)
 
 ```
-NONE → CANDIDATE (spike day 0)
-     → WATCHING  (awaiting day +1/+2 follow-through)
+NONE → CANDIDATE (passes selection layers §2.3 + trigger §2.4, daily close)
+     → WATCHING  (optional day +1/+2 follow-through, if the §2.6 hypothesis is enabled)
      → CONFIRMED (entry signal emitted)  |  REJECTED (reason logged)
-     → ENTERED   (bracket live at broker)
-     → CLOSED    (TP / SL / time-stop / broker action)
+     → ENTERED   (protective stop live at broker)
+     → CLOSED    (trailing exit / stop / time-stop / broker action)
      → COOLDOWN  (10 sessions, no re-entry) → NONE
 ```
+
+Without the follow-through hypothesis, `CANDIDATE → CONFIRMED` resolves at the same daily close and entry executes next session.
 
 ### 3.5 Event contracts
 
@@ -260,7 +300,7 @@ Hard rules:
 ### 3.7 Failure model
 
 - Any pod dies → JetStream durable consumer resumes at last ack. No signal lost under the configured durability assumptions.
-- **Executor dies mid-trade → bracket TP/SL already live server-side at Alpaca. Positions are usually protected without cluster uptime.** Most important property of the design.
+- **Executor dies mid-trade → protective stop already live server-side at Alpaca. Positions are usually protected without cluster uptime.** Most important property of the design. Note: under the Core model's trailing exits (§2.7) this property covers the **stop leg only** — there is no server-side take-profit leg, and the daily stop ratchet pauses if the cluster is down (stop protection persists at the last ratcheted level).
 - Ingestor dies → no data → no signals → system fails SAFE (does nothing).
 - Risk-gate is a deliberate chokepoint — exactly one place can authorize money movement; one audit point, one kill-switch.
 - Paper vs live = same images, different k8s Secret + env. Promotion is configuration, not code.
@@ -284,11 +324,12 @@ Supervision is **tiered**: monitoring cost scales with how close a symbol is to 
 | Tier | Population | What is supervised | Frequency |
 |---|---|---|---|
 | **0 — Universe** | ~8,000 US listings → ~600–800 survive | Liquidity screen, tradability, point-in-time index/universe snapshot, earnings/corporate-action refresh | Nightly CronJob |
-| **1 — Scan** | All ~600–800 in universe | Bar ingestion; rolling indicators (ATR-14, 20/50/200-day MA, relative volume, 20-day high); spike rules | Hourly awareness scans 09:35–15:35 ET + end-of-day authoritative daily-bar sweep |
-| **2 — Watching** | ~5–20 spiked candidates | Follow-through: does price hold the breakout level? Trend + earnings-proximity checks | Same hourly awareness, but promotion/rejection at session close of day +1/+2 |
-| **3 — Entered** | Max 5 open positions | Take-profit / stop-loss | **Not polled by the cluster at all** — bracket order lives server-side at Alpaca, fires at broker/market-data resolution |
+| **1 — Scan** | All ~600–800 in universe | Bar ingestion; rolling indicators (ATR, 20/50/200-day MA, 252-day momentum rank, 52-week high, relative volume, 20-day high); Core selection + trigger rules and benchmark spike rules | Hourly awareness scans 09:35–15:35 ET + end-of-day authoritative daily-bar sweep |
+| **2 — Watching** | ~5–20 candidates | Safety checks (earnings proximity, gap), regime filter, optional follow-through hypothesis | Same hourly awareness, but promotion/rejection at session close |
+| **3 — Entered** | Max open positions per §2.8 | Protective stop-loss | **Not polled intraday** — stop order lives server-side at Alpaca, fires at broker/market-data resolution |
+| | | Trailing-exit ratchet (10-day low, never loosened) | position-mgr at end of day: cancel/replace stop upward when the trailing level rises |
 | | | Fill/close notifications | Real-time: Alpaca trade-updates websocket pushes to executor instantly |
-| | | Time stop (15 sessions), cooldown registry, broker/corporate-action reconciliation | position-mgr at end of day and on broker events |
+| | | Time stop (§2.7), cooldown registry, broker/corporate-action reconciliation | position-mgr at end of day and on broker events |
 
 **Data-flow cadence and load.** The ingestor may hold a single market-data websocket for intraday awareness and publish hourly bars per symbol to `md.bars.*`. Roughly 800 symbols × 7 bars/day ≈ 5–6k intraday events/day — trivial load, one pod. The authoritative daily sweep adds one daily bar per symbol and is the source for actual candidate promotion and confirmation decisions. The scanner consumes every bar, maintains rolling windows per symbol in memory (rebuilt from streams/snapshots on boot), and evaluates spike rules on bar close. All ~800 symbols are evaluated every hour for awareness; only daily close bars make trading decisions.
 
@@ -318,7 +359,7 @@ Strict TDD rule: implementation starts with failing tests for the domain rule or
 | Phase | Scope | Gate to next |
 |---|---|---|
 | **1. Signals only** | contracts → ref-data → ingestor → scanner → journal (+ notifier). Zero orders. | 2 weeks of logged signals; data freshness and rejection logging reviewed |
-| **2. Replay/backtest** | Same signal and confirmation logic over 2–3 years of point-in-time daily bars; includes fees, slippage, tax sensitivity, survivorship-bias guard | Positive expectancy; hit rate ≥ ~40%; drawdown and trade frequency acceptable; assumptions pre-registered for paper |
+| **2. Replay/backtest** | Core 52-week-high momentum model **vs** benchmark spike/breakout control over 2–3 years of point-in-time daily bars; includes fees, slippage, tax sensitivity, survivorship-bias guard; change sequence in `ROADMAP.md` §5 | Positive expectancy after costs, robust across subperiods and neighboring parameters; Core beats benchmark or is dropped; drawdown and trade frequency acceptable; assumptions pre-registered for paper |
 | **3. Paper loop** | confirmator → risk-gate → executor → position-mgr on Alpaca paper | 4–6 weeks; positive expectancy after spread/slippage; paper behavior roughly matches replay |
 | **4. Live readiness rehearsal** | Live-like config without live trading: secrets isolation, kill-switch drill, reconciliation drill, broker-rule guard, alerting | No unresolved critical alerts; manual runbook tested |
 | **5. Live small** | Live keys, minimum sizing, capped capital | Continuous: expectancy holds, kill-switch never breached, no unreconciled broker mismatches |

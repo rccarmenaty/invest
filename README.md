@@ -3,6 +3,11 @@
 Deterministic, signals-only momentum scanner using validated local fixtures. This
 foundation does not connect to brokers or provision infrastructure.
 
+**Start here if you are new to this repo**: `ROADMAP.md` (current state, in-flight
+work, planned change sequence), then `SPEC.md` (system specification) and
+`momentum_breakout_swing_trading_research_report.md` (evidence review behind the
+strategy design).
+
 ## Local scan
 
 ```sh
