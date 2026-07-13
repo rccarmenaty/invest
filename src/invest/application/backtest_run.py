@@ -47,6 +47,7 @@ from invest.domain.models import (
 )
 from invest.domain.scanner import MomentumScanner
 from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
+from invest.application.ports import ScannerPort
 
 NOMINAL_EQUITY = Decimal("100000")
 POINT_IN_TIME_CONTEXT_VALIDATED = "point-in-time-market-context-validated"
@@ -69,7 +70,7 @@ class BacktestRun:
         self,
         *,
         market_context: MarketContext,
-        scanner: MomentumScanner | None = None,
+        scanner: ScannerPort | None = None,
         equity: Decimal = NOMINAL_EQUITY,
         cash: Decimal | None = None,
         buying_power: Decimal | None = None,

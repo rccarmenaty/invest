@@ -33,10 +33,12 @@ from invest.domain.backtest_metrics import (
 )
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
+from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
 from invest.domain.market_context import MarketContextError
 from invest.domain.models import Universe
 
 RULE_VERSION = "momentum-v1"
+BACKTEST_STRATEGIES = ("benchmark", "core")
 
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
@@ -149,6 +151,7 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
     parser.add_argument("--tax-rate", type=Decimal, default=DEFAULT_TAX_RATE)
     parser.add_argument("--split-date")
+    parser.add_argument("--strategy", default="benchmark")
     return parser
 
 
@@ -161,6 +164,8 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         market_context = BacktestContextJsonReader().load(args.market_context)
         if not _valid_cost_model(args.slippage_bps, args.tax_rate):
             return _backtest_cost_model_error()
+        if args.strategy not in BACKTEST_STRATEGIES:
+            return _backtest_strategy_error()
         if args.bars is not None:
             inputs = JsonFixtureReader().load(args.universe, args.bars)
         else:
@@ -193,8 +198,10 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         dates = [bar.date for bar in inputs.bars]
         if not dates or split_date < min(dates) or split_date > max(dates):
             return _backtest_split_error()
+        scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
         result = BacktestRun(
             market_context=market_context,
+            scanner=scanner,
             slippage_bps=args.slippage_bps,
             tax_rate=args.tax_rate,
         ).replay(
@@ -225,6 +232,11 @@ def _backtest_split_error() -> int:
 
 def _backtest_cost_model_error() -> int:
     print(json.dumps({"reason": "cost-model-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_strategy_error() -> int:
+    print(json.dumps({"reason": "strategy-invalid"}, sort_keys=True))
     return 2
 
 

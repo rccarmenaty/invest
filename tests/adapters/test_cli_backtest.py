@@ -10,6 +10,10 @@ UNIVERSE = Path("fixtures/backtest/universe.json")
 BARS = Path("fixtures/backtest/bars.json")
 MARKET_CONTEXT = Path("fixtures/backtest/market-context.json")
 
+UNIVERSE_252 = Path("fixtures/backtest-252/universe.json")
+BARS_252 = Path("fixtures/backtest-252/bars.json")
+MARKET_CONTEXT_252 = Path("fixtures/backtest-252/market-context.json")
+
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
     "NOT SPEC §2.4 confirmed-entry edge."
@@ -494,4 +498,70 @@ def test_backtest_rejects_invalid_cost_model_values_with_one_json_error(capsys, 
     assert result == 2
     assert captured.out.count("\n") == 1
     assert json.loads(captured.out) == {"reason": "cost-model-invalid"}
+    assert captured.err == ""
+
+
+def test_backtest_strategy_core_replays_through_the_same_harness(capsys) -> None:
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE_252),
+            "--bars",
+            str(BARS_252),
+            "--market-context",
+            str(MARKET_CONTEXT_252),
+            "--split-date",
+            "2020-06-01",
+            "--strategy",
+            "core",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert {
+        "hit_rate",
+        "expectancy",
+        "max_drawdown",
+        "trade_count",
+        "net_pnl",
+        "trades",
+        "skipped_entries",
+        "gates",
+    } <= payload.keys()
+    # MOMLONG is the sole momentum-rank/proximity/trend/breakout survivor in this
+    # fixture set (see fixtures/backtest-252): the Core scanner must have actually
+    # identified and attempted to size it -- proving --strategy core really ran
+    # the Core scanner through the harness, not silently defaulting to benchmark.
+    assert payload["gates"]["counts"].get("max-equity-deployed") == 7
+    assert {entry["symbol"] for entry in payload["skipped_entries"]} == {"MOMLONG"}
+
+
+def test_backtest_default_and_explicit_benchmark_strategy_are_byte_identical(capsys) -> None:
+    default_result = cli.backtest_main(_backtest_args("--split-date", "2024-01-23", "--format", "json"))
+    default_output = capsys.readouterr().out
+
+    explicit_result = cli.backtest_main(
+        _backtest_args("--split-date", "2024-01-23", "--format", "json", "--strategy", "benchmark")
+    )
+    explicit_output = capsys.readouterr().out
+
+    assert default_result == 0
+    assert explicit_result == 0
+    assert default_output == explicit_output
+
+
+def test_backtest_rejects_unknown_strategy_value_with_one_json_error_before_any_replay(capsys) -> None:
+    result = cli.backtest_main(
+        _backtest_args("--split-date", "2024-01-23", "--format", "json", "--strategy", "bogus")
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "strategy-invalid"}
     assert captured.err == ""
