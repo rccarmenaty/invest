@@ -12,6 +12,9 @@ class RejectionReason(StrEnum):
     UNSUPPORTED_INPUT = "unsupported-input"
     NO_SIGNAL = "no-signal"
     DOMAIN_INVARIANT_VIOLATION = "domain-invariant-violation"
+    NOT_TOP_MOMENTUM_RANK = "not-top-momentum-rank"
+    BELOW_52_WEEK_HIGH_PROXIMITY = "below-52-week-high-proximity"
+    TREND_FILTER_FAILED = "trend-filter-failed"
 
 
 class UnsupportedInputError(ValueError):

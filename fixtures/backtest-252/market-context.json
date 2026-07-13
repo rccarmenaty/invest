@@ -1,0 +1,56 @@
+{
+  "schema_version": "market-context-v1",
+  "symbols": [
+    {
+      "blockers": [],
+      "coverage": [
+        {
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "eligibility": [
+        {
+          "eligible": true,
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "symbol": "MOMLONG"
+    },
+    {
+      "blockers": [],
+      "coverage": [
+        {
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "eligibility": [
+        {
+          "eligible": true,
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "symbol": "FLATLINE"
+    },
+    {
+      "blockers": [],
+      "coverage": [
+        {
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "eligibility": [
+        {
+          "eligible": true,
+          "end": "2020-09-16",
+          "start": "2020-01-01"
+        }
+      ],
+      "symbol": "DOWNTREND"
+    }
+  ]
+}
