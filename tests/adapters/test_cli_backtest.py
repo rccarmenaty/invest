@@ -257,6 +257,27 @@ def test_backtest_requires_market_context_as_one_json_error(capsys) -> None:
     assert captured.err == ""
 
 
+def test_backtest_missing_context_takes_precedence_over_invalid_cost_model(capsys) -> None:
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--tax-rate",
+            "Infinity",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "market-context-missing"}
+    assert captured.err == ""
+
+
 def test_backtest_requires_valid_in_range_split_date_as_one_json_error(capsys) -> None:
     result = cli.backtest_main(_backtest_args("--format", "json"))
 
@@ -302,6 +323,50 @@ def test_backtest_report_exposes_portfolio_contract_and_all_limitations(capsys, 
     }
 
 
+def test_backtest_report_serializes_non_empty_context_outcomes(tmp_path, capsys) -> None:
+    context_payload = json.loads(MARKET_CONTEXT.read_text(encoding="utf-8"))
+    win_context = next(
+        symbol_context
+        for symbol_context in context_payload["symbols"]
+        if symbol_context["symbol"] == "WIN"
+    )
+    win_context["blockers"] = [
+        {
+            "start": "2024-01-23",
+            "end": "2024-01-23",
+            "reason": "corporate-action",
+        }
+    ]
+    market_context = tmp_path / "market-context.json"
+    market_context.write_text(json.dumps(context_payload), encoding="utf-8")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--market-context",
+            str(market_context),
+            "--split-date",
+            "2024-01-23",
+            "--format",
+            "json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["context_outcomes"] == [
+        {
+            "type": "context-entry-blocked",
+            "reason": "corporate-action",
+            "symbol": "WIN",
+            "date": "2024-01-23",
+        }
+    ]
+
+
 def test_backtest_invalid_market_context_prints_one_context_error_and_no_partial_report(tmp_path, capsys) -> None:
     invalid_context = tmp_path / "market-context.json"
     invalid_context.write_text("not-json", encoding="utf-8")
@@ -324,6 +389,36 @@ def test_backtest_invalid_market_context_prints_one_context_error_and_no_partial
     payload = json.loads(capsys.readouterr().out)
     assert result == 2
     assert payload == {"reason": "market-context-invalid"}
+
+
+def test_backtest_invalid_context_takes_precedence_over_invalid_cost_model(
+    tmp_path, capsys
+) -> None:
+    invalid_context = tmp_path / "market-context.json"
+    invalid_context.write_text("not-json", encoding="utf-8")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--market-context",
+            str(invalid_context),
+            "--split-date",
+            "2024-01-23",
+            "--slippage-bps",
+            "NaN",
+            "--format",
+            "json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "market-context-invalid"}
+    assert captured.err == ""
 
 
 def test_backtest_incomplete_market_context_prints_one_context_error_and_no_partial_report(

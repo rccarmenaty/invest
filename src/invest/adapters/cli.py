@@ -156,11 +156,11 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
     """`invest-backtest`: day-by-day replay harness. Never constructs/calls BrokerPort."""
     args = _backtest_parser().parse_args(argv)
     try:
-        if not _valid_cost_model(args.slippage_bps, args.tax_rate):
-            return _backtest_cost_model_error()
         if args.market_context is None:
             return _backtest_context_error("market-context-missing")
         market_context = BacktestContextJsonReader().load(args.market_context)
+        if not _valid_cost_model(args.slippage_bps, args.tax_rate):
+            return _backtest_cost_model_error()
         if args.bars is not None:
             inputs = JsonFixtureReader().load(args.universe, args.bars)
         else:
