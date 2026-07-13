@@ -1,0 +1,12 @@
+{
+  "schema": "gentle-ai.scoped-validation/v1",
+  "lineage_id": "portfolio-aware-backtest",
+  "validator_outcome": "escalate",
+  "fix_delta_hash": "sha256:df3d1e9be781cb255a8b8108271404dd53e2a758f167611eb22b88a7eaf8d82c",
+  "passed": false,
+  "evidence_refs": [
+    "tasks.md:50-51",
+    "apply-progress: final verification pending"
+  ],
+  "reason": "Final verification evidence is not bound to the completed fix delta."
+}

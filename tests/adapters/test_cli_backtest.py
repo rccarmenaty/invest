@@ -30,7 +30,7 @@ def test_backtest_bars_run_prints_one_report_with_metrics_and_disclaimers_and_to
         cli, "AlpacaBroker", lambda *a, **k: pytest.fail("BrokerPort must never be constructed")
     )
 
-    result = cli.backtest_main(["--universe", str(UNIVERSE), "--bars", str(BARS), "--format", "json"])
+    result = cli.backtest_main(["--universe", str(UNIVERSE), "--bars", str(BARS), "--split-date", "2024-01-23", "--format", "json"])
 
     captured = capsys.readouterr()
     assert result == 0
@@ -42,12 +42,12 @@ def test_backtest_bars_run_prints_one_report_with_metrics_and_disclaimers_and_to
 
 
 def test_backtest_report_has_exact_top_level_snake_case_metric_keys(capsys) -> None:
-    result = cli.backtest_main(["--universe", str(UNIVERSE), "--bars", str(BARS), "--format", "json"])
+    result = cli.backtest_main(["--universe", str(UNIVERSE), "--bars", str(BARS), "--split-date", "2024-01-23", "--format", "json"])
 
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
     assert {"hit_rate", "expectancy", "max_drawdown", "trade_count", "net_pnl"} <= payload.keys()
-    assert payload["trade_count"] == 3
+    assert payload["trade_count"] == 1
 
 
 def test_backtest_missing_fixture_prints_exactly_one_record_and_exits_two(tmp_path, capsys) -> None:
@@ -94,7 +94,7 @@ def test_backtest_live_range_infra_failure_prints_one_record_and_exits_two(monke
     monkeypatch.setattr(cli, "AlpacaMarketDataReader", FailingReader)
 
     result = cli.backtest_main(
-        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--format", "json"]
+        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--split-date", "2024-01-23", "--format", "json"]
     )
 
     captured = capsys.readouterr()
@@ -137,7 +137,7 @@ def test_backtest_live_range_missing_symbol_bars_fails_closed_with_one_record(mo
     monkeypatch.setattr(cli, "AlpacaMarketDataReader", MissingSymbolReader)
 
     result = cli.backtest_main(
-        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--format", "json"]
+        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--split-date", "2024-01-23", "--format", "json"]
     )
 
     captured = capsys.readouterr()
@@ -166,10 +166,84 @@ def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> No
     monkeypatch.setattr(cli, "AlpacaMarketDataReader", FetchRangeReader)
 
     result = cli.backtest_main(
-        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--format", "json"]
+        ["--universe", str(UNIVERSE), "--start", "2024-01-01", "--end", "2024-12-31", "--split-date", "2024-01-23", "--format", "json"]
     )
 
     captured = capsys.readouterr()
     assert result == 0
     payload = json.loads(captured.out)
-    assert payload["trade_count"] == 3
+    assert payload["trade_count"] == 1
+
+
+def test_backtest_requires_valid_in_range_split_date_as_one_json_error(capsys) -> None:
+    result = cli.backtest_main(["--universe", str(UNIVERSE), "--bars", str(BARS), "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "split-date-invalid"}
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("split_date", ["not-a-date", "2023-12-31", "2025-01-01"])
+def test_backtest_rejects_malformed_or_out_of_range_split_date(split_date, capsys) -> None:
+    result = cli.backtest_main(
+        ["--universe", str(UNIVERSE), "--bars", str(BARS), "--split-date", split_date, "--format", "json"]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "split-date-invalid"}
+    assert captured.err == ""
+
+
+def test_backtest_report_exposes_portfolio_contract_and_all_limitations(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "AlpacaBroker", lambda *a, **k: pytest.fail("BrokerPort must never be constructed"))
+
+    result = cli.backtest_main(
+        ["--universe", str(UNIVERSE), "--bars", str(BARS), "--split-date", "2024-01-23", "--format", "json"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert {"portfolio", "gates", "equity", "segments", "warnings"} <= payload.keys()
+    assert set(payload["segments"]) == {"is", "oos"}
+    assert set(payload["disclaimers"]) == {
+        "day0", "survivorship", "cost_model", "portfolio_gates", "static_universe_oos", "execution_realism"
+    }
+    assert set(payload["warnings"]) == {
+        "portfolio-gates-simulated", "static-universe-oos", "broker-execution-realism-out-of-scope"
+    }
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--slippage-bps", "-1"),
+        ("--slippage-bps", "10000.01"),
+        ("--slippage-bps", "NaN"),
+        ("--tax-rate", "-0.01"),
+        ("--tax-rate", "1.01"),
+        ("--tax-rate", "Infinity"),
+    ],
+)
+def test_backtest_rejects_invalid_cost_model_values_with_one_json_error(capsys, option, value) -> None:
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--split-date",
+            "2024-01-23",
+            option,
+            value,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "cost-model-invalid"}
+    assert captured.err == ""

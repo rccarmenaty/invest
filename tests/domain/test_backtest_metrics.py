@@ -79,3 +79,43 @@ def test_exit_reason_enum_matches_exact_contract_set() -> None:
     from invest.domain.backtest_metrics import ExitReason
 
     assert {reason.value for reason in ExitReason} == {"stop", "take-profit", "open-at-end"}
+
+
+def test_equity_summary_reports_drawdown_and_is_deterministic() -> None:
+    from invest.domain.backtest_metrics import compute_equity_summary
+
+    samples = [
+        (date(2026, 1, 2), Decimal("100")),
+        (date(2026, 1, 3), Decimal("120")),
+        (date(2026, 1, 4), Decimal("90")),
+        (date(2026, 1, 5), Decimal("110")),
+    ]
+
+    first = compute_equity_summary(samples)
+    second = compute_equity_summary(samples)
+
+    assert first == second
+    assert first.starting_equity == Decimal("100")
+    assert first.ending_equity == Decimal("110")
+    assert first.min_equity == Decimal("90")
+    assert first.max_equity == Decimal("120")
+    assert first.max_drawdown == Decimal("30")
+    assert first.total_return == Decimal("0.10")
+    assert first.trading_day_count == 4
+
+
+def test_segment_metrics_classifies_split_date_entries_as_oos() -> None:
+    from invest.domain.backtest_metrics import compute_segment_metrics
+
+    trades = [
+        _trade("IS", date(2026, 1, 2), date(2026, 1, 4), "10", "12", 1, "take-profit"),
+        _trade("OOS", date(2026, 1, 5), date(2026, 1, 6), "10", "8", 1, "stop"),
+        _trade("AFTER", date(2026, 1, 6), date(2026, 1, 7), "10", "11", 1, "take-profit"),
+    ]
+
+    segments = compute_segment_metrics(trades, date(2026, 1, 5), Decimal("0"), Decimal("0"))
+
+    assert segments["is"].trade_count == 1
+    assert segments["is"].net_pnl == Decimal("2")
+    assert segments["oos"].trade_count == 2
+    assert segments["oos"].net_pnl == Decimal("-1")

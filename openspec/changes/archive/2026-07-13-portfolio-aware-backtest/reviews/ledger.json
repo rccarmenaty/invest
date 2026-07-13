@@ -1,0 +1,71 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "findings": [
+    {
+      "id": "READABILITY-001",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:10-13,145-178",
+      "severity": "WARNING",
+      "claim": "design text says portfolio gates are not simulated while replay invokes gate evaluation",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:10-13",
+        "src/invest/application/backtest_run.py:145-178"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-002",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:308-340",
+      "severity": "WARNING",
+      "claim": "_simulate_trade has no references beyond its definition",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "grep: src/invest/application/backtest_run.py:308",
+        "src/invest/application/backtest_run.py:308-340"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-003",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:60-69",
+      "severity": "WARNING",
+      "claim": "BacktestRun.__init__ accepts six configuration parameters combining collaborator, account-state, and cost-model configuration",
+      "evidence_class": "inferential",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:60-75"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-004",
+      "lens": "readability",
+      "location": "src/invest/domain/backtest_metrics.py:53,64; src/invest/adapters/cli.py:219",
+      "severity": "WARNING",
+      "claim": "basis-point conversion/max value 10000 repeated as unnamed literals",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/domain/backtest_metrics.py:53: Decimal(\"10000\")",
+        "src/invest/domain/backtest_metrics.py:64: Decimal(\"10000\")",
+        "src/invest/adapters/cli.py:219: Decimal(\"10000\")"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-001",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py:142-143,148-153",
+      "severity": "WARNING",
+      "claim": "non-Decimal cost CLI values are rejected by argparse before JSON error handling",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:142-143",
+        "src/invest/adapters/cli.py:148-153",
+        "tests/adapters/test_cli_backtest.py:220-249"
+      ],
+      "status": "info"
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "schema": "gentle-ai.review-transaction/v1",
+  "lineage_id": "portfolio-aware-backtest-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "state": "approved",
+  "snapshot": {
+    "kind": "current-changes",
+    "base_tree": "b5393a76f02fc8fa833a0f0ca3e505065124eaaf",
+    "candidate_tree": "8c8fae772b411dfec19b8ce46eb039cad0baf803",
+    "paths_digest": "sha256:81afa81e5297b37a9c018f404713409ae46d6efff26cda55690ddaac0ef54a8c",
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "paths": [
+      "src/invest/adapters/cli.py",
+      "src/invest/application/backtest_run.py",
+      "src/invest/domain/backtest_metrics.py",
+      "src/invest/domain/models.py",
+      "tests/adapters/test_cli_backtest.py",
+      "tests/application/test_backtest_run.py",
+      "tests/domain/test_backtest_metrics.py"
+    ],
+    "identity": "sha256:92e0453b6c90384626be6b17b02986dfce895aa20fd7a059c222133518a54851"
+  },
+  "genesis_paths": [
+    "src/invest/adapters/cli.py",
+    "src/invest/application/backtest_run.py",
+    "src/invest/domain/backtest_metrics.py",
+    "src/invest/domain/models.py",
+    "tests/adapters/test_cli_backtest.py",
+    "tests/application/test_backtest_run.py",
+    "tests/domain/test_backtest_metrics.py"
+  ],
+  "base_tree": "b5393a76f02fc8fa833a0f0ca3e505065124eaaf",
+  "paths_digest": "sha256:81afa81e5297b37a9c018f404713409ae46d6efff26cda55690ddaac0ef54a8c",
+  "initial_review_tree": "8c8fae772b411dfec19b8ce46eb039cad0baf803",
+  "final_candidate_tree": "8c8fae772b411dfec19b8ce46eb039cad0baf803",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:d9c8c2514627c9bba2f261c334878d3c4253d5c0dee947998fb73dc1f740e03c",
+  "ledger_hash": "sha256:b2e9a4907081de647de36469ea351bc12b442a0badc39c8b8217e7f31ed5acd7",
+  "ledger_findings_hash": "sha256:26adf0730ef2cdfa620ea9e09704cc66d02c99787507897caaafdc3fffe3c42f",
+  "evidence_hash": "sha256:c7b682121188b021fa721a85fa974bf183f03b9c2e97655eb049f9fa3a2c9e94",
+  "judge_proofs": [],
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "findings": [
+    {
+      "id": "READABILITY-001",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:10-13,145-178",
+      "severity": "WARNING",
+      "claim": "design text says portfolio gates are not simulated while replay invokes gate evaluation"
+    },
+    {
+      "id": "READABILITY-002",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:308-340",
+      "severity": "WARNING",
+      "claim": "_simulate_trade has no references beyond its definition"
+    },
+    {
+      "id": "READABILITY-003",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:60-69",
+      "severity": "WARNING",
+      "claim": "BacktestRun.__init__ accepts six configuration parameters combining collaborator, account-state, and cost-model configuration"
+    },
+    {
+      "id": "READABILITY-004",
+      "lens": "readability",
+      "location": "src/invest/domain/backtest_metrics.py:53,64; src/invest/adapters/cli.py:219",
+      "severity": "WARNING",
+      "claim": "basis-point conversion/max value 10000 repeated as unnamed literals"
+    },
+    {
+      "id": "RELIABILITY-001",
+      "lens": "reliability",
+      "location": "src/invest/adapters/cli.py:142-143,148-153",
+      "severity": "WARNING",
+      "claim": "non-Decimal cost CLI values are rejected by argparse before JSON error handling"
+    }
+  ],
+  "classifications": {},
+  "outcomes": {
+    "READABILITY-001": "info",
+    "READABILITY-002": "info",
+    "READABILITY-003": "info",
+    "READABILITY-004": "info",
+    "RELIABILITY-001": "info"
+  },
+  "fix_finding_ids": [],
+  "pending_refuter_ids": [],
+  "fix_caused_findings": [],
+  "follow_ups": []
+}

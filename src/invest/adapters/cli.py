@@ -24,7 +24,12 @@ from invest.application.backtest_run import BacktestRun
 from invest.application.execute_run import ExecuteRun
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
-from invest.domain.backtest_metrics import DEFAULT_SLIPPAGE_BPS, DEFAULT_TAX_RATE, compute_metrics
+from invest.domain.backtest_metrics import (
+    DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_TAX_RATE,
+    compute_metrics,
+    compute_segment_metrics,
+)
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
 from invest.domain.models import Universe
@@ -43,6 +48,9 @@ COST_MODEL_DISCLAIMER = (
     "COST MODEL IS AN APPROXIMATION: fixed-bps slippage + zero commission + flat tax "
     "haircut, not precision accounting."
 )
+PORTFOLIO_GATES_DISCLAIMER = "PORTFOLIO GATES SIMULATED: not broker or account enforcement."
+STATIC_UNIVERSE_OOS_DISCLAIMER = "OOS USES STATIC UNIVERSE: survivorship bias remains."
+EXECUTION_REALISM_DISCLAIMER = "BROKER EXECUTION REALISM IS OUT OF SCOPE."
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -133,6 +141,7 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("json",), default="json")
     parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
     parser.add_argument("--tax-rate", type=Decimal, default=DEFAULT_TAX_RATE)
+    parser.add_argument("--split-date")
     return parser
 
 
@@ -140,6 +149,8 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
     """`invest-backtest`: day-by-day replay harness. Never constructs/calls BrokerPort."""
     args = _backtest_parser().parse_args(argv)
     try:
+        if not _valid_cost_model(args.slippage_bps, args.tax_rate):
+            return _backtest_cost_model_error()
         if args.bars is not None:
             inputs = JsonFixtureReader().load(args.universe, args.bars)
         else:
@@ -163,9 +174,21 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
                 # alpaca_market_data.py.
                 raise MarketDataFetchError("symbol-missing-at-fetch", ",".join(missing))
 
-        trades = BacktestRun().replay(inputs)
-        metrics = compute_metrics(trades, args.slippage_bps, args.tax_rate)
-        report = _backtest_report(metrics, trades)
+        if args.split_date is None:
+            return _backtest_split_error()
+        try:
+            split_date = date.fromisoformat(args.split_date)
+        except ValueError:
+            return _backtest_split_error()
+        dates = [bar.date for bar in inputs.bars]
+        if not dates or split_date < min(dates) or split_date > max(dates):
+            return _backtest_split_error()
+        result = BacktestRun(slippage_bps=args.slippage_bps, tax_rate=args.tax_rate).replay(
+            inputs, split_date=split_date
+        )
+        metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
+        segments = compute_segment_metrics(list(result.trades), split_date, args.slippage_bps, args.tax_rate)
+        report = _backtest_report(result, metrics, segments)
         print(json.dumps(report, sort_keys=True))
         return 0
     except (FixtureValidationError, UnsupportedInputError) as error:
@@ -179,7 +202,26 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         return 2
 
 
-def _backtest_report(metrics, trades) -> dict:
+def _backtest_split_error() -> int:
+    print(json.dumps({"reason": "split-date-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_cost_model_error() -> int:
+    print(json.dumps({"reason": "cost-model-invalid"}, sort_keys=True))
+    return 2
+
+
+def _valid_cost_model(slippage_bps: Decimal, tax_rate: Decimal) -> bool:
+    return (
+        slippage_bps.is_finite()
+        and tax_rate.is_finite()
+        and Decimal("0") <= slippage_bps <= Decimal("10000")
+        and Decimal("0") <= tax_rate <= Decimal("1")
+    )
+
+
+def _backtest_report(result, metrics, segments) -> dict:
     return {
         "hit_rate": str(metrics.hit_rate),
         "expectancy": str(metrics.expectancy),
@@ -196,12 +238,53 @@ def _backtest_report(metrics, trades) -> dict:
                 "qty": trade.qty,
                 "exit_reason": trade.exit_reason,
             }
-            for trade in trades
+            for trade in result.trades
         ],
+        "skipped_entries": [
+            {
+                "symbol": entry.symbol,
+                "decision_date": entry.decision_date.isoformat(),
+                "entry_date": entry.entry_date.isoformat(),
+                "reason": entry.reason,
+            }
+            for entry in result.skipped_entries
+        ],
+        "portfolio": {
+            "starting_capital": str(result.portfolio.starting_capital),
+            "cash": str(result.portfolio.cash),
+            "equity": str(result.portfolio.equity),
+            "open_position_count": result.portfolio.open_position_count,
+            "deployed_capital": str(result.portfolio.deployed_capital),
+            "closed_trade_count": result.portfolio.closed_trade_count,
+        },
+        "gates": {"label": result.gates.label, "counts": dict(result.gates.counts)},
+        "equity": {
+            "starting_equity": str(result.equity_summary.starting_equity),
+            "ending_equity": str(result.equity_summary.ending_equity),
+            "min_equity": str(result.equity_summary.min_equity),
+            "max_equity": str(result.equity_summary.max_equity),
+            "max_drawdown": str(result.equity_summary.max_drawdown),
+            "total_return": str(result.equity_summary.total_return),
+            "trading_day_count": result.equity_summary.trading_day_count,
+        },
+        "segments": {
+            name: {
+                "hit_rate": str(segment.hit_rate),
+                "expectancy": str(segment.expectancy),
+                "max_drawdown": str(segment.max_drawdown),
+                "trade_count": segment.trade_count,
+                "net_pnl": str(segment.net_pnl),
+            }
+            for name, segment in segments.items()
+        },
+        "warnings": list(result.warnings),
         "disclaimers": {
             "day0": DAY0_DISCLAIMER,
             "survivorship": SURVIVORSHIP_DISCLAIMER,
             "cost_model": COST_MODEL_DISCLAIMER,
+            "portfolio_gates": PORTFOLIO_GATES_DISCLAIMER,
+            "static_universe_oos": STATIC_UNIVERSE_OOS_DISCLAIMER,
+            "execution_realism": EXECUTION_REALISM_DISCLAIMER,
         },
     }
 

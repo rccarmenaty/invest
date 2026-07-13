@@ -13,20 +13,66 @@ sized independently at a fixed nominal equity to isolate scanner+sizing edge,
 not portfolio construction.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal
 
-from invest.domain.models import DailyBar, FixtureInputs, ScanDecision, SimulatedTrade
+from invest.domain.backtest_metrics import (
+    DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_TAX_RATE,
+    compute_equity_summary,
+    compute_metrics,
+    compute_segment_metrics,
+    entry_fill,
+    exit_proceeds,
+)
+from invest.domain.models import (
+    AccountSnapshot,
+    BacktestResult,
+    DailyBar,
+    FixtureInputs,
+    GateTelemetry,
+    PortfolioSummary,
+    ScanDecision,
+    SimulatedTrade,
+    SkippedEntry,
+)
 from invest.domain.scanner import MomentumScanner
-from invest.domain.sizing import compute_intent
+from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
 
 NOMINAL_EQUITY = Decimal("100000")
 
 
+@dataclass
+class _OpenPosition:
+    symbol: str
+    entry_date: date
+    entry_price: Decimal
+    qty: int
+    stop: Decimal
+    take_profit: Decimal
+    entry_fill: Decimal
+    marked_value: Decimal
+
+
 class BacktestRun:
-    def __init__(self, *, scanner: MomentumScanner | None = None, equity: Decimal = NOMINAL_EQUITY) -> None:
+    def __init__(
+        self,
+        *,
+        scanner: MomentumScanner | None = None,
+        equity: Decimal = NOMINAL_EQUITY,
+        cash: Decimal | None = None,
+        buying_power: Decimal | None = None,
+        slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+        tax_rate: Decimal = DEFAULT_TAX_RATE,
+    ) -> None:
         self._scanner = scanner or MomentumScanner()
         self._equity = equity
+        self._cash = equity if cash is None else cash
+        self._buying_power = buying_power
+        self._slippage_bps = slippage_bps
+        self._tax_rate = tax_rate
 
     def scan_decisions(self, inputs: FixtureInputs) -> list[ScanDecision]:
         """Replay day-by-day, collecting every ACCEPTED decision recorded on its own day.
@@ -45,18 +91,219 @@ class BacktestRun:
                     collected.append(decision)
         return collected
 
-    def replay(self, inputs: FixtureInputs) -> list[SimulatedTrade]:
+    def replay(self, inputs: FixtureInputs, *, split_date: date | None = None) -> BacktestResult:
         decisions = self.scan_decisions(inputs)
         by_symbol: dict[str, list[DailyBar]] = defaultdict(list)
         for bar in sorted(inputs.bars, key=lambda item: (item.symbol, item.date)):
             by_symbol[bar.symbol].append(bar)
 
-        trades: list[SimulatedTrade] = []
+        bars_by_date: dict[date, dict[str, DailyBar]] = defaultdict(dict)
+        for bar in inputs.bars:
+            bars_by_date[bar.date][bar.symbol] = bar
+        pending: dict[date, list[ScanDecision]] = defaultdict(list)
         for decision in decisions:
-            trade = self._simulate_trade(decision.symbol, decision.decision_date, by_symbol[decision.symbol])
-            if trade is not None:
-                trades.append(trade)
-        return trades
+            symbol_bars = by_symbol[decision.symbol]
+            signal_index = next(index for index, bar in enumerate(symbol_bars) if bar.date == decision.decision_date)
+            if signal_index + 1 < len(symbol_bars):
+                pending[symbol_bars[signal_index + 1].date].append(decision)
+
+        trades: list[SimulatedTrade] = []
+        skipped_entries: list[SkippedEntry] = []
+        gate_counts: Counter[str] = Counter()
+        positions: dict[str, _OpenPosition] = {}
+        cash = self._cash
+        previous_equity = self._equity
+        daily_equity: list[tuple[date, Decimal]] = []
+        missing_bar_carried_forward = False
+
+        for current_date in sorted(bars_by_date):
+            todays_bars = bars_by_date[current_date]
+            self._process_exits(positions, todays_bars, trades)
+            for trade in trades:
+                if trade.exit_date == current_date:
+                    cash += exit_proceeds(
+                        positions[trade.symbol].entry_price,
+                        trade.exit_price,
+                        trade.qty,
+                        self._slippage_bps,
+                        self._tax_rate,
+                    )
+                    positions.pop(trade.symbol, None)
+
+            missing_bar_carried_forward |= any(symbol not in todays_bars for symbol in positions)
+            marked_equity = cash + self._mark_positions(positions, todays_bars)
+            deployed = sum(position.entry_fill * position.qty for position in positions.values())
+            snapshot = AccountSnapshot(
+                equity=marked_equity,
+                last_equity=previous_equity,
+                buying_power=cash if self._buying_power is None else min(cash, self._buying_power),
+                open_position_count=len(positions),
+                deployed_value=deployed,
+                trading_blocked=False,
+                account_blocked=False,
+            )
+            halt_reason = evaluate_halt_gates(snapshot)
+            for decision in sorted(pending[current_date], key=lambda item: item.symbol):
+                if decision.symbol in positions:
+                    gate_counts[GateReason.ALREADY_SUBMITTED.value] += 1
+                    skipped_entries.append(
+                        SkippedEntry(
+                            decision.symbol,
+                            decision.decision_date,
+                            current_date,
+                            GateReason.ALREADY_SUBMITTED.value,
+                        )
+                    )
+                    continue
+                entry_bar = todays_bars[decision.symbol]
+                symbol_bars = by_symbol[decision.symbol]
+                signal_index = next(index for index, bar in enumerate(symbol_bars) if bar.date == decision.decision_date)
+                intent, sizing_reason = compute_intent(
+                    decision.symbol,
+                    decision.decision_date,
+                    marked_equity,
+                    symbol_bars[:signal_index],
+                    symbol_bars[signal_index].close,
+                )
+                adjusted_intent = (
+                    None if intent is None else replace(intent, entry=entry_fill(entry_bar.open, self._slippage_bps))
+                )
+                reason = halt_reason or evaluate_gates(
+                    adjusted_intent,
+                    sizing_reason,
+                    snapshot,
+                    len(positions),
+                    deployed,
+                    cash if self._buying_power is None else min(cash, self._buying_power),
+                )
+                if reason is not None:
+                    gate_counts[reason.value] += 1
+                    skipped_entries.append(
+                        SkippedEntry(decision.symbol, decision.decision_date, current_date, reason.value)
+                    )
+                    continue
+                assert intent is not None
+                entry_cost = intent.qty * entry_fill(entry_bar.open, self._slippage_bps)
+                cash -= entry_cost
+                position = _OpenPosition(
+                    decision.symbol,
+                    current_date,
+                    entry_bar.open,
+                    intent.qty,
+                    intent.stop,
+                    intent.take_profit,
+                    entry_fill(entry_bar.open, self._slippage_bps),
+                    entry_cost,
+                )
+                positions[decision.symbol] = position
+                deployed += entry_cost
+                closed = self._exit_for_bar(position, entry_bar)
+                if closed is not None:
+                    trades.append(closed)
+                    cash += exit_proceeds(
+                        position.entry_price,
+                        closed.exit_price,
+                        closed.qty,
+                        self._slippage_bps,
+                        self._tax_rate,
+                    )
+                    positions.pop(closed.symbol)
+            marked_equity = cash + self._mark_positions(positions, todays_bars)
+            daily_equity.append((current_date, marked_equity))
+            previous_equity = marked_equity
+
+        for position in sorted(positions.values(), key=lambda item: item.symbol):
+            last_bar = by_symbol[position.symbol][-1]
+            trades.append(
+                SimulatedTrade(
+                    position.symbol,
+                    position.entry_date,
+                    last_bar.date,
+                    position.entry_price,
+                    last_bar.close,
+                    position.qty,
+                    "open-at-end",
+                )
+            )
+        ordered_trades = tuple(sorted(trades, key=lambda trade: (trade.entry_date, trade.symbol, trade.exit_date)))
+        metrics = compute_metrics(list(ordered_trades), self._slippage_bps, self._tax_rate)
+        return BacktestResult(
+            trades=ordered_trades,
+            skipped_entries=tuple(skipped_entries),
+            metrics=metrics,
+            portfolio=PortfolioSummary(
+                starting_capital=self._equity,
+                cash=cash,
+                equity=daily_equity[-1][1] if daily_equity else self._equity,
+                open_position_count=len(positions),
+                deployed_capital=sum(position.entry_fill * position.qty for position in positions.values()),
+                closed_trade_count=len([trade for trade in ordered_trades if trade.exit_reason != "open-at-end"]),
+            ),
+            gates=GateTelemetry("portfolio-gates-simulated", dict(sorted(gate_counts.items()))),
+            equity_summary=compute_equity_summary(daily_equity),
+            segments=(
+                compute_segment_metrics(list(ordered_trades), split_date, self._slippage_bps, self._tax_rate)
+                if split_date
+                else {}
+            ),
+            warnings=(
+                "portfolio-gates-simulated",
+                "static-universe-oos",
+                "broker-execution-realism-out-of-scope",
+            )
+            + (("missing-bar-carried-forward",) if missing_bar_carried_forward else ()),
+        )
+
+    def _mark_positions(self, positions: dict[str, _OpenPosition], bars: dict[str, DailyBar]) -> Decimal:
+        for position in positions.values():
+            bar = bars.get(position.symbol)
+            if bar is not None:
+                position.marked_value = exit_proceeds(
+                    position.entry_price,
+                    bar.close,
+                    position.qty,
+                    self._slippage_bps,
+                    self._tax_rate,
+                )
+        return sum((position.marked_value for position in positions.values()), Decimal("0"))
+
+    @staticmethod
+    def _process_exits(
+        positions: dict[str, _OpenPosition],
+        bars: dict[str, DailyBar],
+        trades: list[SimulatedTrade],
+    ) -> None:
+        for symbol, position in sorted(positions.items()):
+            bar = bars.get(symbol)
+            if bar is None:
+                continue
+            closed = BacktestRun._exit_for_bar(position, bar)
+            if closed is not None:
+                trades.append(closed)
+
+    @staticmethod
+    def _exit_for_bar(position: _OpenPosition, bar: DailyBar) -> SimulatedTrade | None:
+        if bar.low <= position.stop:
+            return SimulatedTrade(
+                position.symbol,
+                position.entry_date,
+                bar.date,
+                position.entry_price,
+                min(bar.open, position.stop),
+                position.qty,
+                "stop",
+            )
+        if bar.high >= position.take_profit:
+            return SimulatedTrade(
+                position.symbol,
+                position.entry_date,
+                bar.date,
+                position.entry_price,
+                position.take_profit,
+                position.qty,
+                "take-profit",
+            )
+        return None
 
     def _simulate_trade(
         self, symbol: str, signal_date, symbol_bars: list[DailyBar]

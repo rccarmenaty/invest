@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
+    from invest.domain.backtest_metrics import Metrics
     from invest.domain.rejection import RejectionReason
 
 
@@ -80,3 +81,50 @@ class SimulatedTrade:
     exit_price: Decimal
     qty: int
     exit_reason: str
+
+
+@dataclass(frozen=True)
+class SkippedEntry:
+    symbol: str
+    decision_date: date
+    entry_date: date
+    reason: str
+
+
+@dataclass(frozen=True)
+class PortfolioSummary:
+    starting_capital: Decimal
+    cash: Decimal
+    equity: Decimal
+    open_position_count: int
+    deployed_capital: Decimal
+    closed_trade_count: int
+
+
+@dataclass(frozen=True)
+class EquitySummary:
+    starting_equity: Decimal
+    ending_equity: Decimal
+    min_equity: Decimal
+    max_equity: Decimal
+    max_drawdown: Decimal
+    total_return: Decimal
+    trading_day_count: int
+
+
+@dataclass(frozen=True)
+class GateTelemetry:
+    label: str
+    counts: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    trades: tuple[SimulatedTrade, ...]
+    skipped_entries: tuple[SkippedEntry, ...]
+    metrics: "Metrics"
+    portfolio: PortfolioSummary
+    gates: GateTelemetry
+    equity_summary: EquitySummary
+    segments: Mapping[str, "Metrics"]
+    warnings: tuple[str, ...]

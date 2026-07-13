@@ -9,10 +9,11 @@ domain AST ban.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 
-from invest.domain.models import SimulatedTrade
+from invest.domain.models import EquitySummary, SimulatedTrade
 
 DEFAULT_SLIPPAGE_BPS = Decimal("5")
 DEFAULT_TAX_RATE = Decimal("0.15")
@@ -39,13 +40,32 @@ def apply_costs(
     tax_rate: Decimal = DEFAULT_TAX_RATE,
 ) -> Decimal:
     """Net P&L for one trade: bps slippage both sides, zero commission, tax on gains only."""
-    slippage_fraction = slippage_bps / Decimal("10000")
-    entry_fill = trade.entry_price * (Decimal("1") + slippage_fraction)
-    exit_fill = trade.exit_price * (Decimal("1") - slippage_fraction)
-    gross = (exit_fill - entry_fill) * trade.qty
+    return exit_proceeds(
+        trade.entry_price,
+        trade.exit_price,
+        trade.qty,
+        slippage_bps,
+        tax_rate,
+    ) - entry_fill(trade.entry_price, slippage_bps) * trade.qty
+
+
+def entry_fill(price: Decimal, slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS) -> Decimal:
+    return price * (Decimal("1") + slippage_bps / Decimal("10000"))
+
+
+def exit_proceeds(
+    entry_price: Decimal,
+    exit_price: Decimal,
+    qty: int,
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+    tax_rate: Decimal = DEFAULT_TAX_RATE,
+) -> Decimal:
+    entry_cost = entry_fill(entry_price, slippage_bps) * qty
+    exit_fill = exit_price * (Decimal("1") - slippage_bps / Decimal("10000"))
+    gross = exit_fill * qty - entry_cost
     if gross <= 0:
-        return gross
-    return gross * (Decimal("1") - tax_rate)
+        return exit_fill * qty
+    return exit_fill * qty - gross * tax_rate
 
 
 def compute_metrics(
@@ -74,3 +94,54 @@ def compute_metrics(
         max_drawdown = max(max_drawdown, peak - cumulative)
 
     return Metrics(hit_rate, expectancy, max_drawdown, trade_count, net_pnl)
+
+
+def compute_equity_summary(samples: list[tuple[date, Decimal]]) -> EquitySummary:
+    """Summarize daily marked equity without exposing a serialized equity curve."""
+    if not samples:
+        return EquitySummary(
+            starting_equity=Decimal("0"),
+            ending_equity=Decimal("0"),
+            min_equity=Decimal("0"),
+            max_equity=Decimal("0"),
+            max_drawdown=Decimal("0"),
+            total_return=Decimal("0"),
+            trading_day_count=0,
+        )
+
+    ordered = sorted(samples, key=lambda sample: sample[0])
+    values = [equity for _, equity in ordered]
+    peak = values[0]
+    max_drawdown = Decimal("0")
+    for equity in values:
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+    starting_equity = values[0]
+    ending_equity = values[-1]
+    total_return = Decimal("0") if starting_equity == 0 else (ending_equity - starting_equity) / starting_equity
+    return EquitySummary(
+        starting_equity=starting_equity,
+        ending_equity=ending_equity,
+        min_equity=min(values),
+        max_equity=max(values),
+        max_drawdown=max_drawdown,
+        total_return=total_return,
+        trading_day_count=len(values),
+    )
+
+
+def compute_segment_metrics(
+    trades: list[SimulatedTrade],
+    split_date: date,
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+    tax_rate: Decimal = DEFAULT_TAX_RATE,
+) -> dict[str, Metrics]:
+    """Compute IS/OOS metrics using entry date, with split-day entries in OOS."""
+    return {
+        "is": compute_metrics(
+            [trade for trade in trades if trade.entry_date < split_date], slippage_bps, tax_rate
+        ),
+        "oos": compute_metrics(
+            [trade for trade in trades if trade.entry_date >= split_date], slippage_bps, tax_rate
+        ),
+    }

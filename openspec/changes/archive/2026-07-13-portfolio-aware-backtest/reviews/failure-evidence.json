@@ -1,0 +1,55 @@
+{
+  "artifact": "failed deterministic-evidence snapshot",
+  "lineage_id": "portfolio-aware-backtest",
+  "target_identity": "sha256:6be9bcb14fde9391ff2bc3e0d4c3016cae171bee1d50679cd3a81c1cd8058ecf",
+  "findings": [
+    {
+      "id": "RISK-001",
+      "severity": "CRITICAL",
+      "claim": "Portfolio cash, equity, deployed-capital gates, and reported portfolio summary use raw entry/exit prices without the configured slippage or tax costs, while the CLI applies those costs only to aggregate metrics. This can admit entries using capital unavailable after costs and report an overstated portfolio equity.",
+      "proof_refs": ["backtest_run.py:109-110", ":154-165", ":112-146", ":193-200", "cli.py:185-186", "spec.md:7"]
+    },
+    {
+      "id": "RESILIENCE-001",
+      "severity": "BLOCKER",
+      "claim": "A missing daily bar for an open position excludes its value from marked equity without failing the replay or emitting a data-quality record; the resulting artificial equity drop can trigger simulated gates and produce a complete-looking report.",
+      "proof_refs": ["backtest_run.py:112-116", ":119-127", ":166-171", "spec.md:76-78"]
+    },
+    {
+      "id": "RESILIENCE-002",
+      "severity": "CRITICAL",
+      "claim": "Portfolio cash, equity, and gate decisions use raw entry and exit prices, while slippage and tax are applied only afterward to reported trade metrics; configured cost assumptions therefore cannot constrain simulated buying power or portfolio gates.",
+      "proof_refs": ["backtest_run.py:154-164", ":166-172", "backtest_metrics.py:37-49", "cli.py:142-143", ":185-187", "spec.md:5-7"]
+    },
+    {
+      "id": "RESILIENCE-003",
+      "severity": "CRITICAL",
+      "claim": "The CLI accepts unbounded negative or otherwise invalid slippage and tax rates and continues with a success report; malformed cost inputs can increase simulated returns instead of failing closed.",
+      "proof_refs": ["cli.py:142-143", ":184-189", "backtest_metrics.py:43-49", "tests/adapters/test_cli_backtest.py:178-198"]
+    },
+    {
+      "id": "RELIABILITY-001",
+      "severity": "BLOCKER",
+      "claim": "A next-session opening gap can admit an entry whose actual entry cost exceeds cash and the deployed-capital limit, producing negative cash and a portfolio state that violates simulated gates.",
+      "proof_refs": ["backtest_run.py:132-146", ":153-160", "sizing.py:95-100", "tests/application/test_backtest_run.py:219-248"]
+    },
+    {
+      "id": "RELIABILITY-002",
+      "severity": "BLOCKER",
+      "claim": "On a date where an open position has no bar, marked equity excludes that position entirely instead of carrying a controlled valuation or failing closed; this can create artificial drawdowns, incorrect equity summaries, and erroneous kill-switch blocks.",
+      "proof_refs": ["backtest_run.py:112-116", ":166-170", "fixtures_json.py:64-79", "spec.md:76-78", "tests/application/test_backtest_run.py:219-275"]
+    },
+    {
+      "id": "RELIABILITY-003",
+      "severity": "BLOCKER",
+      "claim": "A second accepted signal for an already-open symbol overwrites its existing position in the positions map without closing or releasing the first position, corrupting cash, open-position state, and the trade log.",
+      "proof_refs": ["backtest_run.py:99", ":127-160", "sizing.py:78-100", "tests/application/test_backtest_run.py:219-275"]
+    },
+    {
+      "id": "RELIABILITY-004",
+      "severity": "CRITICAL",
+      "claim": "Portfolio cash, equity, gate capacity, and equity summaries are calculated from raw fills and remain unchanged when CLI slippage or tax inputs change, while only reported metrics apply the configured cost model.",
+      "proof_refs": ["backtest_run.py:109", ":154", ":164", "cli.py:184-186", "spec.md:5-7", "tests/application/test_backtest_run.py:219-275"]
+    }
+  ]
+}
