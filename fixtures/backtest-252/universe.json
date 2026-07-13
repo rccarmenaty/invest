@@ -1,0 +1,8 @@
+{
+  "fixture_version": "backtest-252-v1",
+  "symbols": [
+    "MOMLONG",
+    "FLATLINE",
+    "DOWNTREND"
+  ]
+}
