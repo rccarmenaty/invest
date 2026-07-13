@@ -246,3 +246,9 @@ def test_credentials_are_redacted_from_formatted_traceback(monkeypatch) -> None:
     assert key not in output
     assert secret not in output
     assert output.rstrip().endswith("BrokerFetchError: network-failure")
+
+
+def test_broker_source_has_no_market_context_dependency() -> None:
+    source = Path("src/invest/adapters/alpaca_broker.py").read_text(encoding="utf-8")
+
+    assert "market_context" not in source

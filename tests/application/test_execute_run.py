@@ -1,6 +1,7 @@
 import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from invest.adapters.journal_memory import MemoryJournal
 from invest.application.execute_run import ExecuteRun
@@ -243,3 +244,9 @@ def test_execute_projection_depletes_buying_power_after_submission() -> None:
         ("BETA", "insufficient-buying-power")
     ]
     assert broker.submit_calls == 1
+
+
+def test_execute_run_source_has_no_market_context_dependency() -> None:
+    source = Path("src/invest/application/execute_run.py").read_text(encoding="utf-8")
+
+    assert "market_context" not in source

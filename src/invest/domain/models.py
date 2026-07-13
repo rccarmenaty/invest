@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
     from invest.domain.backtest_metrics import Metrics
+    from invest.domain.market_context import ContextOutcome
     from invest.domain.rejection import RejectionReason
 
 
@@ -122,6 +123,7 @@ class GateTelemetry:
 class BacktestResult:
     trades: tuple[SimulatedTrade, ...]
     skipped_entries: tuple[SkippedEntry, ...]
+    context_outcomes: tuple["ContextOutcome", ...]
     metrics: "Metrics"
     portfolio: PortfolioSummary
     gates: GateTelemetry

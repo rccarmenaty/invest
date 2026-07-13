@@ -8,6 +8,7 @@ from typing import Sequence
 
 from pydantic import ValidationError
 
+from invest.adapters.backtest_context_json import BacktestContextJsonReader
 from invest.adapters.fixtures_json import (
     FixtureValidationError,
     JsonFixtureReader,
@@ -20,7 +21,7 @@ from invest.adapters.alpaca_market_data import (
 )
 from invest.adapters.alpaca_broker import AlpacaBroker, BrokerFetchError
 from invest.adapters.journal_memory import MemoryJournal
-from invest.application.backtest_run import BacktestRun
+from invest.application.backtest_run import BacktestRun, POINT_IN_TIME_CONTEXT_VALIDATED
 from invest.application.execute_run import ExecuteRun
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
@@ -32,6 +33,7 @@ from invest.domain.backtest_metrics import (
 )
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
+from invest.domain.market_context import MarketContextError
 from invest.domain.models import Universe
 
 RULE_VERSION = "momentum-v1"
@@ -51,6 +53,10 @@ COST_MODEL_DISCLAIMER = (
 PORTFOLIO_GATES_DISCLAIMER = "PORTFOLIO GATES SIMULATED: not broker or account enforcement."
 STATIC_UNIVERSE_OOS_DISCLAIMER = "OOS USES STATIC UNIVERSE: survivorship bias remains."
 EXECUTION_REALISM_DISCLAIMER = "BROKER EXECUTION REALISM IS OUT OF SCOPE."
+POINT_IN_TIME_CONTEXT_DISCLAIMER = (
+    "POINT-IN-TIME CONTEXT VALIDATED: externally prepared date/symbol coverage was "
+    "supplied for every replay day."
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -136,6 +142,7 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="invest-backtest")
     parser.add_argument("--universe", type=Path, required=True)
     parser.add_argument("--bars", type=Path)
+    parser.add_argument("--market-context", type=Path)
     parser.add_argument("--start", type=date.fromisoformat)
     parser.add_argument("--end", type=date.fromisoformat)
     parser.add_argument("--format", choices=("json",), default="json")
@@ -149,6 +156,9 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
     """`invest-backtest`: day-by-day replay harness. Never constructs/calls BrokerPort."""
     args = _backtest_parser().parse_args(argv)
     try:
+        if args.market_context is None:
+            return _backtest_context_error("market-context-missing")
+        market_context = BacktestContextJsonReader().load(args.market_context)
         if not _valid_cost_model(args.slippage_bps, args.tax_rate):
             return _backtest_cost_model_error()
         if args.bars is not None:
@@ -183,7 +193,11 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         dates = [bar.date for bar in inputs.bars]
         if not dates or split_date < min(dates) or split_date > max(dates):
             return _backtest_split_error()
-        result = BacktestRun(slippage_bps=args.slippage_bps, tax_rate=args.tax_rate).replay(
+        result = BacktestRun(
+            market_context=market_context,
+            slippage_bps=args.slippage_bps,
+            tax_rate=args.tax_rate,
+        ).replay(
             inputs, split_date=split_date
         )
         metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
@@ -200,6 +214,8 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             failure["message"] = str(error)
         print(json.dumps(failure, sort_keys=True))
         return 2
+    except MarketContextError as error:
+        return _backtest_context_error(error.reason)
 
 
 def _backtest_split_error() -> int:
@@ -209,6 +225,11 @@ def _backtest_split_error() -> int:
 
 def _backtest_cost_model_error() -> int:
     print(json.dumps({"reason": "cost-model-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_context_error(reason: str) -> int:
+    print(json.dumps({"reason": reason}, sort_keys=True))
     return 2
 
 
@@ -222,6 +243,18 @@ def _valid_cost_model(slippage_bps: Decimal, tax_rate: Decimal) -> bool:
 
 
 def _backtest_report(result, metrics, segments) -> dict:
+    disclaimers = {
+        "day0": DAY0_DISCLAIMER,
+        "cost_model": COST_MODEL_DISCLAIMER,
+        "portfolio_gates": PORTFOLIO_GATES_DISCLAIMER,
+        "execution_realism": EXECUTION_REALISM_DISCLAIMER,
+    }
+    if POINT_IN_TIME_CONTEXT_VALIDATED in result.warnings:
+        disclaimers["point_in_time_market_context"] = POINT_IN_TIME_CONTEXT_DISCLAIMER
+    else:
+        disclaimers["survivorship"] = SURVIVORSHIP_DISCLAIMER
+        disclaimers["static_universe_oos"] = STATIC_UNIVERSE_OOS_DISCLAIMER
+
     return {
         "hit_rate": str(metrics.hit_rate),
         "expectancy": str(metrics.expectancy),
@@ -248,6 +281,15 @@ def _backtest_report(result, metrics, segments) -> dict:
                 "reason": entry.reason,
             }
             for entry in result.skipped_entries
+        ],
+        "context_outcomes": [
+            {
+                "type": outcome.outcome_type.value,
+                "reason": outcome.reason.value,
+                "symbol": outcome.symbol,
+                "date": outcome.date.isoformat(),
+            }
+            for outcome in result.context_outcomes
         ],
         "portfolio": {
             "starting_capital": str(result.portfolio.starting_capital),
@@ -278,14 +320,7 @@ def _backtest_report(result, metrics, segments) -> dict:
             for name, segment in segments.items()
         },
         "warnings": list(result.warnings),
-        "disclaimers": {
-            "day0": DAY0_DISCLAIMER,
-            "survivorship": SURVIVORSHIP_DISCLAIMER,
-            "cost_model": COST_MODEL_DISCLAIMER,
-            "portfolio_gates": PORTFOLIO_GATES_DISCLAIMER,
-            "static_universe_oos": STATIC_UNIVERSE_OOS_DISCLAIMER,
-            "execution_realism": EXECUTION_REALISM_DISCLAIMER,
-        },
+        "disclaimers": disclaimers,
     }
 
 

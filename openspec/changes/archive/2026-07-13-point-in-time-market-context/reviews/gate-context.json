@@ -1,0 +1,15 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "gate": "post-apply",
+  "target": {
+    "kind": "current-changes",
+    "intended_untracked": []
+  },
+  "store_revision": "sha256:7ca83cd25781bcc23b72020d331cc2528c9474fe82d3732f7f7970a98c1e34b6",
+  "genesis_revision": "sha256:a77a84c9ba3d3b6b2f6a0266e64b1a95051c220c85f7bffd2d9a7aefa700d36c",
+  "chain_identity": "sha256:e941e895fbd6478aa632ef6b87b69a99b3e8faf929e7a0e99cd901cff6976435",
+  "bundle_digest": "sha256:6e390571b1f1463ac86d0e432bb9ef40ff380d29173e287b6c1e2cde19c6886f",
+  "policy_artifact": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/point-in-time-market-context-integrated-clean-policy.md",
+  "ledger_artifact": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/point-in-time-market-context-integrated-clean-info-ledger.json",
+  "evidence_artifact": "/var/folders/k_/jgmzsf8d6qd42sp29q1vwn7r0000gn/T/opencode/pit-integrated-final-verification.UqU9ID/final-verification.json"
+}

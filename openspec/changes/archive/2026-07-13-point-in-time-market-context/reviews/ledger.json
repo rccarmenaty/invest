@@ -1,0 +1,311 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "findings": [
+    {
+      "id": "READABILITY-001",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:10-13",
+      "severity": "WARNING",
+      "claim": "The module documentation says portfolio construction and portfolio-level gates are not simulated, but replay now performs portfolio accounting and gate evaluation.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:10-13",
+        "src/invest/application/backtest_run.py:143-213"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-002",
+      "lens": "readability",
+      "location": "backtest_run.py:381-414",
+      "severity": "WARNING",
+      "claim": "The unused _simulate_trade method duplicates trade replay and exit calculations, leaving a second implementation that can diverge from the active path.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:358-379",
+        "src/invest/application/backtest_run.py:381-414"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-003",
+      "lens": "readability",
+      "location": "backtest_run.py:68-78",
+      "severity": "WARNING",
+      "claim": "BacktestRun's seven-parameter constructor mixes service dependencies with account and execution-cost configuration, making construction and call sites difficult to understand.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:68-85",
+        "tests/application/test_backtest_run.py:539-548"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-004",
+      "lens": "readability",
+      "location": "backtest_run.py:106-270",
+      "severity": "WARNING",
+      "claim": "BacktestRun.replay is a 165-line orchestration method that combines input validation, bar and signal preparation, pending-entry processing, exits, portfolio accounting, context policy, and result assembly.",
+      "evidence_class": "inferential",
+      "proof_refs": [
+        "src/invest/application/backtest_run.py:106-133",
+        "src/invest/application/backtest_run.py:134-227",
+        "src/invest/application/backtest_run.py:229-270"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-005",
+      "lens": "readability",
+      "location": "src/invest/adapters/cli.py:236-242",
+      "severity": "WARNING",
+      "claim": "The cost-model validation embeds the financial limits 10000 basis points and 1 as unnamed literals, obscuring the rule they enforce.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:236-242"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-006",
+      "lens": "readability",
+      "location": "src/invest/domain/market_context.py:35-84",
+      "severity": "WARNING",
+      "claim": "CoverageWindow, EligibilityWindow, and BlockerWindow repeat date-order validation, containment, and overlap logic instead of sharing the common interval behavior.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/domain/market_context.py:35-48",
+        "src/invest/domain/market_context.py:51-65",
+        "src/invest/domain/market_context.py:68-84"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-007",
+      "lens": "readability",
+      "location": "market_context.py:211-216",
+      "severity": "SUGGESTION",
+      "claim": "_ensure_non_overlapping types its window elements as object even though it requires an overlaps method, erasing the interface the function actually depends on.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/domain/market_context.py:188-190",
+        "src/invest/domain/market_context.py:211-216"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-008",
+      "lens": "readability",
+      "location": "src/invest/adapters/backtest_context_json.py:38-40",
+      "severity": "SUGGESTION",
+      "claim": "The adapter duplicates ContextReason string values in its blocker-reason type instead of deriving or sharing the domain vocabulary.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/backtest_context_json.py:38-40",
+        "src/invest/adapters/backtest_context_json.py:78-83",
+        "src/invest/domain/market_context.py:13-16"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-009",
+      "lens": "readability",
+      "location": "tests/adapters/test_backtest_context_json.py:20-31",
+      "severity": "SUGGESTION",
+      "claim": "The _valid_payload helper hides the nested market-context JSON schema, so individual tests mutate opaque indexing paths rather than expressing the contract they exercise.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/adapters/test_backtest_context_json.py:20-31",
+        "tests/adapters/test_backtest_context_json.py:61-63",
+        "tests/adapters/test_backtest_context_json.py:71-73",
+        "tests/adapters/test_backtest_context_json.py:81-83"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-010",
+      "lens": "readability",
+      "location": "src/invest/adapters/cli.py:155-218",
+      "severity": "WARNING",
+      "claim": "backtest_main combines file loading, validation, input construction, replay execution, report serialization, and error mapping in one broad adapter function.",
+      "evidence_class": "inferential",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:159-163",
+        "src/invest/adapters/cli.py:164-186",
+        "src/invest/adapters/cli.py:187-207",
+        "src/invest/adapters/cli.py:208-218"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-011",
+      "lens": "readability",
+      "location": "cli.py:94-104",
+      "severity": "WARNING",
+      "claim": "Universe payload decoding and Universe construction are duplicated between the fetch and backtest command paths.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:94-104",
+        "src/invest/adapters/cli.py:169-176"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-012",
+      "lens": "readability",
+      "location": "cli.py:245-324",
+      "severity": "WARNING",
+      "claim": "The untyped 80-line _backtest_report serializer constructs the complete external report while also deciding presentation policy for metrics, portfolio values, trades, and context outcomes.",
+      "evidence_class": "inferential",
+      "proof_refs": [
+        "src/invest/adapters/cli.py:245-257",
+        "src/invest/adapters/cli.py:258-324"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-013",
+      "lens": "readability",
+      "location": "tests/adapters/test_cli_execute.py:10-45",
+      "severity": "WARNING",
+      "claim": "The same momentum-strategy business fixture is duplicated across CLI execute, application execute, and backtest application test modules.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/adapters/test_cli_execute.py:10-45",
+        "tests/application/test_execute_run.py:53-74",
+        "tests/application/test_backtest_run.py:21-47"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-014",
+      "lens": "readability",
+      "location": "tests/adapters/test_cli_backtest.py:129-241",
+      "severity": "SUGGESTION",
+      "claim": "Three live-range CLI tests repeat the same argument sequence, making the relevant variation harder to identify.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/adapters/test_cli_backtest.py:129-143",
+        "tests/adapters/test_cli_backtest.py:185-199",
+        "tests/adapters/test_cli_backtest.py:227-241"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-015",
+      "lens": "readability",
+      "location": "tests/test_boundaries.py:121-166",
+      "severity": "SUGGESTION",
+      "claim": "Adjacent AST boundary tests duplicate module parsing and call-walk setup instead of sharing the common inspection mechanics.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/test_boundaries.py:127-139",
+        "tests/test_boundaries.py:152-164"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-016",
+      "lens": "readability",
+      "location": "openspec/changes/point-in-time-market-context/apply-progress.md:85-144",
+      "severity": "WARNING",
+      "claim": "The apply progress and task tracker still state that independent verification is pending, while the included verification report records a passing independent verification.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "openspec/changes/point-in-time-market-context/apply-progress.md:85",
+        "openspec/changes/point-in-time-market-context/apply-progress.md:93",
+        "openspec/changes/point-in-time-market-context/apply-progress.md:144",
+        "openspec/changes/point-in-time-market-context/tasks.md:37",
+        "openspec/changes/point-in-time-market-context/verify-report.md:1-15",
+        "openspec/changes/point-in-time-market-context/verify-report.md:139-172"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-001",
+      "lens": "reliability",
+      "location": "tests/adapters/test_backtest_context_json.py:41-58",
+      "severity": "WARNING",
+      "claim": "The unreadable-file contract has no test for an OSError raised while reading the market-context file, leaving the required stable unreadable error mapping unverified.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/backtest_context_json.py:60-63",
+        "tests/adapters/test_backtest_context_json.py:41-58",
+        "openspec/changes/point-in-time-market-context/specs/trading-system/spec.md:51-55"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-002",
+      "lens": "reliability",
+      "location": "tests/adapters/test_backtest_context_json.py:61-117",
+      "severity": "WARNING",
+      "claim": "The invalid-payload tests do not cover duplicate symbols, reversed windows, empty collections, or windows outside declared coverage even though the adapter and domain reject those branches.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/adapters/backtest_context_json.py:27-30",
+        "src/invest/adapters/backtest_context_json.py:45-55",
+        "src/invest/adapters/backtest_context_json.py:65-68",
+        "src/invest/domain/market_context.py:192-209",
+        "tests/adapters/test_backtest_context_json.py:61-117"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-003",
+      "lens": "reliability",
+      "location": "tests/application/test_execute_run.py:249-252",
+      "severity": "WARNING",
+      "claim": "The execute-path isolation regression checks source-code substrings rather than observable behavior, so semantically equivalent coupling can bypass the test and harmless refactors can break it.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/application/test_execute_run.py:249-252",
+        "openspec/changes/point-in-time-market-context/verify-report.md:108-115"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-004",
+      "lens": "reliability",
+      "location": "tests/adapters/test_alpaca_broker.py:251-254",
+      "severity": "WARNING",
+      "claim": "The broker-isolation regression checks source text instead of observable broker behavior, so it does not prove the runtime isolation contract.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/adapters/test_alpaca_broker.py:251-254",
+        "openspec/changes/point-in-time-market-context/verify-report.md:108-115"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-005",
+      "lens": "reliability",
+      "location": "tests/adapters/test_cli_execute.py:272-275",
+      "severity": "WARNING",
+      "claim": "The execute CLI regression inspects argparse's private action list rather than invoking the command and asserting visible rejection of market-context arguments.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/adapters/test_cli_execute.py:272-275",
+        "tests/test_boundaries.py:195-202",
+        "openspec/changes/point-in-time-market-context/verify-report.md:108-115"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "RELIABILITY-006",
+      "lens": "reliability",
+      "location": "tests/application/test_backtest_run.py:292-301",
+      "severity": "SUGGESTION",
+      "claim": "Forced-close repeatability is exercised only by the verification harness and is not retained as a committed determinism regression test for context-driven replay outcomes.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "tests/application/test_backtest_run.py:292-301",
+        "tests/application/test_backtest_run.py:458-486",
+        "openspec/changes/point-in-time-market-context/specs/point-in-time-market-context/spec.md:51-59",
+        "openspec/changes/point-in-time-market-context/verify-report.md:68-73",
+        "openspec/changes/point-in-time-market-context/verify-report.md:168-169"
+      ],
+      "status": "info"
+    }
+  ]
+}

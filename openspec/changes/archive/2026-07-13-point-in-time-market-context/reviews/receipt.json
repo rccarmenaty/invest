@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v1",
+  "lineage_id": "point-in-time-market-context-integrated-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "base_tree": "8bf837998eb2ef5c51535dd142c815a99ddb27a6",
+  "initial_review_tree": "9bdcfb0c0e0df464017c9a432e57ebede91bc73c",
+  "final_candidate_tree": "9bdcfb0c0e0df464017c9a432e57ebede91bc73c",
+  "paths_digest": "sha256:a266cbad689b1ef409e747f6d648fbdaaec7b86338b36a94096f6bbaa13403fe",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:7b39897c5c816a8ad4a3ae664d4614b2e861a3070c9961c60cef392bfb5efcc3",
+  "ledger_hash": "sha256:a4823645eeb795603908a22c68e7a6467cdc0ee695b894800ca497e182df9dd6",
+  "evidence_hash": "sha256:817dda631ed25b6bcb1d3307dbd06d3f8ea1ce6821fd91fab5f84ac1e89d60f6",
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "terminal_state": "approved"
+}
