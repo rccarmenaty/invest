@@ -4,27 +4,37 @@
 
 | Field | Value |
 |---|---|
-| Actual authored churn | 1,223 lines (800-line budget + 423) |
+| Materialized review load | 1,702 changed lines across the local chain (593 + 327 + 782) |
 | 800-line budget risk | High |
 | Chained PRs recommended | Yes |
 | Suggested split | Child PR 1 → Child PR 2 → Child PR 3, coordinated by a draft/no-merge tracker |
 | Delivery strategy | User-selected chained PRs |
 | Chain strategy | feature-branch-chain |
+| Verification snapshot | full suite 202 passed, 3 skipped; Ruff passed |
 
 Decision needed before apply: No
 Chained PRs recommended: Yes
 Chain strategy: feature-branch-chain
 800-line budget risk: High
 
-The tracker branch accumulates the integrated feature and is the only branch intended to merge to main. Child PR 1 targets the tracker branch; Child PR 2 targets Child PR 1's branch; Child PR 3 targets Child PR 2's branch. Retarget or rebase any child whose diff includes prior slices. This phase creates no branches, commits, or PRs.
+The tracker branch accumulates the integrated feature and is the only branch intended to merge to main. Child PR 1 targets the tracker branch; Child PR 2 targets Child PR 1's branch; Child PR 3 targets Child PR 2's branch. Retarget or rebase any child whose diff includes prior slices. The local-only feature-branch chain is now materialized: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8`; replay child `feat/pit-market-context-replay` @ `6bdd9bb`; CLI child `feat/pit-market-context-cli` @ `1a39a4f` (current branch). No pushes or PRs exist.
+
+### Materialized Local Chain
+
+| Slice | Base | Local branch | Commit | Review size | Remote / PR state |
+|---|---|---|---|---|---|
+| Tracker | `main` | `feat/point-in-time-market-context` | `70f4be0` | N/A | Local only; no push / no PR |
+| Domain / JSON | tracker | `feat/pit-market-context-domain` | `dd444b8` | 593 | Local only; no push / no PR |
+| Replay integration | domain child | `feat/pit-market-context-replay` | `6bdd9bb` | 327 | Local only; no push / no PR |
+| CLI / boundaries | replay child | `feat/pit-market-context-cli` | `1a39a4f` | 782 | Local only; current branch; no push / no PR |
 
 ### Suggested Work Units
 
 | Unit | Goal | Likely PR | Focused test command | Runtime harness | Rollback boundary |
 |---|---|---|---|---|---|
-| 1 | Immutable `MarketContext` plus JSON adapter, fixture, and tests | Child PR 1; base = tracker branch | `pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py` | N/A: pure domain/file-decoder boundary | Remove the context domain, JSON adapter, fixture, and their tests |
-| 2 | Replay integration plus context outcomes and tests | Child PR 2; base = Child PR 1 branch | `pytest tests/application/test_backtest_run.py` | N/A: application behavior is exercised through focused replay tests | Revert `backtest_run.py`, `models.py`, and replay-test additions while retaining Unit 1 |
-| 3 | CLI/reporting plus boundary safety and tests | Child PR 3; base = Child PR 2 branch | `pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py` | `invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` | Revert CLI/reporting and boundary-safety test additions while retaining Units 1–2 |
+| 1 | Immutable `MarketContext` plus JSON adapter, fixture, and tests | Child PR 1; base = tracker `feat/point-in-time-market-context` @ `70f4be0`; local child = `feat/pit-market-context-domain` @ `dd444b8`; review size 593 | `pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py` | N/A: pure domain/file-decoder boundary | Remove the context domain, JSON adapter, fixture, and their tests |
+| 2 | Replay integration plus context outcomes and tests | Child PR 2; base = `feat/pit-market-context-domain` @ `dd444b8`; local child = `feat/pit-market-context-replay` @ `6bdd9bb`; review size 327 | `pytest tests/application/test_backtest_run.py` | N/A: application behavior is exercised through focused replay tests | Revert `backtest_run.py`, `models.py`, and replay-test additions while retaining Unit 1 |
+| 3 | CLI/reporting plus boundary safety and tests | Child PR 3; base = `feat/pit-market-context-replay` @ `6bdd9bb`; local child = `feat/pit-market-context-cli` @ `1a39a4f` (current branch); review size 782 | `pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py` | `invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` | Revert CLI/reporting and boundary-safety test additions while retaining Units 1–2 |
 
 ## Phase 1: Context Domain and File Adapter
 

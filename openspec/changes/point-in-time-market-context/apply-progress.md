@@ -2,11 +2,11 @@
 
 **Change**: `point-in-time-market-context`
 **Mode**: Strict TDD
-**Delivery**: chained PR handoff
+**Delivery**: local feature-branch chain
 **Chain Strategy**: `feature-branch-chain`
-**Boundary**: completed implementation now maps to three dependent review slices: domain/JSON → replay integration → CLI/reporting and boundary safety
-**Review Budget**: 1,223 authored lines vs 800-line budget (`+423`; automatic gate failure)
-**Chain State**: local tracker plus three dependent child branches materialized; Domain / JSON and Replay integration committed; CLI / boundaries materialized by this commit; no PRs or remote actions
+**Boundary**: completed implementation is now materialized as three dependent local review slices: domain/JSON → replay integration → CLI/reporting and boundary safety
+**Review Budget**: integrated tracker→CLI diff = 1,702 changed lines; materialized slice reviews = 593 / 327 / 782; the CLI slice remains 382 lines above the default 400-line review budget
+**Chain State**: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8` (review size 593); replay child `feat/pit-market-context-replay` @ `6bdd9bb` (review size 327); CLI child `feat/pit-market-context-cli` @ `1a39a4f` (review size 782, current branch); no pushes or PRs
 
 ## Completed Tasks
 
@@ -41,7 +41,7 @@
 | `tests/application/test_execute_run.py` | Modified | Added regression guard that execution flow stays free of market-context dependency. |
 | `tests/adapters/test_cli_execute.py` | Modified | Added regression guard that execute CLI does not accept backtest market-context input. |
 | `tests/adapters/test_alpaca_broker.py` | Modified | Added regression guard that broker adapter remains market-context-free. |
-| `openspec/changes/point-in-time-market-context/tasks.md` | Modified | Marked all 12 tasks complete and recorded the 1,223-line chained-review handoff metadata. |
+| `openspec/changes/point-in-time-market-context/tasks.md` | Modified | Marked all 12 tasks complete and synchronized the exact local review-chain branch, commit, review-size, and no-remote state. |
 
 ## TDD Cycle Evidence
 
@@ -70,23 +70,33 @@
 - **Full suite**: `uv run --extra dev pytest` → 202 passed, 3 skipped in 7.43s
 - **Linter**: `uv run --extra dev ruff check .` → all checks passed
 - **Runtime harness**: `uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` → exit 0; `trade_count=1`; `context_outcomes=[]`; warnings include `point-in-time-market-context-validated`
-- **Command provenance**: focused commands, runtime harness, full suite, and Ruff were rerun while materializing the local feature-branch chain.
+- **Command provenance**: focused commands, runtime harness, full suite, and Ruff were recorded during local chain materialization; no commands were run during this artifact synchronization pass.
 
-## Delivery Handoff After Gate Failure
+## Materialized Local Review Chain
 
-- **Implementation completion**: 12/12 tasks remain complete; no implementation code, tests, or fixtures changed in this handoff.
-- **Gate failure**: actual authored churn is 1,223 lines, which exceeds the 800-line review budget by 423 and invalidates the previous single-PR handoff.
-- **Resolved delivery path**: user selected chained PRs with `feature-branch-chain`; do not mix strategies.
-- **Current chain state**: tracker and all three child branches exist locally; no PRs or remote actions have occurred.
-- **Next phase constraint**: proceed with independent verification/review only after this corrected handoff is accepted.
+- **Implementation completion**: 12/12 tasks remain complete; no implementation code, tests, or fixtures changed in this artifact synchronization pass.
+- **Resolved delivery path**: user selected chained PRs with `feature-branch-chain`; the local chain is materialized and the strategy must not change.
+- **Local chain state**: tracker `feat/point-in-time-market-context` @ `70f4be0`; domain child `feat/pit-market-context-domain` @ `dd444b8` (review size 593); replay child `feat/pit-market-context-replay` @ `6bdd9bb` (review size 327); CLI child `feat/pit-market-context-cli` @ `1a39a4f` (review size 782, current branch).
+- **Remote state**: no matching remote heads and no PRs exist for the tracker or child branches.
+- **Verification snapshot**: full suite `202 passed, 3 skipped`; `uv run --extra dev ruff check .` passed.
+- **Next phase constraint**: proceed with independent verification/review from the current local chain; remote review artifacts remain intentionally absent.
+
+## Materialized Branch Ledger
+
+| Slice | Base | Local branch | Commit | Review size | Remote / PR state |
+|---|---|---|---|---|---|
+| Tracker | `main` | `feat/point-in-time-market-context` | `70f4be0` | N/A | Local only; no push / no PR |
+| Domain / JSON | tracker | `feat/pit-market-context-domain` | `dd444b8` | 593 | Local only; no push / no PR |
+| Replay integration | domain child | `feat/pit-market-context-replay` | `6bdd9bb` | 327 | Local only; no push / no PR |
+| CLI / boundaries | replay child | `feat/pit-market-context-cli` | `1a39a4f` | 782 | Local only; current branch; no push / no PR |
 
 ## Chained Review Slice Handoff
 
 | Slice | Planned PR boundary | Focused test command and exact result | Runtime harness command/scenario and exact result | Rollback boundary |
 |---|---|---|---|---|
-| Domain / JSON | Child PR 1; base = tracker branch; scope = immutable `MarketContext`, JSON adapter, fixture, and tests | `uv run --extra dev pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py` → 12 passed in 0.15s | `N/A` — pure domain/file-decoder boundary; no runtime surface beyond focused tests | Remove `src/invest/domain/market_context.py`, `src/invest/adapters/backtest_context_json.py`, `fixtures/backtest/market-context.json`, `tests/domain/test_market_context.py`, and `tests/adapters/test_backtest_context_json.py` |
-| Replay integration | Child PR 2; base = Child PR 1 branch; scope = replay sequencing, coverage enforcement, and `context_outcomes` | `uv run --extra dev pytest tests/application/test_backtest_run.py` → 20 passed in 0.06s | `N/A` — replay behavior is directly exercised through focused application tests | Revert `src/invest/application/backtest_run.py`, `src/invest/domain/models.py`, and PIT additions in `tests/application/test_backtest_run.py` while retaining Domain / JSON |
-| CLI / boundaries | Child PR 3; base = Child PR 2 branch; scope = required CLI context, PIT reporting, and backtest-only regressions | `uv run --extra dev pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py` → 67 passed in 0.34s | `uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` → exit 0; one report with PIT disclaimer key, no legacy static-universe disclaimer keys, empty `context_outcomes`, and zero broker construction | Revert `src/invest/adapters/cli.py` plus PIT CLI/boundary regression tests (`tests/adapters/test_cli_backtest.py`, `tests/test_boundaries.py`, `tests/application/test_execute_run.py`, `tests/adapters/test_cli_execute.py`, `tests/adapters/test_alpaca_broker.py`) while retaining Domain / JSON and Replay integration |
+| Domain / JSON | Child PR 1; base = tracker `feat/point-in-time-market-context` @ `70f4be0`; local child = `feat/pit-market-context-domain` @ `dd444b8`; review size 593; scope = immutable `MarketContext`, JSON adapter, fixture, and tests | `uv run --extra dev pytest tests/domain/test_market_context.py tests/adapters/test_backtest_context_json.py` → 12 passed in 0.15s | `N/A` — pure domain/file-decoder boundary; no runtime surface beyond focused tests | Remove `src/invest/domain/market_context.py`, `src/invest/adapters/backtest_context_json.py`, `fixtures/backtest/market-context.json`, `tests/domain/test_market_context.py`, and `tests/adapters/test_backtest_context_json.py` |
+| Replay integration | Child PR 2; base = `feat/pit-market-context-domain` @ `dd444b8`; local child = `feat/pit-market-context-replay` @ `6bdd9bb`; review size 327; scope = replay sequencing, coverage enforcement, and `context_outcomes` | `uv run --extra dev pytest tests/application/test_backtest_run.py` → 20 passed in 0.06s | `N/A` — replay behavior is directly exercised through focused application tests | Revert `src/invest/application/backtest_run.py`, `src/invest/domain/models.py`, and PIT additions in `tests/application/test_backtest_run.py` while retaining Domain / JSON |
+| CLI / boundaries | Child PR 3; base = `feat/pit-market-context-replay` @ `6bdd9bb`; local child = `feat/pit-market-context-cli` @ `1a39a4f` (current branch); review size 782; scope = required CLI context, PIT reporting, and backtest-only regressions | `uv run --extra dev pytest tests/adapters/test_cli_backtest.py tests/test_boundaries.py tests/application/test_execute_run.py tests/adapters/test_cli_execute.py tests/adapters/test_alpaca_broker.py` → 67 passed in 0.34s | `uv run --extra dev invest-backtest --universe fixtures/backtest/universe.json --bars fixtures/backtest/bars.json --market-context fixtures/backtest/market-context.json --split-date 2024-01-23 --format json` → exit 0; one report with PIT disclaimer key, no legacy static-universe disclaimer keys, empty `context_outcomes`, and zero broker construction | Revert `src/invest/adapters/cli.py` plus PIT CLI/boundary regression tests (`tests/adapters/test_cli_backtest.py`, `tests/test_boundaries.py`, `tests/application/test_execute_run.py`, `tests/adapters/test_cli_execute.py`, `tests/adapters/test_alpaca_broker.py`) while retaining Domain / JSON and Replay integration |
 
 ## Work Unit Evidence
 
@@ -102,7 +112,7 @@ None — implementation matches design.
 
 ## Issues Found
 
-- The previous apply handoff recorded an outdated single-PR boundary and outdated churn estimate; the corrected authored review load is 1,223 lines, which fails the 800-line budget by 423.
+- The previous artifact snapshot still claimed no materialized local branches/commits and stale review metadata; this sync replaces it with the exact local chain state.
 - The initial frozen `MarketContext` exposed a mutable dictionary; chain materialization wrapped it in `MappingProxyType` and added a regression test.
 - The initial PIT report retained a legacy fixed-screen survivorship warning; chain materialization now replaces both legacy static-universe disclaimer keys with the PIT statement.
 
@@ -112,12 +122,12 @@ None.
 
 ## Workload / PR Boundary
 
-- **Mode**: chained PR handoff (`feature-branch-chain`)
-- **Current work unit**: delivery-handoff correction only; implementation scope already spans all 12 completed tasks
-- **Boundary**: starts at the new file-backed `MarketContext` seam and ends at required `invest-backtest` PIT reporting plus backtest-only regressions; review must now consume that completed scope as three dependent slices rather than one PR
-- **Actual authored-line status**: 1,223 code/test/fixture lines → above the 800-line budget by 423; single-PR handoff failed automatic gate
-- **Chain state**: tracker and all three dependent child branches materialized locally; no PRs or remote actions
+- **Mode**: local feature-branch chain (`feature-branch-chain`)
+- **Current work unit**: artifact synchronization only; implementation already exists as three local work-unit commits
+- **Boundary**: tracker `feat/point-in-time-market-context` @ `70f4be0` → domain child `dd444b8` → replay child `6bdd9bb` → CLI child `1a39a4f`
+- **Review status**: slice reviews = 593 / 327 / 782; integrated tracker→CLI diff = 1,702 changed lines; the CLI slice still exceeds the 400-line target by 382
+- **Chain state**: current branch `feat/pit-market-context-cli`; no pushes or PRs
 
 ## Status
 
-12/12 tasks complete. Corrected handoff preserves TDD evidence and is ready for independent verify/review once this handoff passes.
+12/12 tasks complete. Local chain state, TDD evidence, and verification results are synchronized; ready for sdd-verify.
