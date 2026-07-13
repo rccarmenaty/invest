@@ -4,11 +4,19 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from invest.domain.models import AccountSnapshot, BrokerAck, FixtureInputs, OrderIntent, Universe
+from invest.domain.models import AccountSnapshot, BrokerAck, DailyBar, FixtureInputs, OrderIntent, ScanDecision, Universe
 
 
 class FixtureReader(Protocol):
     def load(self, universe_path: Path, bars_path: Path) -> FixtureInputs: ...
+
+
+class ScannerPort(Protocol):
+    """Seam shared by `MomentumScanner` (benchmark) and `MomentumSelectionScanner`
+    (core): either strategy runs through the identical, unmodified `BacktestRun`
+    replay harness."""
+
+    def scan(self, universe: Universe, bars: tuple[DailyBar, ...]) -> list[ScanDecision]: ...
 
 
 @runtime_checkable

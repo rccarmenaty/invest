@@ -200,3 +200,15 @@ def test_market_context_flag_is_backtest_only_and_never_added_to_execute_parser(
 
     assert "market_context" in backtest_options
     assert "market_context" not in execute_options
+
+
+def test_strategy_flag_is_backtest_only_and_absent_from_execute_and_scan_parsers() -> None:
+    from invest.adapters.cli import _backtest_parser, _execute_parser, _parser
+
+    backtest_options = {action.dest for action in _backtest_parser()._actions}
+    execute_options = {action.dest for action in _execute_parser()._actions}
+    scan_options = {action.dest for action in _parser()._actions}
+
+    assert "strategy" in backtest_options
+    assert "strategy" not in execute_options
+    assert "strategy" not in scan_options
