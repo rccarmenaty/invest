@@ -1,0 +1,106 @@
+{
+  "schema": "session-native-review-ledger/v1",
+  "change": "momentum-selection-scanner",
+  "mode": "ordinary_4r",
+  "frozen_at": "2026-07-14",
+  "note": "Native gentle-ai review CAS tooling incompatible with this flow (same limitation recorded by the point-in-time-market-context archive); ledger persisted directly from the four lens sweeps.",
+  "findings": [
+    {
+      "id": "RES-001",
+      "lens": "resilience",
+      "location": "src/invest/domain/momentum_selection_scanner.py:38-44 (pre-fix)",
+      "severity": "CRITICAL",
+      "claim": "Stage-0 history gate omitted the MISSING_DATA (zero-volume) and DOMAIN_INVARIANT_VIOLATION (invalid OHLC) guards documented in design.md Data Flow and enforced by the sibling MomentumScanner, letting corrupt bars silently reach ranking/proximity/trend math.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/invest/domain/momentum_selection_scanner.py:38-44 (pre-fix)",
+        "src/invest/domain/scanner.py:31-39",
+        "openspec/changes/momentum-selection-scanner/design.md:32",
+        "src/invest/adapters/fixtures_json.py:36",
+        "src/invest/adapters/alpaca_market_data.py:31"
+      ],
+      "status": "fixed",
+      "fix": {
+        "files": [
+          "src/invest/domain/momentum_selection_scanner.py",
+          "tests/domain/test_momentum_selection_scanner.py"
+        ],
+        "red_evidence": "2 failed (test_rejects_zero_volume_bars_as_missing_data_and_excludes_from_ranking, test_rejects_invalid_ohlc_bars_as_domain_invariant_violation) before guards",
+        "green_evidence": "uv run --extra dev pytest -q -> 241 passed, 3 skipped; ruff clean",
+        "scoped_validation": "approve (detached read-only validator, 2026-07-14)"
+      }
+    },
+    {
+      "id": "RES-002",
+      "lens": "resilience",
+      "location": "src/invest/application/backtest_run.py:88-105; src/invest/adapters/cli.py:257-336",
+      "severity": "WARNING",
+      "claim": "Rejected ScanDecisions (all five scanner rejection reasons) are discarded with no counter, journal entry, or report field, so a scanner regression is indistinguishable from a quiet market in backtest output.",
+      "evidence_class": "inferential",
+      "status": "info"
+    },
+    {
+      "id": "RES-003",
+      "lens": "resilience",
+      "location": "src/invest/domain/momentum_selection_scanner.py:_group_by_symbol; src/invest/application/ports.py:ScannerPort",
+      "severity": "WARNING",
+      "claim": "Duplicate-date/non-monotonic bar defense exists only at the JsonFixtureReader boundary; callers of ScannerPort with unvalidated bars (e.g. fetch_range pagination) can silently corrupt window math.",
+      "evidence_class": "inferential",
+      "status": "info"
+    },
+    {
+      "id": "REL-001",
+      "lens": "reliability",
+      "location": "src/invest/domain/momentum_selection_scanner.py:33-58; src/invest/application/backtest_run.py:88-105",
+      "severity": "WARNING",
+      "claim": "Cross-sectional rank pool can mix candidates with different candidate dates (bar gaps) and no spec text or test defines the intended ranking behavior for that case.",
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "REL-002",
+      "lens": "reliability",
+      "location": "tests/domain/test_momentum_selection_scanner.py (mixed-date ordering test)",
+      "severity": "SUGGESTION",
+      "claim": "The only mixed-date cross-section test asserts membership/ordering but never accepted/reason, so it is mutation-blind on the ranking outcome it constructs.",
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "READ-001",
+      "lens": "readability",
+      "location": "src/invest/application/backtest_run.py:382-415",
+      "severity": "WARNING",
+      "claim": "BacktestRun._simulate_trade is dead code duplicating _exit_for_bar exit logic (pre-existing; already recorded by two archived reviews).",
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "READ-002",
+      "lens": "readability",
+      "location": "src/invest/adapters/cli.py:210-211 vs src/invest/application/backtest_run.py:244,260-264",
+      "severity": "WARNING",
+      "claim": "Metrics and segment metrics are computed twice with identical inputs; the values stored on BacktestResult are discarded by the CLI report (pre-existing pattern).",
+      "evidence_class": "deterministic",
+      "status": "info"
+    },
+    {
+      "id": "READ-003",
+      "lens": "readability",
+      "location": "src/invest/domain/momentum_selection_scanner.py:20-22",
+      "severity": "SUGGESTION",
+      "claim": "HISTORY_DAYS = 253 depends exactly on MOMENTUM_FAR_DAYS + 1 but the coupling is documented only in design.md, not at the constants.",
+      "evidence_class": "inferential",
+      "status": "info"
+    },
+    {
+      "id": "RISK-000",
+      "lens": "risk",
+      "location": "n/a",
+      "severity": "SUGGESTION",
+      "claim": "Explicit empty result: the risk sweep found no findings (CLI allow-list fail-closed; execution/broker path unreachable from the new code; domain purity verified).",
+      "evidence_class": "deterministic",
+      "status": "info"
+    }
+  ]
+}
