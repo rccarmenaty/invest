@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from email.utils import format_datetime
 from decimal import Decimal
 
 import httpx
@@ -171,6 +172,45 @@ def test_fetch_range_rejects_rows_shorter_than_declared_columns(monkeypatch) -> 
     assert caught.value.reason == "malformed-response"
 
 
+def test_fetch_range_rejects_duplicate_symbol_date_rows(monkeypatch) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [
+                    ["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                    ["ACME", "2024-01-02", 11, 12, 10, 11, 200, 11],
+                ]
+            ),
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "malformed-response"
+
+
+def test_fetch_range_rejects_duplicate_symbol_date_rows_across_cursor_pages(monkeypatch) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("qopts.cursor_id") is None:
+            return httpx.Response(
+                200, json=_sep_page([["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10]], "page-2")
+            )
+        assert request.url.params["qopts.cursor_id"] == "page-2"
+        return httpx.Response(200, json=_sep_page([["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10]]))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "malformed-response"
+
+
 def test_fetch_range_rejects_incomplete_symbol_date_coverage(monkeypatch) -> None:
     """A reported trading date must contain a bar for every requested symbol."""
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
@@ -278,6 +318,55 @@ def test_auth_responses_fail_without_retry(monkeypatch, status: int) -> None:
 
     assert caught.value.reason == "auth-failure"
     assert attempts == 1
+
+
+@pytest.mark.parametrize(("delay", "expected_sleep"), [(2, 2.0), (10, 4.0)])
+def test_retryable_status_honors_http_date_retry_after(
+    monkeypatch, delay: int, expected_sleep: float
+) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    attempts = 0
+    sleeps: list[float] = []
+    now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    retry_after = format_datetime(now + timedelta(seconds=delay), usegmt=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, headers={"Retry-After": retry_after})
+
+    reader = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=sleeps.append,
+        now=lambda: now,
+    )
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 1, 31))
+
+    assert caught.value.reason == "rate-limited"
+    assert attempts == 3
+    assert sleeps == [expected_sleep, expected_sleep]
+
+
+def test_request_errors_retry_then_raise_network_failure(monkeypatch) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    reader = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=sleeps.append
+    )
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 1, 31))
+
+    assert caught.value.reason == "network-failure"
+    assert attempts == 3
+    assert sleeps == [0.5, 1.0]
 
 
 @pytest.mark.parametrize(
