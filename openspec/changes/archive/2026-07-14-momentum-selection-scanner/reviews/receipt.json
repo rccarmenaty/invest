@@ -1,0 +1,33 @@
+{
+  "schema": "session-native-review-receipt/v1",
+  "change": "momentum-selection-scanner",
+  "lineage_id": "momentum-selection-scanner-clean",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "terminal_state": "approved",
+  "date": "2026-07-14",
+  "snapshot": {
+    "branch": "feat/momentum-selection-scanner",
+    "base": "main@143bb9f (content-identical to feat/point-in-time-market-context-integrated@1c279cd)",
+    "delivered_as": "chained slice commits recorded in the delivery PRs referenced by apply-progress"
+  },
+  "sweeps": {
+    "risk": "no-findings",
+    "readability": "info-only",
+    "reliability": "info-only",
+    "resilience": "1 CRITICAL corroborated + 2 info"
+  },
+  "refuter_batches_consumed": 0,
+  "correction_transactions_consumed": 1,
+  "corroborated_ids": ["RES-001"],
+  "corrected_ids": ["RES-001"],
+  "scoped_validation": "approve",
+  "final_evidence": {
+    "test_command": "uv run --extra dev pytest -q",
+    "test_result": "241 passed, 3 skipped",
+    "lint_command": "uv run --extra dev ruff check .",
+    "lint_result": "All checks passed",
+    "byte_parity": "default vs --strategy benchmark stdout identical via diff (verify-report)"
+  },
+  "tooling_note": "Native gentle-ai CAS review store incompatible; session-native receipt with real command evidence, no fabricated chain hashes."
+}
