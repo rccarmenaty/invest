@@ -41,6 +41,8 @@
 - `src/invest/adapters/sharadar_market_data.py` — new SEP-only reader.
 - `tests/adapters/test_sharadar_market_data.py` — mocked behavioral coverage.
 - `openspec/changes/sharadar-sep-adapter/tasks.md` — PR 1 task completion and resolved chain decision.
+- `pyproject.toml` — add the `exchange-calendars` dependency.
+- `uv.lock` — lock `exchange-calendars` and its resolved transitive dependencies.
 
 ### Next Steps
 

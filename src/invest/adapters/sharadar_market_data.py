@@ -1,7 +1,8 @@
 import os
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
 import exchange_calendars as xcals
@@ -71,15 +72,18 @@ class SharadarMarketDataReader:
         *,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client or httpx.Client()
         self._sleep = sleep
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs:
         return self.fetch_range(universe, as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS), as_of)
 
     def fetch_range(self, universe: Universe, start: date, end: date) -> FixtureInputs:
         bars: list[DailyBar] = []
+        bar_keys: set[tuple[str, date]] = set()
         cursor: str | None = None
         for page_number in range(1, self.MAX_PAGES + 1):
             params = self._request_params(universe, start, end)
@@ -87,7 +91,13 @@ class SharadarMarketDataReader:
                 params["qopts.cursor_id"] = cursor
             try:
                 payload = _SepResponse.model_validate(self._send(params).json())
-                bars.extend(self._rows_to_bars(payload))
+                page_bars = self._rows_to_bars(payload)
+                for bar in page_bars:
+                    key = (bar.symbol, bar.date)
+                    if key in bar_keys:
+                        raise ValueError("duplicate SEP symbol-date row")
+                    bar_keys.add(key)
+                bars.extend(page_bars)
             except (ValidationError, ValueError, TypeError):
                 raise MarketDataFetchError("malformed-response") from None
             cursor = payload.meta.next_cursor_id
@@ -168,14 +178,22 @@ class SharadarMarketDataReader:
             return response
         raise AssertionError("retry loop must return or raise")
 
-    @classmethod
-    def _backoff(cls, attempt: int, retry_after: str | None) -> float:
+    def _backoff(self, attempt: int, retry_after: str | None) -> float:
         if retry_after is not None:
             try:
-                return min(max(float(retry_after), 0.0), cls.BACKOFF_CAP_SECONDS)
+                delay = float(retry_after)
             except ValueError:
-                pass
-        return min(cls.BACKOFF_BASE_SECONDS * (2**attempt), cls.BACKOFF_CAP_SECONDS)
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    now = self._now()
+                    if now.tzinfo is None:
+                        now = now.replace(tzinfo=timezone.utc)
+                    delay = (retry_at - now).total_seconds()
+                except (IndexError, TypeError, ValueError):
+                    delay = None
+            if delay is not None:
+                return min(max(delay, 0.0), self.BACKOFF_CAP_SECONDS)
+        return min(self.BACKOFF_BASE_SECONDS * (2**attempt), self.BACKOFF_CAP_SECONDS)
 
     def _build_request(self, params: dict[str, str]) -> httpx.Request:
         api_key = os.environ.get("NASDAQ_DATA_LINK_API_KEY")
