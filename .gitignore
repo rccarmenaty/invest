@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .atl/
+.codegraph/
 openspec/changes/*/reviews/
 fixtures/snapshots/sharadar/
 *.sqlite
