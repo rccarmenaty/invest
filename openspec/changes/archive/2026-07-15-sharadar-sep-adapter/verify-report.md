@@ -1,19 +1,3 @@
-```yaml
-schema: gentle-ai.verify-result/v1
-evidence_revision: sha256:2bfed9c3bb6cf66f1fc90741f4d22d13a675b8e6b6848bebd0c4784c3f20f71a
-verdict: pass
-blockers: 0
-critical_findings: 0
-requirements: 9/9
-scenarios: 15/15
-test_command: uv run pytest tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py
-test_exit_code: 0
-test_output_hash: sha256:2bfed9c3bb6cf66f1fc90741f4d22d13a675b8e6b6848bebd0c4784c3f20f71a
-build_command: uv run ruff check src/invest/adapters/sharadar_market_data.py src/invest/adapters/cli.py tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py
-build_exit_code: 0
-build_output_hash: sha256:82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18
-```
-
 # Verify Report: Sharadar SEP Adapter
 
 **Status: PASS** — all 13 implementation/verification tasks are checked; the current combined focused suite and full suite are green. The credential-gated live SEP smoke was skipped because `NASDAQ_DATA_LINK_API_KEY` is absent; no request was made. Ordinary review `review-0a0e79d70c1fe394` is approved. No archive claim is made.
