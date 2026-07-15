@@ -1,4 +1,5 @@
 import ast
+import subprocess
 from pathlib import Path
 
 
@@ -25,7 +26,9 @@ def test_domain_has_no_outward_dependencies_or_nondeterministic_calls() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported = [alias.name for alias in node.names]
-                violations.extend(f"{path}:{node.lineno}: import {name}" for name in imported if _forbidden(name))
+                violations.extend(
+                    f"{path}:{node.lineno}: import {name}" for name in imported if _forbidden(name)
+                )
             elif isinstance(node, ast.ImportFrom) and node.module and _forbidden(node.module):
                 violations.append(f"{path}:{node.lineno}: from {node.module}")
             elif isinstance(node, ast.Call):
@@ -55,12 +58,17 @@ def test_domain_boundary_explicitly_forbids_market_data_dependencies() -> None:
 
 def test_live_marker_is_registered() -> None:
     import tomllib
+
     config = tomllib.loads(Path("pyproject.toml").read_text())
-    assert "live: calls the real Alpaca market-data API" in config["tool"]["pytest"]["ini_options"]["markers"]
+    assert (
+        "live: calls the real Alpaca market-data API"
+        in config["tool"]["pytest"]["ini_options"]["markers"]
+    )
 
 
 def test_paper_execute_marker_is_registered() -> None:
     import tomllib
+
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert (
         "paper_execute: submits a real paper order to Alpaca"
@@ -118,7 +126,9 @@ def test_strengthened_broker_reference_checker_catches_module_attribute_evasion(
     assert violations != []
 
 
-def test_strengthened_broker_reference_checker_has_no_false_positives_on_real_backtest_sources() -> None:
+def test_strengthened_broker_reference_checker_has_no_false_positives_on_real_backtest_sources() -> (
+    None
+):
     """Regression guard: the strengthened check must not flag the actual backtest sources.
     backtest_run.py/backtest_metrics.py legitimately never reference alpaca_broker at all.
     cli.py DOES import AlpacaBroker/BrokerFetchError module-wide for `execute_main` (a
@@ -163,7 +173,9 @@ def test_backtest_code_path_never_imports_broker_or_references_brokerport() -> N
         if isinstance(node, ast.FunctionDef) and node.name in backtest_function_names:
             violations.extend(_find_broker_references(node, f"cli.py::{node.name}"))
 
-    assert violations == [], "Backtest code path touches broker/BrokerPort:\n" + "\n".join(violations)
+    assert violations == [], "Backtest code path touches broker/BrokerPort:\n" + "\n".join(
+        violations
+    )
 
 
 def test_out_of_scope_guard_no_gap_strategy_confirmation_module_or_live_trading_url() -> None:
@@ -212,3 +224,101 @@ def test_strategy_flag_is_backtest_only_and_absent_from_execute_and_scan_parsers
     assert "strategy" in backtest_options
     assert "strategy" not in execute_options
     assert "strategy" not in scan_options
+
+
+def test_sharadar_source_is_backtest_only_and_protected_snapshot_data_is_ignored() -> None:
+    from invest.adapters.cli import _backtest_parser, _execute_parser, _parser
+
+    backtest_options = {action.dest for action in _backtest_parser()._actions}
+    execute_options = {action.dest for action in _execute_parser()._actions}
+    scan_options = {action.dest for action in _parser()._actions}
+    assert "source" in backtest_options
+    assert "source" not in execute_options
+    assert "source" not in scan_options
+
+    cli_tree = ast.parse(Path("src/invest/adapters/cli.py").read_text(encoding="utf-8"))
+    backtest_functions = {"_backtest_parser", "backtest_main", "_backtest_report"}
+    forbidden_functions = {"_parser", "main", "_execute_parser", "execute_main"}
+    for node in ast.walk(cli_tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        references = {
+            reference.id
+            for reference in ast.walk(node)
+            if isinstance(reference, ast.Name) and reference.id == "SharadarMarketDataReader"
+        }
+        if node.name in backtest_functions:
+            continue
+        if node.name in forbidden_functions:
+            assert references == set()
+
+    protected = subprocess.run(
+        ["git", "check-ignore", "--stdin"],
+        check=False,
+        capture_output=True,
+        input="fixtures/snapshots/sharadar/bars.json\nbacktest.sqlite\n",
+        text=True,
+    )
+    assert protected.stdout.splitlines() == [
+        "fixtures/snapshots/sharadar/bars.json",
+        "backtest.sqlite",
+    ]
+
+
+def test_sharadar_reader_name_is_isolated_to_the_backtest_dispatch() -> None:
+    cli_tree = ast.parse(Path("src/invest/adapters/cli.py").read_text(encoding="utf-8"))
+    source_flag_functions = {
+        node.name
+        for node in ast.walk(cli_tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(value, ast.Constant) and value.value == "--source"
+            for value in ast.walk(node)
+        )
+    }
+    assert source_flag_functions == {"_backtest_parser"}
+
+    reader_imports = [
+        node
+        for node in ast.walk(cli_tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "invest.adapters.sharadar_market_data"
+        and any(alias.name == "SharadarMarketDataReader" for alias in node.names)
+    ]
+    assert len(reader_imports) == 1
+    backtest_dispatch = next(
+        node
+        for node in cli_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "backtest_main"
+    )
+    assert reader_imports == [
+        node
+        for node in ast.walk(backtest_dispatch)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "invest.adapters.sharadar_market_data"
+    ]
+
+    protected_paths = (
+        Path("src/invest/adapters/alpaca_broker.py"),
+        Path("src/invest/application/execute_run.py"),
+        Path("src/invest/application/scan_run.py"),
+        Path("src/invest/domain/scanner.py"),
+        Path("src/invest/domain/momentum_selection_scanner.py"),
+    )
+    for path in protected_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        references = [
+            node
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "SharadarMarketDataReader"
+                or isinstance(node, ast.ImportFrom)
+                and node.module == "invest.adapters.sharadar_market_data"
+                or isinstance(node, ast.Import)
+                and any(
+                    alias.name == "invest.adapters.sharadar_market_data" for alias in node.names
+                )
+            )
+        ]
+        assert references == [], f"Sharadar reader escaped backtest boundary: {path}"
