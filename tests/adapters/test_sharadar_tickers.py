@@ -150,15 +150,36 @@ def test_fetch_rejects_a_cursor_after_the_page_bound() -> None:
 
 
 @pytest.mark.parametrize("key", [None, ""])
-def test_missing_or_empty_key_fails_before_transport_without_exposing_the_key(
-    monkeypatch, key
-) -> None:
+def test_missing_or_empty_key_fails_before_transport(monkeypatch, key) -> None:
     if key is None:
         monkeypatch.delenv("NASDAQ_DATA_LINK_API_KEY")
     else:
         monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", key)
-    with pytest.raises(MarketDataFetchError, match="auth-failure") as caught:
+    with pytest.raises(MarketDataFetchError, match="auth-failure"):
         _reader(lambda _: pytest.fail("transport must not be called")).fetch()
+
+
+@pytest.mark.parametrize(
+    ("respond", "reason"),
+    [
+        (lambda _: httpx.Response(401), "auth-failure"),
+        (lambda _: httpx.Response(429), "rate-limited"),
+        (lambda _: httpx.Response(500), "network-failure"),
+        (lambda _: httpx.Response(200, json={"unexpected": "shape"}), "malformed-response"),
+    ],
+)
+def test_no_error_reason_exposes_the_api_key(respond, reason) -> None:
+    """The key travels in the query string, so every raise path must stay key-free."""
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return respond(request)
+
+    with pytest.raises(MarketDataFetchError, match=reason) as caught:
+        _reader(handler).fetch()
+
+    assert "test-key" in str(sent[0].url)
     assert "test-key" not in str(caught.value)
 
 
