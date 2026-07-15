@@ -66,6 +66,14 @@ def test_reader_requires_a_client_and_uses_only_the_fixed_request_shape() -> Non
             ["UNK", "NYSE", "Unknown", "2010-01-04", None, "N"],
             SharadarTicker("UNK", False, True, date(2010, 1, 4), None),
         ),
+        (
+            ["AMX", "AMEX", "Domestic Common Stock", "2010-01-04", None, "N"],
+            SharadarTicker("AMX", True, True, date(2010, 1, 4), None),
+        ),
+        (
+            ["ARC", "ARCA", "Domestic Common Stock Primary Class", "2010-01-04", None, "N"],
+            SharadarTicker("ARC", True, True, date(2010, 1, 4), None),
+        ),
     ],
 )
 def test_fetch_translates_closed_classifications_and_dates(row, expected) -> None:
@@ -147,6 +155,41 @@ def test_fetch_rejects_a_cursor_after_the_page_bound() -> None:
     with pytest.raises(MarketDataFetchError, match="malformed-response"):
         reader.fetch()
     assert requests == 2
+
+
+@pytest.mark.parametrize(
+    ("rows", "columns", "detail"),
+    [
+        ([], COLUMNS, "empty TICKERS response"),
+        ([ROW], ("ticker", "exchange"), "required TICKERS columns missing"),
+    ],
+)
+def test_rejected_payloads_report_why_they_were_rejected(rows, columns, detail) -> None:
+    """Every validation rule has a distinct cause; triage must not see one opaque reason."""
+    with pytest.raises(MarketDataFetchError) as caught:
+        _reader(lambda _: httpx.Response(200, json=_page(rows, None, columns))).fetch()
+
+    assert caught.value.reason == "malformed-response"
+    assert detail in str(caught.value)
+
+
+def test_page_cap_exhaustion_is_distinguishable_from_corrupt_data() -> None:
+    """A dataset exceeding the cap and a corrupt payload need different remediation."""
+    reader = _reader(lambda _: httpx.Response(200, json=_page([ROW], "more")))
+    reader.MAX_PAGES = 2  # type: ignore[assignment]
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch()
+
+    assert caught.value.reason == "malformed-response"
+    assert "page cap" in str(caught.value)
+
+
+def test_ticker_is_immutable() -> None:
+    ticker = SharadarTicker("ACME", True, True, date(2010, 1, 4), None)
+
+    with pytest.raises(AttributeError):
+        ticker.ticker = "OTHER"  # type: ignore[misc]
 
 
 @pytest.mark.parametrize("key", [None, ""])
