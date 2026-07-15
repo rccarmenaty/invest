@@ -34,13 +34,27 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Backtest Wiring and Boundaries (PR 2)
 
-- [ ] 2.1 **RED:** Add failing CLI tests proving explicit `--source sharadar` calls `fetch_range`, omitted `--source` is byte-identical, and an unknown source returns machine-readable `source-invalid` / exit 2 before fetching.
-- [ ] 2.2 **GREEN:** Update `src/invest/adapters/cli.py` with `BACKTEST_SOURCES`, additive `--source` (no argparse choices), and default-preserving source resolution.
-- [ ] 2.3 **RED:** Extend `tests/test_boundaries.py` with failing AST checks that `--source` is backtest-only and no execute/broker/scanner path references the Sharadar reader; add a failing `git check-ignore` assertion for `fixtures/snapshots/sharadar/` and `*.sqlite`.
-- [ ] 2.4 **GREEN:** Add the two `.gitignore` protections and satisfy the boundary checks; refactor only after focused tests are green.
+- [x] 2.1 **RED:** Add failing CLI tests proving explicit `--source sharadar` calls `fetch_range`, omitted `--source` is byte-identical, and an unknown source returns machine-readable `source-invalid` / exit 2 before fetching.
+- [x] 2.2 **GREEN:** Update `src/invest/adapters/cli.py` with `BACKTEST_SOURCES`, additive `--source` (no argparse choices), and default-preserving source resolution.
+- [x] 2.3 **RED:** Extend `tests/test_boundaries.py` with failing AST checks that `--source` is backtest-only and no execute/broker/scanner path references the Sharadar reader; add a failing `git check-ignore` assertion for `fixtures/snapshots/sharadar/` and `*.sqlite`.
+- [x] 2.4 **GREEN:** Add the two `.gitignore` protections and satisfy the boundary checks; refactor only after focused tests are green.
 
 ## Phase 3: Verification
 
-- [ ] 3.1 Run `pytest tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py`; record focused evidence for each PR slice.
-- [ ] 3.2 Run the live SEP smoke only when `NASDAQ_DATA_LINK_API_KEY` is set; otherwise record it as skipped without reading or printing the key.
-- [ ] 3.3 Confirm no TICKERS/ACTIONS, snapshot persistence, context generator, or execution/scanner behavior entered this change.
+- [x] 3.1 Ran `uv run pytest tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py` → exit 0, **66 passed in 1.06s**. This combines the PR 1 reader suite (23 tests) and PR 2 CLI/boundary suites (31 and 12 tests).
+- [x] 3.2 Credential-gated live SEP smoke skipped: a presence-only shell check found `NASDAQ_DATA_LINK_API_KEY` absent. Its value was not read or printed, and no live request or smoke command was made.
+- [x] 3.3 Scope audit passed: the reader contains no TICKERS/ACTIONS, persistence, or context-generator dependency; the only Sharadar reader import is lazy inside `backtest_main`; protected execution/broker/scanner modules contain no reader reference. `.gitignore` protects future snapshots but adds no persistence behavior. The merged clock-free retry fix (`a64e1e5`) has no wall-time call (`datetime.now`/`utcnow`, `date.today`, `time.time`, `monotonic`, or `perf_counter`).
+
+### Phase 3 Evidence (2026-07-15)
+
+| Command / check | Result |
+|---|---|
+| `uv run pytest tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py` | exit 0 — 66 passed in 1.06s |
+| `uv run pytest` | exit 0 — 270 passed, 3 skipped in 13.53s |
+| `uv run ruff check src/invest/adapters/sharadar_market_data.py src/invest/adapters/cli.py tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py` | exit 0 — All checks passed |
+| `uv run ruff format --check src/invest/adapters/sharadar_market_data.py src/invest/adapters/cli.py tests/adapters/test_sharadar_market_data.py tests/adapters/test_cli_backtest.py tests/test_boundaries.py` | exit 0 — 5 files already formatted |
+| `git diff --check` | exit 0 |
+| Credential gate | `NASDAQ_DATA_LINK_API_KEY` absent by presence-only check; skipped without reading/printing the value or making a request |
+| Wall-time AST audit | no prohibited wall-time calls in `src/invest/adapters/sharadar_market_data.py` |
+
+Non-blocking repository-wide formatter note: `uv run ruff format --check src tests` exited 1 because 29 pre-existing, non-slice files would be reformatted; the five changed reader/CLI/test files above are formatted.

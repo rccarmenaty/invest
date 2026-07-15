@@ -39,6 +39,7 @@ from invest.domain.models import Universe
 
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")
+BACKTEST_SOURCES = ("fixture", "alpaca", "sharadar")
 
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
@@ -152,12 +153,18 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tax-rate", type=Decimal, default=DEFAULT_TAX_RATE)
     parser.add_argument("--split-date")
     parser.add_argument("--strategy", default="benchmark")
+    parser.add_argument("--source")
     return parser
 
 
 def backtest_main(argv: Sequence[str] | None = None) -> int:
     """`invest-backtest`: day-by-day replay harness. Never constructs/calls BrokerPort."""
     args = _backtest_parser().parse_args(argv)
+    source = (
+        ("fixture" if args.bars is not None else "alpaca") if args.source is None else args.source
+    )
+    if source not in BACKTEST_SOURCES:
+        return _backtest_source_error()
     try:
         if args.market_context is None:
             return _backtest_context_error("market-context-missing")
@@ -166,19 +173,30 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             return _backtest_cost_model_error()
         if args.strategy not in BACKTEST_STRATEGIES:
             return _backtest_strategy_error()
-        if args.bars is not None:
+        if source == "fixture":
+            if args.bars is None:
+                raise MarketDataFetchError("fixture-invalid")
             inputs = JsonFixtureReader().load(args.universe, args.bars)
         else:
             if args.start is None or args.end is None:
-                raise MarketDataFetchError("fixture-invalid", "either --bars or --start/--end is required")
+                raise MarketDataFetchError(
+                    "fixture-invalid", "either --bars or --start/--end is required"
+                )
             try:
                 payload = _UniversePayload.model_validate_json(
                     args.universe.read_text(encoding="utf-8")
                 )
             except (OSError, UnicodeError, ValidationError):
                 raise MarketDataFetchError("fixture-invalid") from None
-            universe = Universe(fixture_version=payload.fixture_version, symbols=tuple(payload.symbols))
-            inputs = AlpacaMarketDataReader().fetch_range(universe, args.start, args.end)
+            universe = Universe(
+                fixture_version=payload.fixture_version, symbols=tuple(payload.symbols)
+            )
+            if source == "sharadar":
+                from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+
+                inputs = SharadarMarketDataReader().fetch_range(universe, args.start, args.end)
+            else:
+                inputs = AlpacaMarketDataReader().fetch_range(universe, args.start, args.end)
             missing = sorted(set(inputs.universe.symbols) - {bar.symbol for bar in inputs.bars})
             if missing:
                 # Alpaca can silently omit a symbol (delisted ticker, feed gap, partial
@@ -204,11 +222,11 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             scanner=scanner,
             slippage_bps=args.slippage_bps,
             tax_rate=args.tax_rate,
-        ).replay(
-            inputs, split_date=split_date
-        )
+        ).replay(inputs, split_date=split_date)
         metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
-        segments = compute_segment_metrics(list(result.trades), split_date, args.slippage_bps, args.tax_rate)
+        segments = compute_segment_metrics(
+            list(result.trades), split_date, args.slippage_bps, args.tax_rate
+        )
         report = _backtest_report(result, metrics, segments)
         print(json.dumps(report, sort_keys=True))
         return 0
@@ -237,6 +255,11 @@ def _backtest_cost_model_error() -> int:
 
 def _backtest_strategy_error() -> int:
     print(json.dumps({"reason": "strategy-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_source_error() -> int:
+    print(json.dumps({"reason": "source-invalid"}, sort_keys=True))
     return 2
 
 
@@ -338,7 +361,17 @@ def _backtest_report(result, metrics, segments) -> dict:
 
 def _failed(reason: RejectionReason) -> FailedScan:
     event_id = hashlib.sha256(f"1|scan.failed.v1|{reason.value}".encode()).hexdigest()
-    return FailedScan(schema_version="1", event_type="scan.failed.v1", event_id=event_id, symbol=None, decision_date=date.min, fixture_version="unknown", rule_version=RULE_VERSION, decision="failed", reason=reason.value)
+    return FailedScan(
+        schema_version="1",
+        event_type="scan.failed.v1",
+        event_id=event_id,
+        symbol=None,
+        decision_date=date.min,
+        fixture_version="unknown",
+        rule_version=RULE_VERSION,
+        decision="failed",
+        reason=reason.value,
+    )
 
 
 if __name__ == "__main__":

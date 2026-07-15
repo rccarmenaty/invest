@@ -5,3 +5,5 @@ __pycache__/
 .ruff_cache/
 .atl/
 openspec/changes/*/reviews/
+fixtures/snapshots/sharadar/
+*.sqlite
