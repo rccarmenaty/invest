@@ -19,6 +19,17 @@
 
 **Blockers:** None.
 
+## Post-archive addendum — 4R review (2026-07-15)
+
+A full 4R review (risk, resilience, reliability, readability) plus one refuter batch ran against this change after archive. Outcome: no blockers; the single CRITICAL finding (missing cross-page duplicate detection, raised against the `SharadarMarketDataReader.fetch_range` precedent) was **refuted** — the sibling's `(symbol, date)` key is unique by contract, whereas `DELISTING`/`TICKER_CHANGE` rows always carry `value=None`, so a key-based guard here would drop legitimate distinct same-day events. All remaining findings are non-blocking.
+
+Two review findings were corrected in the test suite:
+
+- `test_sharadar_actions.py` — removed a vacuous `assert bars == before`. `fetch()` takes no arguments and `tuple()` on a tuple returns the same object, so the assertion compared an object to itself and could never fail. Test renamed to drop the isolation claim it did not exercise.
+- `test_sharadar_tickers.py` — the credential-leak assertion ran with the key already unset, against an error message that interpolates nothing, so it could never fail. Replaced with a guard across all four error reasons that asserts the key is present in the outgoing URL and absent from the raised error. Verified to fail when `detail=str(response.request.url)` is injected into the auth path.
+
+**The test counts above are superseded.** This report's `86 passed` reflects verification at archive time. The delivered snapshot yielded 87 before these corrections and **91 after** (four new parametrized leak-guard cases). `ruff check src tests` remains clean. No production source changed in either the review or these corrections.
+
 ---
 
-Provenance: reconstructed on 2026-07-15 from Engram observation 3048 (`sdd/sharadar-reference-data-adapter/verify-report`, 4 revisions), which is the authoritative record for this phase.
+Provenance: reconstructed on 2026-07-15 from Engram observation 3048 (`sdd/sharadar-reference-data-adapter/verify-report`, 4 revisions), which is the authoritative record for the original phase. The addendum above records subsequent review activity and is not part of that observation.

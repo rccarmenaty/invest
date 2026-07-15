@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 from invest.adapters.alpaca_market_data import MarketDataFetchError
-from invest.domain.models import DailyBar
 
 
 COLUMNS = ("ticker", "date", "action", "value")
@@ -48,25 +47,12 @@ def test_request_error_exhaustion_attempts_three_times_and_never_sleeps_after_fi
 
 
 @pytest.mark.parametrize(("action", "value"), [("split", "2"), ("dividend", "0.25")])
-def test_fetch_returns_typed_events_without_changing_independent_daily_bars(
+def test_fetch_returns_typed_events(
     monkeypatch: pytest.MonkeyPatch, action: str, value: str
 ) -> None:
-    """Corporate-action retrieval reports events and cannot adjust supplied SEP bars."""
     from invest.adapters.sharadar_actions import SharadarActionKind
 
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
-    bars = (
-        DailyBar(
-            "ACME",
-            date(2024, 2, 15),
-            Decimal("100"),
-            Decimal("110"),
-            Decimal("95"),
-            Decimal("105"),
-            1234,
-        ),
-    )
-    before = tuple(bars)
     events = _reader(
         lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", action, value]]))
     ).fetch()
@@ -78,7 +64,6 @@ def test_fetch_returns_typed_events_without_changing_independent_daily_bars(
     assert event.effective_date == date(2024, 2, 15)
     assert event.kind is SharadarActionKind(action)
     assert event.value == Decimal(value)
-    assert bars == before
 
 
 def test_fetch_maps_all_provider_literals_to_closed_frozen_events(
