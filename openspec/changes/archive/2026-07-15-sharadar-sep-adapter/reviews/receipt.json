@@ -1,0 +1,31 @@
+{
+  "body": {
+    "schema": "gentle-ai.review-receipt-body/v2",
+    "lineage_id": "review-0a0e79d70c1fe394",
+    "generation": 1,
+    "authority_revision": "a489e926fd2f37afa776d4dcb25a3d3925bd4090cfe5648a66be3ee5cf7cb9c0",
+    "base_tree": "526e46ece6a83968fe3fb6bcb7f4a3d89edbcc51",
+    "initial_review_tree": "a2b89a5c801a3a7c62c95b3f744f20a8d5aa3cdf",
+    "final_candidate_tree": "6674984d151e97b3539d1ad27b476f1bc01f3a6a",
+    "genesis_paths_hash": "a37a474d82b6568a3ef7653de994498dcc907db92bc82d4ee9180a57ddabf3d9",
+    "intended_untracked_hash": "5891954f902e5585d6012c169bfd00da60ca34808dbafabc0ff4ec275547b03c",
+    "policy_hash": "224198293fa43ff1ade20a187503a2bda6a45c5bd2c0d516b1bcb2a845ab1256",
+    "risk_tier": "high",
+    "selected_lenses": [
+      "review-risk",
+      "review-resilience",
+      "review-readability",
+      "review-reliability"
+    ],
+    "original_changed_lines": 603,
+    "correction_budget": 200,
+    "correction_ids": [
+      "RELIABILITY-001",
+      "RELIABILITY-002"
+    ],
+    "fix_diff_hash": "8e0aa1395c4b88c6914cbc7ef39e151d1597628a14849c0cce6b109850c91918",
+    "evidence_hash": "05e5336bba104a53aa40591f281d91e18e4c8f62d39fc0ad57cd07b2b1717598",
+    "terminal_state": "approved"
+  },
+  "receipt_hash": "9809c439663ea88764d3dfbd9e62fd840f152720283026f67d2a99fca1fb4a92"
+}
