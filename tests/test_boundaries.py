@@ -2,6 +2,8 @@ import ast
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 FORBIDDEN_IMPORT_ROOTS = {
     "alpaca",
@@ -322,3 +324,81 @@ def test_sharadar_reader_name_is_isolated_to_the_backtest_dispatch() -> None:
             )
         ]
         assert references == [], f"Sharadar reader escaped backtest boundary: {path}"
+
+
+def _find_reference_reader_references(
+    tree: ast.AST, label: str, reader_name: str, module_name: str
+) -> list[str]:
+    module_parent, module_leaf = module_name.rsplit(".", 1)
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module_name:
+            violations.append(f"{label}: import from {module_name}")
+        elif isinstance(node, ast.ImportFrom) and node.module == module_parent:
+            violations.extend(
+                f"{label}: import from {module_parent} import {alias.name}"
+                for alias in node.names
+                if alias.name == module_leaf
+            )
+        elif isinstance(node, ast.Import):
+            violations.extend(
+                f"{label}: import {alias.name}" for alias in node.names if alias.name == module_name
+            )
+        elif isinstance(node, ast.Name) and node.id == reader_name:
+            violations.append(f"{label}: references {reader_name}")
+        elif isinstance(node, ast.Attribute) and node.attr == reader_name:
+            violations.append(f"{label}: references .{reader_name}")
+    return violations
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "module_name"),
+    [
+        ("SharadarTickersReader", "invest.adapters.sharadar_tickers"),
+    ],
+)
+def test_reference_guard_catches_direct_and_module_qualified_reader_references(
+    reader_name: str, module_name: str
+) -> None:
+    module_parent, module_leaf = module_name.rsplit(".", 1)
+    tree = ast.parse(
+        f"from {module_parent} import {module_leaf}\n"
+        f"from {module_name} import {reader_name}\n"
+        f"{module_leaf}.{reader_name}()\n"
+        f"{reader_name}()\n",
+        filename="<synthetic>",
+    )
+
+    violations = _find_reference_reader_references(tree, "<synthetic>", reader_name, module_name)
+
+    assert violations == [
+        f"<synthetic>: import from {module_parent} import {module_leaf}",
+        f"<synthetic>: import from {module_name}",
+        f"<synthetic>: references .{reader_name}",
+        f"<synthetic>: references {reader_name}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "module_name"),
+    [
+        ("SharadarTickersReader", "invest.adapters.sharadar_tickers"),
+    ],
+)
+def test_reference_readers_are_isolated_from_all_protected_paths(
+    reader_name: str, module_name: str
+) -> None:
+    protected_paths = (
+        Path("src/invest/adapters/cli.py"),
+        Path("src/invest/adapters/alpaca_broker.py"),
+        Path("src/invest/application/execute_run.py"),
+        Path("src/invest/application/scan_run.py"),
+        Path("src/invest/domain/scanner.py"),
+        Path("src/invest/domain/momentum_selection_scanner.py"),
+        Path("src/invest/domain/market_context.py"),
+        Path("src/invest/application/backtest_run.py"),
+        Path("src/invest/adapters/backtest_context_json.py"),
+    )
+    for path in protected_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert _find_reference_reader_references(tree, str(path), reader_name, module_name) == []
