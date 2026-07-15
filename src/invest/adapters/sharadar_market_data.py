@@ -1,8 +1,8 @@
+import math
 import os
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
-from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
 import exchange_calendars as xcals
@@ -72,11 +72,9 @@ class SharadarMarketDataReader:
         *,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
-        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client or httpx.Client()
         self._sleep = sleep
-        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs:
         return self.fetch_range(universe, as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS), as_of)
@@ -179,19 +177,16 @@ class SharadarMarketDataReader:
         raise AssertionError("retry loop must return or raise")
 
     def _backoff(self, attempt: int, retry_after: str | None) -> float:
+        """Return a bounded finite Retry-After delay or deterministic exponential fallback.
+
+        HTTP-date values are intentionally not converted: doing so requires a wall-clock read.
+        """
         if retry_after is not None:
             try:
                 delay = float(retry_after)
             except ValueError:
-                try:
-                    retry_at = parsedate_to_datetime(retry_after)
-                    now = self._now()
-                    if now.tzinfo is None:
-                        now = now.replace(tzinfo=timezone.utc)
-                    delay = (retry_at - now).total_seconds()
-                except (IndexError, TypeError, ValueError):
-                    delay = None
-            if delay is not None:
+                delay = None
+            if delay is not None and not math.isnan(delay):
                 return min(max(delay, 0.0), self.BACKOFF_CAP_SECONDS)
         return min(self.BACKOFF_BASE_SECONDS * (2**attempt), self.BACKOFF_CAP_SECONDS)
 
