@@ -355,6 +355,7 @@ def _find_reference_reader_references(
     ("reader_name", "module_name"),
     [
         ("SharadarTickersReader", "invest.adapters.sharadar_tickers"),
+        ("SharadarActionsReader", "invest.adapters.sharadar_actions"),
     ],
 )
 def test_reference_guard_catches_direct_and_module_qualified_reader_references(
@@ -383,6 +384,7 @@ def test_reference_guard_catches_direct_and_module_qualified_reader_references(
     ("reader_name", "module_name"),
     [
         ("SharadarTickersReader", "invest.adapters.sharadar_tickers"),
+        ("SharadarActionsReader", "invest.adapters.sharadar_actions"),
     ],
 )
 def test_reference_readers_are_isolated_from_all_protected_paths(
