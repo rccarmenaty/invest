@@ -91,11 +91,14 @@ class SharadarActionsReader:
             try:
                 payload = _ActionsResponse.model_validate(self._send(params).json())
                 page_actions = self._rows_to_actions(payload)
-            except (InvalidOperation, KeyError, TypeError, ValidationError, ValueError):
+            except ValidationError:
+                # Pydantic's rendering is a multi-line schema dump; keep it out of the reason.
                 raise MarketDataFetchError("malformed-response") from None
+            except (InvalidOperation, KeyError, TypeError, ValueError) as error:
+                raise MarketDataFetchError("malformed-response", str(error)) from None
             cursor = payload.meta.next_cursor_id
             if cursor is not None and not cursor.strip():
-                raise MarketDataFetchError("malformed-response")
+                raise MarketDataFetchError("malformed-response", "blank pagination cursor")
             actions.extend(page_actions)
             if cursor is None:
                 return tuple(
@@ -110,7 +113,9 @@ class SharadarActionsReader:
                     )
                 )
             if page_number == self.MAX_PAGES:
-                raise MarketDataFetchError("malformed-response")
+                raise MarketDataFetchError(
+                    "malformed-response", f"page cap of {self.MAX_PAGES} exhausted"
+                )
         raise AssertionError("pagination loop must return or raise")
 
     def _rows_to_actions(self, payload: _ActionsResponse) -> list[SharadarAction]:
@@ -152,7 +157,7 @@ class SharadarActionsReader:
         for attempt in range(self.MAX_ATTEMPTS):
             try:
                 response = self._client.send(self._build_request(params))
-            except (httpx.RequestError,):
+            except httpx.RequestError:
                 if attempt == self.MAX_ATTEMPTS - 1:
                     raise MarketDataFetchError("network-failure") from None
                 self._sleep(self._backoff(attempt, None))
@@ -171,6 +176,12 @@ class SharadarActionsReader:
         raise AssertionError("retry loop must return or raise")
 
     def _backoff(self, attempt: int, retry_after: str | None) -> float:
+        """Return a bounded finite Retry-After delay or deterministic exponential fallback.
+
+        HTTP-date values are intentionally not converted: doing so requires a wall-clock read.
+        Infinite and NaN values fall back rather than clamping to the cap, so a nonsense header
+        cannot buy a longer wait than the retry schedule already allows.
+        """
         if retry_after is not None:
             try:
                 delay = float(retry_after)

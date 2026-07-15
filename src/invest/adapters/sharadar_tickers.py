@@ -83,15 +83,20 @@ class SharadarTickersReader:
             try:
                 payload = _TickersResponse.model_validate(self._send(params).json())
                 tickers.extend(self._rows_to_tickers(payload))
-            except (ValidationError, ValueError, TypeError):
+            except ValidationError:
+                # Pydantic's rendering is a multi-line schema dump; keep it out of the reason.
                 raise MarketDataFetchError("malformed-response") from None
+            except (ValueError, TypeError) as error:
+                raise MarketDataFetchError("malformed-response", str(error)) from None
             cursor = payload.meta.next_cursor_id
             if cursor is not None and not cursor.strip():
-                raise MarketDataFetchError("malformed-response")
+                raise MarketDataFetchError("malformed-response", "blank pagination cursor")
             if cursor is None:
                 return tuple(sorted(tickers, key=lambda ticker: ticker.ticker))
             if page_number == self.MAX_PAGES:
-                raise MarketDataFetchError("malformed-response")
+                raise MarketDataFetchError(
+                    "malformed-response", f"page cap of {self.MAX_PAGES} exhausted"
+                )
         raise AssertionError("pagination loop must return or raise")
 
     def _rows_to_tickers(self, payload: _TickersResponse) -> list[SharadarTicker]:
@@ -149,6 +154,12 @@ class SharadarTickersReader:
         raise AssertionError("retry loop must return or raise")
 
     def _backoff(self, attempt: int, retry_after: str | None) -> float:
+        """Return a bounded finite Retry-After delay or deterministic exponential fallback.
+
+        HTTP-date values are intentionally not converted: doing so requires a wall-clock read.
+        Infinite and NaN values fall back rather than clamping to the cap, so a nonsense header
+        cannot buy a longer wait than the retry schedule already allows.
+        """
         if retry_after is not None:
             try:
                 delay = float(retry_after)

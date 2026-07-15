@@ -326,6 +326,11 @@ def test_sharadar_reader_name_is_isolated_to_the_backtest_dispatch() -> None:
         assert references == [], f"Sharadar reader escaped backtest boundary: {path}"
 
 
+# Backtest-only modules permitted to construct the reference readers. Empty until the
+# context-generation change introduces a caller; adding an entry is an explicit decision.
+_ALLOWED_REFERENCE_READER_CALLERS: frozenset[Path] = frozenset()
+
+
 def _find_reference_reader_references(
     tree: ast.AST, label: str, reader_name: str, module_name: str
 ) -> list[str]:
@@ -390,17 +395,21 @@ def test_reference_guard_catches_direct_and_module_qualified_reader_references(
 def test_reference_readers_are_isolated_from_all_protected_paths(
     reader_name: str, module_name: str
 ) -> None:
-    protected_paths = (
-        Path("src/invest/adapters/cli.py"),
-        Path("src/invest/adapters/alpaca_broker.py"),
-        Path("src/invest/application/execute_run.py"),
-        Path("src/invest/application/scan_run.py"),
-        Path("src/invest/domain/scanner.py"),
-        Path("src/invest/domain/momentum_selection_scanner.py"),
-        Path("src/invest/domain/market_context.py"),
-        Path("src/invest/application/backtest_run.py"),
-        Path("src/invest/adapters/backtest_context_json.py"),
-    )
-    for path in protected_paths:
+    """Default-deny: the readers are backtest-only infrastructure with no caller yet.
+
+    Scanning the whole tree rather than a hand-listed set means a newly added module cannot
+    reach the readers without this failing. When a backtest-only caller does arrive, adding it
+    to `_ALLOWED_REFERENCE_READER_CALLERS` is the deliberate, reviewable way to permit it.
+    """
+    own_module = Path("src/invest") / f"{module_name.removeprefix('invest.').replace('.', '/')}.py"
+    violations: list[str] = []
+
+    for path in Path("src/invest").rglob("*.py"):
+        if path == own_module or path in _ALLOWED_REFERENCE_READER_CALLERS:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        assert _find_reference_reader_references(tree, str(path), reader_name, module_name) == []
+        violations.extend(
+            _find_reference_reader_references(tree, str(path), reader_name, module_name)
+        )
+
+    assert violations == []

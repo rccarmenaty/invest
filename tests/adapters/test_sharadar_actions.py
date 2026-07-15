@@ -121,6 +121,47 @@ def test_fetch_rejects_invalid_or_unsupported_action_rows(
         ).fetch()
 
 
+@pytest.mark.parametrize(
+    ("action", "value", "detail"),
+    [
+        ("split", "-2", "split ratio must be positive"),
+        ("dividend", None, "valued ACTIONS action has no finite value"),
+        ("delisting", "3", "valueless ACTIONS action has a value"),
+        ("merger", "1", "unsupported ACTIONS action"),
+    ],
+)
+def test_rejected_rows_report_why_they_were_rejected(
+    monkeypatch: pytest.MonkeyPatch, action: str, value: object, detail: str
+) -> None:
+    """Every validation rule has a distinct cause; triage must not see one opaque reason."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        _reader(
+            lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", action, value]]))
+        ).fetch()
+
+    assert caught.value.reason == "malformed-response"
+    assert detail in str(caught.value)
+
+
+def test_page_cap_exhaustion_is_distinguishable_from_corrupt_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dataset exceeding the cap and a corrupt payload need different remediation."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    reader = _reader(
+        lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", "split", "2"]], "more"))
+    )
+    reader.MAX_PAGES = 2  # type: ignore[assignment]
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch()
+
+    assert caught.value.reason == "malformed-response"
+    assert "page cap" in str(caught.value)
+
+
 def test_fetch_combines_valid_pages_in_stable_event_order(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
     requests = 0
