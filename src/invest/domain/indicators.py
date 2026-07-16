@@ -31,6 +31,16 @@ def trailing_high(bars: Sequence[DailyBar], window: int) -> Decimal:
     return max(bar.high for bar in recent)
 
 
+def trailing_low(bars: Sequence[DailyBar], window: int) -> Decimal:
+    """Lowest low over the last `window` bars of the passed slice.
+
+    The caller owns any signal-day exclusion by slicing `bars` before calling —
+    this reducer always uses the slice's own last elements.
+    """
+    recent = bars[-window:]
+    return min(bar.low for bar in recent)
+
+
 def momentum_return(bars: Sequence[DailyBar], far: int, near: int) -> Decimal:
     """Return of the close `near` bars before the slice's end vs `far` bars before it.
 

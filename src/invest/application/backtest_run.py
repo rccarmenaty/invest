@@ -27,6 +27,13 @@ from invest.domain.backtest_metrics import (
     entry_fill,
     exit_proceeds,
 )
+from invest.domain.exit_policy import (
+    ExitPolicyConfig,
+    ExitPolicyState,
+    initial_state,
+    on_bar,
+    policy_provenance,
+)
 from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
@@ -51,6 +58,8 @@ from invest.application.ports import ScannerPort
 
 NOMINAL_EQUITY = Decimal("100000")
 POINT_IN_TIME_CONTEXT_VALIDATED = "point-in-time-market-context-validated"
+MISSING_NEXT_SESSION_AFTER_EXIT_SIGNAL = "missing-next-session-after-exit-signal"
+DEFAULT_EXIT_POLICY = ExitPolicyConfig(kind="ten-day-low", channel_window=10)
 
 
 @dataclass
@@ -59,10 +68,9 @@ class _OpenPosition:
     entry_date: date
     entry_price: Decimal
     qty: int
-    stop: Decimal
-    take_profit: Decimal
     entry_fill: Decimal
     marked_value: Decimal
+    policy: ExitPolicyState
 
 
 class BacktestRun:
@@ -76,6 +84,7 @@ class BacktestRun:
         buying_power: Decimal | None = None,
         slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
         tax_rate: Decimal = DEFAULT_TAX_RATE,
+        exit_policy: ExitPolicyConfig | None = None,
     ) -> None:
         self._market_context = market_context
         self._scanner = scanner or MomentumScanner()
@@ -84,6 +93,7 @@ class BacktestRun:
         self._buying_power = buying_power
         self._slippage_bps = slippage_bps
         self._tax_rate = tax_rate
+        self._exit_policy = exit_policy if exit_policy is not None else DEFAULT_EXIT_POLICY
 
     def scan_decisions(self, inputs: FixtureInputs) -> list[ScanDecision]:
         """Replay day-by-day, collecting every ACCEPTED decision recorded on its own day.
@@ -131,12 +141,13 @@ class BacktestRun:
         previous_equity = self._equity
         daily_equity: list[tuple[date, Decimal]] = []
         missing_bar_carried_forward = False
+        exit_warnings: list[str] = []
 
         for current_date in sorted(bars_by_date):
             todays_bars = bars_by_date[current_date]
             self._process_unsafe_positions(current_date, positions, todays_bars, trades, context_outcomes)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
-            self._process_exits(positions, todays_bars, trades)
+            self._process_exits(positions, todays_bars, trades, by_symbol)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
 
             missing_bar_carried_forward |= any(symbol not in todays_bars for symbol in positions)
@@ -198,21 +209,24 @@ class BacktestRun:
                     )
                     continue
                 assert intent is not None
-                entry_cost = intent.qty * entry_fill(entry_bar.open, self._slippage_bps)
+                raw_entry = entry_bar.open  # SimulatedTrade.entry_price is RAW; metrics apply entry_fill once
+                slipped_entry = entry_fill(raw_entry, self._slippage_bps)
+                entry_cost = intent.qty * slipped_entry
                 cash -= entry_cost
+                # Backtest ignores OrderIntent.take_profit for exits; hard stop uses intent.stop.
                 position = _OpenPosition(
-                    decision.symbol,
-                    current_date,
-                    entry_bar.open,
-                    intent.qty,
-                    intent.stop,
-                    intent.take_profit,
-                    entry_fill(entry_bar.open, self._slippage_bps),
-                    entry_cost,
+                    symbol=decision.symbol,
+                    entry_date=current_date,
+                    entry_price=raw_entry,
+                    qty=intent.qty,
+                    entry_fill=slipped_entry,
+                    marked_value=entry_cost,
+                    policy=initial_state(initial_stop=intent.stop, entry_price=raw_entry),
                 )
                 positions[decision.symbol] = position
                 deployed += entry_cost
-                closed = self._exit_for_bar(position, entry_bar)
+                history_through = [bar for bar in by_symbol[decision.symbol] if bar.date <= current_date]
+                closed = self._exit_for_bar(position, entry_bar, history_through)
                 if closed is not None:
                     trades.append(closed)
                     cash += exit_proceeds(
@@ -229,19 +243,33 @@ class BacktestRun:
 
         for position in sorted(positions.values(), key=lambda item: item.symbol):
             last_bar = by_symbol[position.symbol][-1]
+            if position.policy.pending_exit_reason is not None:
+                exit_warnings.append(MISSING_NEXT_SESSION_AFTER_EXIT_SIGNAL)
             trades.append(
                 SimulatedTrade(
-                    position.symbol,
-                    position.entry_date,
-                    last_bar.date,
-                    position.entry_price,
-                    last_bar.close,
-                    position.qty,
-                    "open-at-end",
+                    symbol=position.symbol,
+                    entry_date=position.entry_date,
+                    exit_date=last_bar.date,
+                    entry_price=position.entry_price,
+                    exit_price=last_bar.close,
+                    qty=position.qty,
+                    exit_reason="open-at-end",
                 )
             )
         ordered_trades = tuple(sorted(trades, key=lambda trade: (trade.entry_date, trade.symbol, trade.exit_date)))
         metrics = compute_metrics(list(ordered_trades), self._slippage_bps, self._tax_rate)
+        base_warnings = (
+            "portfolio-gates-simulated",
+            POINT_IN_TIME_CONTEXT_VALIDATED,
+            "broker-execution-realism-out-of-scope",
+        )
+        extra_warnings: list[str] = []
+        if missing_bar_carried_forward:
+            extra_warnings.append("missing-bar-carried-forward")
+        # Deduplicate exit warnings while preserving stable order
+        for warning in exit_warnings:
+            if warning not in extra_warnings:
+                extra_warnings.append(warning)
         return BacktestResult(
             trades=ordered_trades,
             skipped_entries=tuple(skipped_entries),
@@ -262,12 +290,8 @@ class BacktestRun:
                 if split_date
                 else {}
             ),
-            warnings=(
-                "portfolio-gates-simulated",
-                POINT_IN_TIME_CONTEXT_VALIDATED,
-                "broker-execution-realism-out-of-scope",
-            )
-            + (("missing-bar-carried-forward",) if missing_bar_carried_forward else ()),
+            warnings=base_warnings + tuple(extra_warnings),
+            exit_policy=policy_provenance(self._exit_policy),
         )
 
     def _filtered_universe(self, universe: Universe, as_of: date) -> Universe:
@@ -298,7 +322,7 @@ class BacktestRun:
                     symbol=position.symbol,
                     entry_date=position.entry_date,
                     exit_date=current_date,
-                    entry_price=position.entry_price,
+                    entry_price=position.entry_price,  # raw open; never pre-slipped
                     exit_price=bar.low,
                     qty=position.qty,
                     exit_reason=ContextOutcomeType.POSITION_FORCED_CLOSED.value,
@@ -341,75 +365,38 @@ class BacktestRun:
                 )
         return sum((position.marked_value for position in positions.values()), Decimal("0"))
 
-    @staticmethod
     def _process_exits(
+        self,
         positions: dict[str, _OpenPosition],
         bars: dict[str, DailyBar],
         trades: list[SimulatedTrade],
+        by_symbol: dict[str, list[DailyBar]],
     ) -> None:
         for symbol, position in sorted(positions.items()):
             bar = bars.get(symbol)
             if bar is None:
                 continue
-            closed = BacktestRun._exit_for_bar(position, bar)
+            history_through = [item for item in by_symbol[symbol] if item.date <= bar.date]
+            closed = self._exit_for_bar(position, bar, history_through)
             if closed is not None:
                 trades.append(closed)
 
-    @staticmethod
-    def _exit_for_bar(position: _OpenPosition, bar: DailyBar) -> SimulatedTrade | None:
-        if bar.low <= position.stop:
-            return SimulatedTrade(
-                position.symbol,
-                position.entry_date,
-                bar.date,
-                position.entry_price,
-                min(bar.open, position.stop),
-                position.qty,
-                "stop",
-            )
-        if bar.high >= position.take_profit:
-            return SimulatedTrade(
-                position.symbol,
-                position.entry_date,
-                bar.date,
-                position.entry_price,
-                position.take_profit,
-                position.qty,
-                "take-profit",
-            )
-        return None
-
-    def _simulate_trade(
-        self, symbol: str, signal_date, symbol_bars: list[DailyBar]
+    def _exit_for_bar(
+        self,
+        position: _OpenPosition,
+        bar: DailyBar,
+        history_through_bar: list[DailyBar],
     ) -> SimulatedTrade | None:
-        signal_index = next(index for index, bar in enumerate(symbol_bars) if bar.date == signal_date)
-        if signal_index + 1 >= len(symbol_bars):
-            return None  # no next-session bar to enter on
-
-        history = symbol_bars[:signal_index]
-        signal_bar = symbol_bars[signal_index]
-        intent, sizing_reason = compute_intent(symbol, signal_date, self._equity, history, signal_bar.close)
-        if intent is None or sizing_reason is not None:
+        new_state, decision = on_bar(position.policy, bar, history_through_bar, self._exit_policy)
+        position.policy = new_state
+        if decision is None:
             return None
-
-        entry_bar = symbol_bars[signal_index + 1]
-        entry_date = entry_bar.date
-        entry_price = entry_bar.open
-
-        for bar in symbol_bars[signal_index + 1 :]:
-            stop_touched = bar.low <= intent.stop
-            take_profit_touched = bar.high >= intent.take_profit
-            if stop_touched:
-                # Same-bar tie (both stop and take-profit touched intraday): STOP WINS.
-                # Conservative, deterministic tie-break -- with OHLC-only data we cannot
-                # know the intrabar sequencing, so we never over-credit a favorable
-                # outcome when both levels were touched on the same bar.
-                exit_price = min(bar.open, intent.stop)
-                return SimulatedTrade(symbol, entry_date, bar.date, entry_price, exit_price, intent.qty, "stop")
-            if take_profit_touched:
-                return SimulatedTrade(
-                    symbol, entry_date, bar.date, entry_price, intent.take_profit, intent.qty, "take-profit"
-                )
-
-        last_bar = symbol_bars[-1]
-        return SimulatedTrade(symbol, entry_date, last_bar.date, entry_price, last_bar.close, intent.qty, "open-at-end")
+        return SimulatedTrade(
+            symbol=position.symbol,
+            entry_date=position.entry_date,
+            exit_date=bar.date,
+            entry_price=position.entry_price,  # raw open; metrics apply entry_fill once
+            exit_price=decision.fill_price,
+            qty=position.qty,
+            exit_reason=decision.reason,
+        )

@@ -7,6 +7,7 @@ from invest.domain.indicators import (
     simple_moving_average,
     sma_is_rising,
     trailing_high,
+    trailing_low,
 )
 from invest.domain.models import DailyBar
 
@@ -95,6 +96,48 @@ def test_trailing_high_ignores_higher_bars_outside_the_window() -> None:
     ]
 
     assert trailing_high(bars, 2) == Decimal("9")
+
+
+def test_trailing_low_matches_hand_computed_min_of_last_window_lows() -> None:
+    start = date(2026, 1, 1)
+    bars = [
+        _bar(start, high="20", low="10", close="15"),
+        _bar(start + timedelta(days=1), high="20", low="8", close="15"),
+        _bar(start + timedelta(days=2), high="20", low="12", close="15"),
+        _bar(start + timedelta(days=3), high="20", low="9", close="15"),
+        _bar(start + timedelta(days=4), high="20", low="11", close="15"),
+    ]
+
+    # last 3 lows: 12, 9, 11 → min = 9
+    assert trailing_low(bars, 3) == Decimal("9")
+
+
+def test_trailing_low_ignores_lower_bars_outside_the_window() -> None:
+    start = date(2026, 1, 1)
+    bars = [
+        _bar(start, high="20", low="1", close="15"),
+        _bar(start + timedelta(days=1), high="20", low="9", close="15"),
+        _bar(start + timedelta(days=2), high="20", low="7", close="15"),
+    ]
+
+    # window=2 uses lows 9, 7 → ignores outside low=1
+    assert trailing_low(bars, 2) == Decimal("7")
+
+
+def test_trailing_low_caller_excludes_signal_day_by_slicing() -> None:
+    """Exit policy excludes session t by slicing; reducer uses the slice as-is."""
+    start = date(2026, 1, 1)
+    # 10 prior sessions with lows 10..1, then signal day with a lower low that must not count.
+    bars = [
+        _bar(start + timedelta(days=i), high="20", low=str(10 - i), close="15") for i in range(10)
+    ]
+    signal = _bar(start + timedelta(days=10), high="20", low="0.5", close="1")
+    full = bars + [signal]
+
+    prior_only = full[:-1]
+    assert trailing_low(prior_only, 10) == Decimal("1")
+    # Including signal day would pull the min down to 0.5 — caller must exclude it.
+    assert trailing_low(full, 10) == Decimal("0.5")
 
 
 def test_momentum_return_matches_hand_computed_offset_close_ratio() -> None:

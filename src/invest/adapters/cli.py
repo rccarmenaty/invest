@@ -31,6 +31,11 @@ from invest.domain.backtest_metrics import (
     compute_metrics,
     compute_segment_metrics,
 )
+from invest.domain.exit_policy import (
+    KIND_ATR_3_HIGH_WATER,
+    KIND_TEN_DAY_LOW,
+    resolve_exit_policy,
+)
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 from invest.domain.scanner import MomentumScanner
 from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
@@ -40,6 +45,7 @@ from invest.domain.models import Universe
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")
 BACKTEST_SOURCES = ("fixture", "alpaca", "sharadar")
+BACKTEST_EXIT_POLICIES = (KIND_TEN_DAY_LOW, KIND_ATR_3_HIGH_WATER)
 
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
@@ -154,6 +160,12 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split-date")
     parser.add_argument("--strategy", default="benchmark")
     parser.add_argument("--source")
+    parser.add_argument(
+        "--exit-policy",
+        dest="exit_policy",
+        choices=BACKTEST_EXIT_POLICIES,
+        default=KIND_TEN_DAY_LOW,
+    )
     return parser
 
 
@@ -217,11 +229,13 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         if not dates or split_date < min(dates) or split_date > max(dates):
             return _backtest_split_error()
         scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
+        exit_policy = resolve_exit_policy(args.exit_policy)
         result = BacktestRun(
             market_context=market_context,
             scanner=scanner,
             slippage_bps=args.slippage_bps,
             tax_rate=args.tax_rate,
+            exit_policy=exit_policy,
         ).replay(inputs, split_date=split_date)
         metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
         segments = compute_segment_metrics(
@@ -356,6 +370,7 @@ def _backtest_report(result, metrics, segments) -> dict:
         },
         "warnings": list(result.warnings),
         "disclaimers": disclaimers,
+        "exit_policy": dict(result.exit_policy),
     }
 
 
