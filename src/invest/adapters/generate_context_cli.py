@@ -24,6 +24,13 @@ from invest.adapters.backtest_context_json import (
     ContextOutputExistsError,
     ContextStorageFailureError,
 )
+from invest.adapters.bars_fixture_json import (
+    BarsFixtureDuplicateBarError,
+    BarsFixtureExistsError,
+    BarsFixtureStorageError,
+    BarsFixtureSymbolMismatchError,
+    BarsFixtureWriter,
+)
 from invest.adapters.sharadar_context_source import SharadarContextSource
 from invest.application.generate_market_context import (
     GenerateMarketContext,
@@ -31,6 +38,7 @@ from invest.application.generate_market_context import (
 )
 from invest.domain.liquidity_screen import ScreenConfig
 from invest.domain.market_context import MarketContextError
+from invest.domain.models import FixtureInputs, Universe
 
 load_dotenv()
 
@@ -47,6 +55,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--bars-out", type=Path, default=None, dest="bars_out")
     parser.add_argument("--price-floor", type=Decimal, default=defaults.price_floor)
     parser.add_argument(
         "--dollar-volume-floor", type=Decimal, default=defaults.dollar_volume_floor
@@ -100,12 +109,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             inputs = SharadarContextSource(client=client).load(args.start, args.end, config)
             context = GenerateMarketContext().run(inputs, config)
             BacktestContextJsonWriter().write(context, out)
+            if args.bars_out is not None:
+                universe = Universe(
+                    args.end.isoformat(), tuple(sorted({l.symbol for l in inputs.listings}))
+                )
+                BarsFixtureWriter().write(FixtureInputs(universe, inputs.bars), args.bars_out)
         return 0
     except InvalidArgumentsError:
         return _fail("invalid-arguments")
     except ContextOutputExistsError:
         return _fail("output-exists")
     except ContextStorageFailureError:
+        return _fail("storage-failure")
+    except BarsFixtureExistsError:
+        return _fail("bars-out-exists")
+    except BarsFixtureSymbolMismatchError as error:
+        return _fail(error.reason)
+    except BarsFixtureDuplicateBarError as error:
+        return _fail(error.reason)
+    except BarsFixtureStorageError:
         return _fail("storage-failure")
     except ReferenceDataIncompleteError as error:
         return _fail(error.reason)
