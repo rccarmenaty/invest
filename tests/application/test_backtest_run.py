@@ -890,3 +890,112 @@ def test_unsafe_position_without_same_day_bar_aborts_as_market_context_incomplet
         _runner(inputs, scanner=GapSignalScanner(), market_context=context).replay(inputs)
 
     assert error.value.reason == "market-context-incomplete"
+
+
+def test_atr_exit_policy_can_produce_atr_trail_next_open_fill() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_ATR_3_HIGH_WATER
+
+    start = date(2026, 1, 1)
+    symbol = "ATR"
+    bars = _breakout_bars(symbol, start)
+    # Entry day 21
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=21), Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40"), 100)
+    )
+    # Spike high-water; close still high enough that trail may arm depending on ATR floor
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=22), Decimal("11.40"), Decimal("30.00"), Decimal("11.20"), Decimal("20.00"), 100)
+    )
+    # Next session open is the next-open fill if day-22 armed atr-trail
+    fill_day = start + timedelta(days=23)
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("15.00"), Decimal("16.00"), Decimal("11.00"), Decimal("11.50"), 100)
+    )
+    bars.append(
+        DailyBar(
+            symbol, start + timedelta(days=24), Decimal("11.20"), Decimal("11.40"), Decimal("11.00"), Decimal("11.30"), 100
+        )
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_ATR_3_HIGH_WATER)
+
+    trades = _runner(inputs, exit_policy=config).replay(inputs).trades
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "atr-trail"
+    assert trades[0].exit_price == Decimal("15.00")  # raw next open after signal
+    assert trades[0].exit_date == fill_day
+
+
+def test_replay_records_exit_policy_provenance_for_both_kinds() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_ATR_3_HIGH_WATER, KIND_TEN_DAY_LOW
+
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("META", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("META",)), tuple(bars))
+
+    channel = _runner(inputs, exit_policy=ExitPolicyConfig(kind=KIND_TEN_DAY_LOW)).replay(inputs)
+    atr = _runner(inputs, exit_policy=ExitPolicyConfig(kind=KIND_ATR_3_HIGH_WATER)).replay(inputs)
+
+    assert channel.exit_policy["kind"] == KIND_TEN_DAY_LOW
+    assert atr.exit_policy["kind"] == KIND_ATR_3_HIGH_WATER
+    assert channel.exit_policy["channel_window"] == 10
+    assert atr.exit_policy["atr_mult"] == "3"
+    assert list(channel.exit_policy.keys()) == sorted(channel.exit_policy.keys())
+
+
+def test_mutating_future_bars_does_not_change_day_n_exit_under_atr_policy() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_ATR_3_HIGH_WATER
+
+    start = date(2026, 1, 1)
+    symbol = "NOLAATR"
+    bars = _breakout_bars(symbol, start)
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=21), Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40"), 100)
+    )
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=22), Decimal("11.40"), Decimal("30.00"), Decimal("11.20"), Decimal("20.00"), 100)
+    )
+    fill_day = start + timedelta(days=23)
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("15.00"), Decimal("16.00"), Decimal("11.00"), Decimal("11.50"), 100)
+    )
+    bars.append(
+        DailyBar(
+            symbol, start + timedelta(days=24), Decimal("11.20"), Decimal("11.40"), Decimal("11.00"), Decimal("11.30"), 100
+        )
+    )
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=25), Decimal("50"), Decimal("60"), Decimal("40"), Decimal("55"), 999)
+    )
+    inputs_before = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_ATR_3_HIGH_WATER)
+    exit_before = _runner(inputs_before, exit_policy=config).replay(inputs_before).trades[0]
+    assert exit_before.exit_date == fill_day
+    assert exit_before.exit_reason == "atr-trail"
+
+    corrupted = list(bars)
+    for index, bar in enumerate(corrupted):
+        if bar.date > fill_day:
+            corrupted[index] = DailyBar(
+                symbol, bar.date, Decimal("9999"), Decimal("10000"), Decimal("1"), Decimal("9999"), 999999
+            )
+    inputs_after = FixtureInputs(Universe("v1", (symbol,)), tuple(corrupted))
+    exit_after = _runner(inputs_after, exit_policy=config).replay(inputs_after).trades[0]
+
+    assert exit_after == exit_before
+
+
+def test_replaying_same_range_twice_is_byte_identical_for_atr_policy() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_ATR_3_HIGH_WATER
+
+    start = date(2026, 1, 1)
+    symbol = "TWINATR"
+    bars = _breakout_bars(symbol, start, extra_days=5)
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_ATR_3_HIGH_WATER)
+
+    first = _runner(inputs, exit_policy=config).replay(inputs)
+    second = _runner(inputs, exit_policy=config).replay(inputs)
+
+    assert first == second
