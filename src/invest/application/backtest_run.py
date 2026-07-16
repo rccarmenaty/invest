@@ -27,7 +27,13 @@ from invest.domain.backtest_metrics import (
     entry_fill,
     exit_proceeds,
 )
-from invest.domain.exit_policy import ExitPolicyConfig, ExitPolicyState, initial_state, on_bar
+from invest.domain.exit_policy import (
+    ExitPolicyConfig,
+    ExitPolicyState,
+    initial_state,
+    on_bar,
+    policy_provenance,
+)
 from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
@@ -215,7 +221,7 @@ class BacktestRun:
                     qty=intent.qty,
                     entry_fill=slipped_entry,
                     marked_value=entry_cost,
-                    policy=initial_state(intent.stop),
+                    policy=initial_state(initial_stop=intent.stop, entry_price=raw_entry),
                 )
                 positions[decision.symbol] = position
                 deployed += entry_cost
@@ -285,6 +291,7 @@ class BacktestRun:
                 else {}
             ),
             warnings=base_warnings + tuple(extra_warnings),
+            exit_policy=policy_provenance(self._exit_policy),
         )
 
     def _filtered_universe(self, universe: Universe, as_of: date) -> Universe:

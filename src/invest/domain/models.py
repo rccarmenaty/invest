@@ -130,3 +130,4 @@ class BacktestResult:
     equity_summary: EquitySummary
     segments: Mapping[str, "Metrics"]
     warnings: tuple[str, ...]
+    exit_policy: Mapping[str, str | int]

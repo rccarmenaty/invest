@@ -41,25 +41,25 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Unit 2 — Conditional 20-session time stop (150–250 lines)
 
-- [ ] 2.1 RED: `tests/domain/test_exit_policy.py` — 20 held sessions no +0.5R / no prior-20 high → pending `time-stop`; progress suppresses; stop > trail > time same-bar
-- [ ] 2.2 GREEN: `exit_policy.py` + state — `sessions_held`, `reached_half_r`, `printed_new_prior20_high`; evaluate after 20th close
-- [ ] 2.3 RED: `tests/application/test_backtest_run.py` — time-stop next-open+slippage; missing next → open-at-end+warning; forced-close/hard-stop still win
-- [ ] 2.4 GREEN: wire time-stop pending fill in `backtest_run.py` priority after trail
-- [ ] 2.5 REFACTOR: progress flags only on completed history ≤ t
-- [ ] 2.6 Verify unit 2 focused command green
+- [x] 2.1 RED: `tests/domain/test_exit_policy.py` — 20 held sessions no +0.5R / no prior-20 high → pending `time-stop`; progress suppresses; stop > trail > time same-bar
+- [x] 2.2 GREEN: `exit_policy.py` + state — `sessions_held`, `reached_half_r`, `printed_new_prior20_high`; evaluate after 20th close
+- [x] 2.3 RED: `tests/application/test_backtest_run.py` — time-stop next-open+slippage; missing next → open-at-end+warning; forced-close/hard-stop still win
+- [x] 2.4 GREEN: wire time-stop pending fill in `backtest_run.py` priority after trail
+- [x] 2.5 REFACTOR: progress flags only on completed history ≤ t
+- [x] 2.6 Verify unit 2 focused command green
 
 ## Phase 3: Unit 3 — 3-ATR variant + CLI/report isolation (150–300 lines)
 
-- [ ] 3.1 RED: `tests/domain/test_exit_policy.py` — ATR high-water floor never loosens; close `<` post-ratchet floor → pending `atr-trail`; next-open semantics
-- [ ] 3.2 GREEN: `exit_policy.py` kind `atr-3-high-water`; `high_water`; candidate `high_water - 3×ATR`
-- [ ] 3.3 RED: `tests/domain/test_backtest_metrics.py` — `ExitReason.atr-trail`
-- [ ] 3.4 GREEN: metrics + `backtest_run` inject config by kind
-- [ ] 3.5 RED: `tests/adapters/test_cli_backtest.py` — `--exit-policy`; report `"exit_policy": {kind, params}` sorted; twin metadata identity
-- [ ] 3.6 GREEN: `src/invest/adapters/cli.py` + optional `BacktestResult` metadata in `models.py`
-- [ ] 3.7 RED: `tests/test_boundaries.py` — execute/day-0 parsers lack exit-policy flag; paper `take_profit`/brackets byte-compatible
-- [ ] 3.8 GREEN: boundary isolation only; no execute path selection
-- [ ] 3.9 RED/GREEN: no-look-ahead + deterministic twin with both policies
-- [ ] 3.10 REFACTOR + verify unit 3 focused command + `invest-backtest --help`
+- [x] 3.1 RED: `tests/domain/test_exit_policy.py` — ATR high-water floor never loosens; close `<` post-ratchet floor → pending `atr-trail`; next-open semantics
+- [x] 3.2 GREEN: `exit_policy.py` kind `atr-3-high-water`; `high_water`; candidate `high_water - 3×ATR`
+- [x] 3.3 RED: `tests/domain/test_backtest_metrics.py` — `ExitReason.atr-trail`
+- [x] 3.4 GREEN: metrics + `backtest_run` inject config by kind
+- [x] 3.5 RED: `tests/adapters/test_cli_backtest.py` — `--exit-policy`; report `"exit_policy": {kind, params}` sorted; twin metadata identity
+- [x] 3.6 GREEN: `src/invest/adapters/cli.py` + optional `BacktestResult` metadata in `models.py`
+- [x] 3.7 RED: `tests/test_boundaries.py` — execute/day-0 parsers lack exit-policy flag; paper `take_profit`/brackets byte-compatible
+- [x] 3.8 GREEN: boundary isolation only; no execute path selection
+- [x] 3.9 RED/GREEN: no-look-ahead + deterministic twin with both policies
+- [x] 3.10 REFACTOR + verify unit 3 focused command + `invest-backtest --help`
 
 ## Spec coverage checklist
 
