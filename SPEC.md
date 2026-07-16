@@ -1,7 +1,7 @@
 # Momentum Breakout Trading System — Specification
 
 **Status**: Proposed — revised for data, validation, and broker-rule safeguards; strategy layer re-aligned with the evidence review in `momentum_breakout_swing_trading_research_report.md`
-**Date**: 2026-07-13 (strategy revision; original 2026-07-11)
+**Date**: 2026-07-16 (data-authority + trailing-stop mitigation update; strategy revision 2026-07-13; original 2026-07-11)
 **Broker**: Alpaca (paper first, live only after validation gates)
 **Deployment target**: Local Kubernetes cluster
 **Style**: Event-driven microservices, hexagonal architecture per service
@@ -43,7 +43,7 @@ This is **not forecasting**. The system reacts to confirmed movement. Its edge c
 **Live universe**:
 
 - S&P 500 + Nasdaq 100 constituents (~600–800 liquid names after dedupe).
-- Filters: average daily dollar volume > $10M, price > $5, tradable flag from Alpaca asset API.
+- Filters: average daily dollar volume > $10M, price ≥ $10, tradable flag from Alpaca asset API. The $10 floor matches the backtest liquidity screen (`domain/liquidity_screen.py`) and the report §6.2 baseline; $5/$10/$20 remain in the test grid, but live and backtest universes must use the same value to keep Phase-3 paper results comparable to replay.
 - Shortable flag may be recorded as a liquidity/marginability hint, but the strategy remains long-only.
 - Rebuilt nightly.
 - No microcaps ever — spike detection on illiquid names is a pump-and-dump feed.
@@ -62,7 +62,7 @@ The system has two data tiers:
 |---|---|---|
 | Intraday awareness | Alpaca IEX live feed or equivalent | Early warning only; no entry decisions |
 | Daily decisions | Consolidated/SIP daily bars or delayed consolidated historical bars | Spike promotion, relative volume, breakout checks, ATR/MA calculations |
-| Backtest/replay | Point-in-time adjusted historical bars + point-in-time universe/corporate actions | Validation before paper/live |
+| Backtest/replay | Point-in-time adjusted historical bars + point-in-time universe/corporate actions — implemented via Sharadar SEP/TICKERS/ACTIONS (survivorship-bias-free, delisted names included) | Validation before paper/live |
 
 Important rule: **relative volume and breakout decisions must not rely on IEX-only volume unless running an explicit degraded-data experiment**. IEX volume can diverge materially from full-market volume, so using it as the authoritative signal source can create false positives/negatives.
 
@@ -136,7 +136,7 @@ Fixed profit targets truncate the right tail that pays for a momentum system (re
 
 **Implemented interim model** (`domain/sizing.py`, backtest): stop = entry − 1 ATR(14), take-profit = entry + 2 ATR(14) bracket. This is the benchmark-era exit and is superseded by the trailing model for the Core system (roadmap change B).
 
-**Open execution conflict**: Alpaca server-side bracket orders carry a fixed take-profit leg. A trailing exit means protective stop-market only, with daily cancel/replace to ratchet the stop. This weakens the "positions protected without cluster uptime" property to stop-protection-only and must be resolved before the Core model reaches paper execution (see `ROADMAP.md` §6).
+**Open execution conflict — mitigations identified**: Alpaca server-side bracket orders carry a fixed take-profit leg, but Alpaca also offers native **server-side trailing-stop orders** (`trail_price`/`trail_percent`, high-water-mark based). Candidate resolutions: (a) native trailing stop as an always-on catastrophic layer plus EOD cancel/replace for the exact 10-day-low channel ratchet; (b) if the backtest grid shows the 3 ATR trailing variant performs comparably to the 10-day-low exit, use the native trailing stop alone — fully restoring the §3.7 uptime-independence property. The choice is made with roadmap change D data, before the Core model reaches paper execution (see `ROADMAP.md` §6).
 
 Order rules (any exit model):
 
@@ -300,7 +300,7 @@ Hard rules:
 ### 3.7 Failure model
 
 - Any pod dies → JetStream durable consumer resumes at last ack. No signal lost under the configured durability assumptions.
-- **Executor dies mid-trade → protective stop already live server-side at Alpaca. Positions are usually protected without cluster uptime.** Most important property of the design. Note: under the Core model's trailing exits (§2.7) this property covers the **stop leg only** — there is no server-side take-profit leg, and the daily stop ratchet pauses if the cluster is down (stop protection persists at the last ratcheted level).
+- **Executor dies mid-trade → protective stop already live server-side at Alpaca. Positions are usually protected without cluster uptime.** Most important property of the design. Note: under the Core model's trailing exits (§2.7) this property covers the **stop leg only** — there is no server-side take-profit leg, and the daily stop ratchet pauses if the cluster is down (stop protection persists at the last ratcheted level). If change D validates an ATR-style trail, Alpaca's native server-side trailing-stop order restores full uptime-independent protection (§2.7).
 - Ingestor dies → no data → no signals → system fails SAFE (does nothing).
 - Risk-gate is a deliberate chokepoint — exactly one place can authorize money movement; one audit point, one kill-switch.
 - Paper vs live = same images, different k8s Secret + env. Promotion is configuration, not code.
