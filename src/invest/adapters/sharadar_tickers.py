@@ -45,11 +45,11 @@ class _TickersResponse(BaseModel):
 class _TickerRow(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     ticker: str = Field(min_length=1)
-    exchange: str = Field(min_length=1)
+    exchange: str | None = Field(default=None, min_length=1)
     category: str = Field(min_length=1)
     firstpricedate: date | None = None
     lastpricedate: date | None = None
-    isdelisted: bool
+    isdelisted: bool | None = None
 
 
 class SharadarTickersReader:
@@ -116,7 +116,10 @@ class SharadarTickersReader:
                     if column in self.COLUMNS
                 }
             )
-            is_listed = not row.isdelisted
+            # isdelisted=None (seen on non-equity reference rows, e.g. "Institutional
+            # Investor" entries with no exchange) is unknown status, not confirmed
+            # listed -- treat conservatively as not listed.
+            is_listed = row.isdelisted is False
             tickers.append(
                 SharadarTicker(
                     ticker=row.ticker,

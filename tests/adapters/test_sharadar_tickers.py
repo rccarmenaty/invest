@@ -74,6 +74,10 @@ def test_reader_requires_a_client_and_uses_only_the_fixed_request_shape() -> Non
             ["ARC", "ARCA", "Domestic Common Stock Primary Class", "2010-01-04", None, "N"],
             SharadarTicker("ARC", True, True, date(2010, 1, 4), None),
         ),
+        (
+            ["N/A", None, "Institutional Investor", None, None, None],
+            SharadarTicker("N/A", False, False, None, None),
+        ),
     ],
 )
 def test_fetch_translates_closed_classifications_and_dates(row, expected) -> None:
