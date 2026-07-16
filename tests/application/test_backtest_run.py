@@ -217,23 +217,109 @@ def test_trade_enters_at_day_n_plus_1_open() -> None:
     assert trade.qty == 1250
 
 
-def test_take_profit_touch_exits_at_take_profit_price() -> None:
+def _elevated_hold_bars(symbol: str, start: date, first_offset: int, count: int) -> list[DailyBar]:
+    """Post-entry bars with lows above the default 1-ATR stop so channel can arm."""
+    return [
+        DailyBar(
+            symbol,
+            start + timedelta(days=first_offset + i),
+            Decimal("11.40"),
+            Decimal("11.60"),
+            Decimal("11.20"),
+            Decimal("11.40"),
+            100,
+        )
+        for i in range(count)
+    ]
+
+
+def test_trailing_channel_close_below_prior_low_exits_at_next_open() -> None:
+    """Close strictly below prior-10 low → pending; fill raw next open (slippage in metrics)."""
     start = date(2026, 1, 1)
-    symbol = "WIN"
+    symbol = "TRAIL"
     bars = _breakout_bars(symbol, start)
-    day1 = start + timedelta(days=21)
-    day2 = start + timedelta(days=22)
-    bars.append(DailyBar(symbol, day1, Decimal("11.50"), Decimal("11.60"), Decimal("11.40"), Decimal("11.50"), 100))
-    bars.append(DailyBar(symbol, day2, Decimal("11.50"), Decimal("13.20"), Decimal("11.30"), Decimal("13.00"), 100))
+    # entry day 21 + 9 elevated holds → prior-10 window on day 31 is all elevated lows (11.20)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    fill_day = start + timedelta(days=32)
+    # close 11.00 < prior-10 low 11.20; low 11.05 > stop 10.60 so hard stop does not fire
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.70"), Decimal("10.90"), 100)
+    )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
 
     trades = _runner(inputs).replay(inputs).trades
 
     assert len(trades) == 1
     trade = trades[0]
-    assert trade.exit_reason == "take-profit"
-    assert trade.exit_price == Decimal("13.00")
-    assert trade.exit_date == day2
+    assert trade.exit_reason == "trailing-channel"
+    assert trade.exit_price == Decimal("10.80")  # raw next open
+    assert trade.exit_date == fill_day
+
+
+def test_trailing_channel_trade_records_raw_entry_price_for_single_entry_slippage() -> None:
+    """Regression: SimulatedTrade.entry_price must be raw open, never pre-slipped entry_fill.
+
+    metrics.apply_costs / exit_proceeds apply entry_fill(trade.entry_price) once. If the
+    harness stored entry_fill as entry_price, costs would double-count entry slippage
+    (understate tax on winners, distort cash/P&L).
+    """
+    from invest.domain.backtest_metrics import DEFAULT_SLIPPAGE_BPS, apply_costs, entry_fill
+
+    start = date(2026, 1, 1)
+    symbol = "RAWENT"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    fill_day = start + timedelta(days=32)
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.70"), Decimal("10.90"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    slippage = DEFAULT_SLIPPAGE_BPS
+
+    result = _runner(inputs, slippage_bps=slippage, tax_rate=Decimal("0")).replay(inputs)
+    trade = result.trades[0]
+    raw_entry_open = Decimal("11.40")  # entry bar open from elevated/entry path
+    slipped_entry = entry_fill(raw_entry_open, slippage)
+
+    assert trade.exit_reason == "trailing-channel"
+    assert trade.entry_price == raw_entry_open
+    assert trade.entry_price != slipped_entry
+    # Hand-computed single-slippage net (tax_rate=0): exit_fill*qty - entry_fill*qty
+    expected_net = (
+        trade.exit_price * (Decimal("1") - slippage / Decimal("10000")) * trade.qty
+        - slipped_entry * trade.qty
+    )
+    assert apply_costs(trade, slippage, Decimal("0")) == expected_net
+    assert result.metrics.net_pnl == expected_net
+    # Cash: start - entry_cost + exit_fill*qty (loss path, tax_rate=0)
+    assert result.portfolio.cash == Decimal("100000") + expected_net
+
+
+def test_intent_take_profit_is_ignored_for_replay_exits() -> None:
+    """High that would have hit the old 2-ATR TP must not close the trade as take-profit."""
+    start = date(2026, 1, 1)
+    symbol = "NOTP"
+    bars = _breakout_bars(symbol, start)
+    day1 = start + timedelta(days=21)
+    day2 = start + timedelta(days=22)
+    bars.append(DailyBar(symbol, day1, Decimal("11.50"), Decimal("11.60"), Decimal("11.40"), Decimal("11.50"), 100))
+    # high 13.20 would hit intent TP 13.00 under the old model
+    bars.append(DailyBar(symbol, day2, Decimal("11.50"), Decimal("13.20"), Decimal("11.30"), Decimal("13.00"), 100))
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    trades = _runner(inputs).replay(inputs).trades
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason != "take-profit"
+    assert trades[0].exit_reason == "open-at-end"
 
 
 def test_stop_touch_exits_at_min_of_open_and_stop_gap_down_honored() -> None:
@@ -255,13 +341,20 @@ def test_stop_touch_exits_at_min_of_open_and_stop_gap_down_honored() -> None:
     assert trade.exit_date == day2
 
 
-def test_same_bar_stop_and_take_profit_tie_resolves_to_stop_wins() -> None:
+def test_hard_stop_beats_pending_trailing_channel_on_same_bar() -> None:
     start = date(2026, 1, 1)
     symbol = "TIE"
     bars = _breakout_bars(symbol, start)
-    day1 = start + timedelta(days=21)
-    # low=10.00 touches stop(10.60); high=13.50 touches take_profit(13.00) on the SAME bar.
-    bars.append(DailyBar(symbol, day1, Decimal("11.40"), Decimal("13.50"), Decimal("10.00"), Decimal("11.40"), 100))
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    conflict_day = start + timedelta(days=32)
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    # Pending trail + hard-stop touch on the fill bar → stop wins
+    bars.append(
+        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("10.00"), Decimal("10.50"), 100)
+    )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
 
     trades = _runner(inputs).replay(inputs).trades
@@ -269,7 +362,7 @@ def test_same_bar_stop_and_take_profit_tie_resolves_to_stop_wins() -> None:
     assert len(trades) == 1
     trade = trades[0]
     assert trade.exit_reason == "stop"
-    assert trade.exit_price == Decimal("10.60")  # min(open=11.40, stop=10.60) -- stop wins, never TP
+    assert trade.exit_price == Decimal("10.60")  # min(open=11.00, stop=10.60)
 
 
 def test_open_at_end_when_no_exit_trigger_before_data_ends() -> None:
@@ -287,6 +380,96 @@ def test_open_at_end_when_no_exit_trigger_before_data_ends() -> None:
     assert trade.exit_reason == "open-at-end"
     assert trade.exit_price == Decimal("11.45")
     assert trade.exit_date == day1
+
+
+def test_trailing_signal_without_next_session_uses_open_at_end_and_warns() -> None:
+    start = date(2026, 1, 1)
+    symbol = "TAIL"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "open-at-end"
+    assert trade.exit_date == signal_day
+    assert trade.exit_price == Decimal("11.00")  # last close
+    assert "missing-next-session-after-exit-signal" in result.warnings
+
+
+def test_forced_close_beats_pending_trailing_channel() -> None:
+    start = date(2026, 1, 1)
+    symbol = "FORCE"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    forced_day = start + timedelta(days=32)
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    bars.append(
+        DailyBar(symbol, forced_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.50"), Decimal("10.70"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            symbol: (BlockerWindow(forced_day, forced_day, reason=ContextReason.CORPORATE_ACTION),)
+        },
+    )
+
+    result = _runner(inputs, market_context=context).replay(inputs)
+
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_day
+    assert result.trades[0].exit_price == Decimal("10.50")
+
+
+def test_mutating_future_bars_does_not_change_day_n_exit() -> None:
+    start = date(2026, 1, 1)
+    symbol = "NOLA"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
+    signal_day = start + timedelta(days=31)
+    fill_day = start + timedelta(days=32)
+    bars.append(
+        DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
+    )
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.70"), Decimal("10.90"), 100)
+    )
+    # extra future bar after the exit
+    bars.append(
+        DailyBar(
+            symbol,
+            start + timedelta(days=33),
+            Decimal("50"),
+            Decimal("60"),
+            Decimal("40"),
+            Decimal("55"),
+            999,
+        )
+    )
+    inputs_before = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    exit_before = _runner(inputs_before).replay(inputs_before).trades[0]
+    assert exit_before.exit_date == fill_day
+
+    corrupted = list(bars)
+    for index, bar in enumerate(corrupted):
+        if bar.date > fill_day:
+            corrupted[index] = DailyBar(
+                symbol, bar.date, Decimal("9999"), Decimal("10000"), Decimal("1"), Decimal("9999"), 999999
+            )
+    inputs_after = FixtureInputs(Universe("v1", (symbol,)), tuple(corrupted))
+    exit_after = _runner(inputs_after).replay(inputs_after).trades[0]
+
+    assert exit_after == exit_before
 
 
 def test_replaying_same_range_twice_is_byte_identical() -> None:

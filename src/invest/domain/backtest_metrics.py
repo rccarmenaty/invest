@@ -21,7 +21,7 @@ DEFAULT_TAX_RATE = Decimal("0.15")
 
 class ExitReason(StrEnum):
     STOP = "stop"
-    TAKE_PROFIT = "take-profit"
+    TRAILING_CHANNEL = "trailing-channel"
     OPEN_AT_END = "open-at-end"
 
 

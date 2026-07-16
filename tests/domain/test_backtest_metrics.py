@@ -78,7 +78,14 @@ def test_apply_costs_no_tax_haircut_on_a_losing_trade() -> None:
 def test_exit_reason_enum_matches_exact_contract_set() -> None:
     from invest.domain.backtest_metrics import ExitReason
 
-    assert {reason.value for reason in ExitReason} == {"stop", "take-profit", "open-at-end"}
+    # Unit 1: trailing-channel replaces active take-profit in the contract set.
+    # time-stop / atr-trail land in later work units.
+    assert {reason.value for reason in ExitReason} == {
+        "stop",
+        "trailing-channel",
+        "open-at-end",
+    }
+    assert "take-profit" not in {reason.value for reason in ExitReason}
 
 
 def test_equity_summary_reports_drawdown_and_is_deterministic() -> None:
