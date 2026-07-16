@@ -17,6 +17,21 @@ uv run invest-scan \
   --format json
 ```
 
+## Market context generation (backtest-only)
+
+`invest-generate-context` writes `market-context-v1` JSON from Sharadar TICKERS,
+SEP, and ACTIONS. It never runs replay, broker, scanner, live, or paper paths.
+
+```sh
+uv run invest-generate-context \
+  --start 2024-01-02 --end 2024-12-31 --out path/to/market-context.json
+```
+
+Core defaults: `--price-floor 10`, `--dollar-volume-floor 10000000`,
+`--dollar-volume-window 20`, `--min-observed-bars 252`. Success: exit 0, silent.
+Failure: exit 2, one sorted JSON reason on stdout. Generate first, then replay
+with `invest-backtest --market-context …`. Tests mock transport (no live calls).
+
 ## Verify
 
 ```sh

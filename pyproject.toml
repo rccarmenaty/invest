@@ -13,6 +13,7 @@ invest-scan = "invest.adapters.cli:main"
 invest-fetch = "invest.adapters.cli:fetch_main"
 invest-execute = "invest.adapters.cli:execute_main"
 invest-backtest = "invest.adapters.cli:backtest_main"
+invest-generate-context = "invest.adapters.generate_context_cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2,<9", "ruff>=0.5,<1"]
