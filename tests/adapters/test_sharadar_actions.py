@@ -11,6 +11,30 @@ from invest.adapters.alpaca_market_data import MarketDataFetchError
 
 COLUMNS = ("ticker", "date", "action", "value")
 
+MAPPED_LITERALS = (
+    ("split", "SPLIT"),
+    ("adrratiosplit", "SPLIT"),
+    ("dividend", "DIVIDEND"),
+    ("spinoffdividend", "DIVIDEND"),
+    ("delisted", "DELISTING"),
+    ("regulatorydelisting", "DELISTING"),
+    ("voluntarydelisting", "DELISTING"),
+    ("bankruptcyliquidation", "DELISTING"),
+    ("tickerchangeto", "TICKER_CHANGE"),
+    ("tickerchangefrom", "TICKER_CHANGE"),
+)
+
+SKIPPED_LITERALS = (
+    "listed",
+    "relation",
+    "acquisitionby",
+    "acquisitionof",
+    "mergerto",
+    "mergerfrom",
+    "spinoff",
+    "spunofffrom",
+)
+
 
 def _page(rows: list[list[object]], cursor: object = None) -> dict[str, object]:
     return {
@@ -66,11 +90,43 @@ def test_fetch_returns_typed_events(
     assert event.value == Decimal(value)
 
 
-def test_fetch_maps_all_provider_literals_to_closed_frozen_events(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("literal", "kind_name"), MAPPED_LITERALS)
+def test_fetch_maps_each_mapped_literal_to_its_normalized_kind(
+    monkeypatch: pytest.MonkeyPatch, literal: str, kind_name: str
 ) -> None:
+    """All 10 real ACTIONS literals fold onto the closed 4-kind enum per the mapping table."""
     from invest.adapters.sharadar_actions import SharadarActionKind
 
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    expected_kind = SharadarActionKind[kind_name]
+    value = None if expected_kind in {SharadarActionKind.DELISTING, SharadarActionKind.TICKER_CHANGE} else "2"
+
+    events = _reader(
+        lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", literal, value]]))
+    ).fetch()
+
+    assert len(events) == 1
+    assert events[0].kind is expected_kind
+    assert events[0].value == (None if value is None else Decimal(value))
+    with pytest.raises(AttributeError):
+        setattr(events[0], "kind", SharadarActionKind.DIVIDEND)
+
+
+@pytest.mark.parametrize("literal", [*SKIPPED_LITERALS, "some-brand-new-literal-2027"])
+def test_skipped_and_unknown_literals_produce_no_events_and_do_not_abort(
+    monkeypatch: pytest.MonkeyPatch, literal: str
+) -> None:
+    """Explicit skip literals and unrecognized drift both drop silently, never raise."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    events = _reader(
+        lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", literal, None]]))
+    ).fetch()
+
+    assert events == ()
+
+
+def test_mixed_page_keeps_only_mapped_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page mixing mapped, skipped, and unknown literals returns only the mapped rows."""
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
     events = _reader(
         lambda _: httpx.Response(
@@ -78,23 +134,79 @@ def test_fetch_maps_all_provider_literals_to_closed_frozen_events(
             json=_page(
                 [
                     ["ACME", "2024-02-15", "split", "2"],
-                    ["ACME", "2024-02-16", "dividend", "0.25"],
-                    ["ACME", "2024-02-17", "delisting", None],
-                    ["ACME", "2024-02-18", "tickerchange", None],
+                    ["ACME", "2024-02-16", "listed", None],
+                    ["ACME", "2024-02-17", "totally-unknown", None],
+                    ["ACME", "2024-02-18", "dividend", "0.25"],
                 ]
             ),
         )
     ).fetch()
 
-    assert [event.kind.value for event in events] == [
-        "split",
-        "dividend",
-        "delisting",
-        "ticker-change",
+    assert [event.ticker for event in events] == ["ACME", "ACME"]
+    assert [event.value for event in events] == [Decimal("2"), Decimal("0.25")]
+
+
+def test_unknown_literal_on_first_page_does_not_abort_multipage_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown literal on page 1 must not kill the multi-page pull; page 2 still returns."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(
+                200, json=_page([["ACME", "2024-02-15", "totally-unknown", None]], "next")
+            )
+        return httpx.Response(200, json=_page([["ZED", "2024-02-16", "split", "3"]]))
+
+    events = _reader(handler).fetch()
+    assert requests == 2
+    assert len(events) == 1
+    assert events[0].ticker == "ZED"
+    assert events[0].value == Decimal("3")
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [0.1, 0.25, 123.456789012345],
+)
+def test_float_values_coerce_to_exact_decimals_matching_source_repr(
+    monkeypatch: pytest.MonkeyPatch, raw_value: float
+) -> None:
+    """The real API sends every value as a JSON float; it must coerce without precision loss."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    events = _reader(
+        lambda _: httpx.Response(
+            200, json=_page([["ACME", "2024-02-15", "dividend", raw_value]])
+        )
+    ).fetch()
+
+    assert len(events) == 1
+    assert events[0].value == Decimal(str(raw_value))
+
+
+def test_live_shaped_float_fixture_has_no_precision_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live-shaped fixture from the spec's float scenario: dividend + split values."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    events = _reader(
+        lambda _: httpx.Response(
+            200,
+            json=_page(
+                [
+                    ["ACME", "2024-02-15", "dividend", 9.00009000090001],
+                    ["ACME", "2024-02-16", "split", 0.04545],
+                ]
+            ),
+        )
+    ).fetch()
+
+    assert [event.value for event in events] == [
+        Decimal("9.00009000090001"),
+        Decimal("0.04545"),
     ]
-    assert [event.value for event in events] == [Decimal("2"), Decimal("0.25"), None, None]
-    with pytest.raises(AttributeError):
-        setattr(events[0], "kind", SharadarActionKind.DIVIDEND)
 
 
 @pytest.mark.parametrize(
@@ -102,16 +214,14 @@ def test_fetch_maps_all_provider_literals_to_closed_frozen_events(
     [
         ("split", "0"),
         ("split", "-2"),
+        ("dividend", "0"),
+        ("dividend", "-2"),
         ("dividend", "NaN"),
         ("dividend", "Infinity"),
-        ("dividend", 0.1),
         ("dividend", None),
-        ("tickerchange", "1"),
-        ("unsupported", "1"),
-        ("SPLIT", "2"),
     ],
 )
-def test_fetch_rejects_invalid_or_unsupported_action_rows(
+def test_fetch_rejects_invalid_action_rows(
     monkeypatch: pytest.MonkeyPatch, action: str, value: object
 ) -> None:
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
@@ -124,10 +234,9 @@ def test_fetch_rejects_invalid_or_unsupported_action_rows(
 @pytest.mark.parametrize(
     ("action", "value", "detail"),
     [
-        ("split", "-2", "split ratio must be positive"),
+        ("split", "-2", "valued ACTIONS ratio/amount must be positive"),
+        ("dividend", "-2", "valued ACTIONS ratio/amount must be positive"),
         ("dividend", None, "valued ACTIONS action has no finite value"),
-        ("delisting", "3", "valueless ACTIONS action has a value"),
-        ("merger", "1", "unsupported ACTIONS action"),
     ],
 )
 def test_rejected_rows_report_why_they_were_rejected(
@@ -143,6 +252,35 @@ def test_rejected_rows_report_why_they_were_rejected(
 
     assert caught.value.reason == "malformed-response"
     assert detail in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["delisted", "regulatorydelisting", "voluntarydelisting", "bankruptcyliquidation",
+     "tickerchangeto", "tickerchangefrom"],
+)
+@pytest.mark.parametrize("value", ["976.0", "2.7", "0", "-5", None])
+def test_valueless_kinds_accept_and_drop_any_value(
+    monkeypatch: pytest.MonkeyPatch, action: str, value: object
+) -> None:
+    """Real SHARADAR/ACTIONS attach a contra/last price to delisting and ticker-change
+    rows that the kind-blind strategy never uses. The reader MUST accept the row and
+    normalize its value to absent instead of failing the fetch."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    events = _reader(
+        lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", action, value]]))
+    ).fetch()
+
+    assert len(events) == 1
+    assert events[0].value is None
+
+
+def test_action_kinds_and_skipped_actions_are_disjoint() -> None:
+    """Mapped literals and the explicit skip set must never overlap (boundary)."""
+    from invest.adapters.sharadar_actions import _ACTION_KINDS, _SKIPPED_ACTIONS
+
+    assert _ACTION_KINDS.keys() & _SKIPPED_ACTIONS == set()
 
 
 def test_page_cap_exhaustion_is_distinguishable_from_corrupt_data(

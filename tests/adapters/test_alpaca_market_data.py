@@ -166,7 +166,9 @@ def test_reader_satisfies_port_and_maps_single_page(monkeypatch) -> None:
     reader = AlpacaMarketDataReader(client=client)
     assert isinstance(reader, MarketDataReader)
 
-    assert reader.fetch(Universe("v1", ("ACME",)), date(2026, 6, 1)) == FixtureInputs(
+    result = reader.fetch(Universe("v1", ("ACME",)), date(2026, 6, 1))
+
+    assert result == FixtureInputs(
         universe=Universe("v1", ("ACME",)),
         bars=(
             DailyBar(
@@ -180,6 +182,71 @@ def test_reader_satisfies_port_and_maps_single_page(monkeypatch) -> None:
             ),
         ),
     )
+    assert isinstance(result.bars[0].volume, Decimal)
+    assert result.bars[0].volume == Decimal("1234")
+
+
+def test_reader_preserves_fractional_alpaca_volume_as_exact_decimal(monkeypatch) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "ACME": [
+                        {
+                            "t": "2026-05-29T04:00:00Z",
+                            "o": 10,
+                            "h": 12,
+                            "l": 9,
+                            "c": 11,
+                            "v": 48037.936,
+                        }
+                    ]
+                },
+                "next_page_token": None,
+            },
+        )
+
+    result = AlpacaMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch(Universe("v1", ("ACME",)), date(2026, 6, 1))
+
+    assert isinstance(result.bars[0].volume, Decimal)
+    assert result.bars[0].volume == Decimal("48037.936")
+
+
+def test_reader_rejects_negative_volume_before_domain(monkeypatch) -> None:
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "key-id")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "secret-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "ACME": [
+                        {
+                            "t": "2026-05-29T04:00:00Z",
+                            "o": 10,
+                            "h": 12,
+                            "l": 9,
+                            "c": 11,
+                            "v": -1,
+                        }
+                    ]
+                },
+                "next_page_token": None,
+            },
+        )
+
+    reader = AlpacaMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch(Universe("v1", ("ACME",)), date(2026, 6, 1))
+
+    assert caught.value.reason == "malformed-response"
 
 
 def test_reader_merges_paginated_bars(monkeypatch) -> None:
@@ -396,6 +463,7 @@ def test_snapshot_writes_schema_provenance_and_round_trips(tmp_path) -> None:
     provenance = json.loads((directory / "provenance.json").read_text())
     assert universe_payload == {"fixture_version": "2026-06-01", "symbols": ["ACME"]}
     assert bars_payload["fixture_version"] == "2026-06-01"
+    assert bars_payload["bars"][0]["volume"] == 100
     assert set(provenance) == {"feed", "adjustment", "timeframe", "endpoint", "as_of", "fetch_timestamp", "symbol_count", "bar_count", "universe_sha256", "bars_sha256", "fixture_version", "degraded"}
     expected = {"feed": "sip", "adjustment": "split", "timeframe": "1Day", "endpoint": AlpacaMarketDataReader.ENDPOINT, "as_of": "2026-06-01", "symbol_count": 1, "bar_count": 21, "fixture_version": "2026-06-01", "degraded": False}
     assert expected.items() <= provenance.items()
@@ -403,6 +471,44 @@ def test_snapshot_writes_schema_provenance_and_round_trips(tmp_path) -> None:
     assert provenance["bars_sha256"] == hashlib.sha256(bars_path.read_bytes()).hexdigest()
     loaded = JsonFixtureReader().load(universe_path, bars_path)
     assert len(MomentumScanner().scan(loaded.universe, loaded.bars)) == 1
+
+
+def test_snapshot_round_trips_fractional_canonical_volume(tmp_path) -> None:
+    import json
+
+    from invest.adapters.alpaca_market_data import SnapshotWriter
+    from invest.adapters.fixtures_json import JsonFixtureReader
+
+    inputs = FixtureInputs(
+        Universe("source", ("ACME",)),
+        (
+            DailyBar(
+                "ACME",
+                date(2026, 6, 1),
+                Decimal("10"),
+                Decimal("11"),
+                Decimal("9"),
+                Decimal("10"),
+                Decimal("48037.936"),
+            ),
+        ),
+    )
+
+    first_dir = SnapshotWriter().write(inputs, date(2026, 6, 1), tmp_path / "first")
+    first_payload = json.loads((first_dir / "bars.json").read_text())
+    first_loaded = JsonFixtureReader().load(first_dir / "universe.json", first_dir / "bars.json")
+
+    assert first_payload["bars"][0]["volume"] == "48037.936"
+    assert first_loaded.bars[0].volume == Decimal("48037.936")
+
+    second_dir = SnapshotWriter().write(first_loaded, date(2026, 6, 1), tmp_path / "second")
+    second_payload = json.loads((second_dir / "bars.json").read_text())
+    second_loaded = JsonFixtureReader().load(
+        second_dir / "universe.json", second_dir / "bars.json"
+    )
+
+    assert second_payload["bars"][0]["volume"] == first_payload["bars"][0]["volume"]
+    assert second_loaded.bars[0].volume == first_loaded.bars[0].volume
 
 
 def test_iex_is_degraded_and_zero_volume_is_snapshot_not_fetch_gap(tmp_path) -> None:

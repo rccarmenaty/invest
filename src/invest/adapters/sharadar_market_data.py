@@ -43,7 +43,7 @@ class _SepRow(BaseModel):
     high: Decimal = Field(gt=0)
     low: Decimal = Field(gt=0)
     close: Decimal = Field(gt=0)
-    volume: int = Field(ge=0)
+    volume: Decimal = Field(ge=0)
     closeadj: Decimal = Field(gt=0)
 
     @model_validator(mode="after")

@@ -54,8 +54,41 @@ class _ActionRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ticker: str = Field(min_length=1)
     date: date
-    action: str = Field(min_length=1)
     value: Decimal | None = None
+
+
+# Real SHARADAR/ACTIONS literals folded onto the closed 4-kind SharadarActionKind enum.
+# No consumer branches on kind (the builder is kind-blind), so mapping many raw literals
+# onto few kinds is deliberate: fewer states, no downstream churn.
+_ACTION_KINDS = {
+    "split": SharadarActionKind.SPLIT,
+    "adrratiosplit": SharadarActionKind.SPLIT,
+    "dividend": SharadarActionKind.DIVIDEND,
+    "spinoffdividend": SharadarActionKind.DIVIDEND,
+    "delisted": SharadarActionKind.DELISTING,
+    "regulatorydelisting": SharadarActionKind.DELISTING,
+    "voluntarydelisting": SharadarActionKind.DELISTING,
+    "bankruptcyliquidation": SharadarActionKind.DELISTING,
+    "tickerchangeto": SharadarActionKind.TICKER_CHANGE,
+    "tickerchangefrom": SharadarActionKind.TICKER_CHANGE,
+}
+
+# Explicit, deliberate skips: high-frequency noise that must never abort a fetch and must
+# never become a spurious blocker. Documented (not just dropped-as-unknown) so the intent is
+# testable. Any literal outside _ACTION_KINDS and _SKIPPED_ACTIONS is also dropped (forward
+# compatibility against provider vocabulary drift).
+_SKIPPED_ACTIONS = frozenset(
+    {
+        "listed",
+        "relation",
+        "acquisitionby",
+        "acquisitionof",
+        "mergerto",
+        "mergerfrom",
+        "spinoff",
+        "spunofffrom",
+    }
+)
 
 
 class SharadarActionsReader:
@@ -65,12 +98,6 @@ class SharadarActionsReader:
     MAX_ATTEMPTS = 3
     BACKOFF_BASE_SECONDS = 0.5
     BACKOFF_CAP_SECONDS = 4.0
-    _ACTION_KINDS = {
-        "split": SharadarActionKind.SPLIT,
-        "dividend": SharadarActionKind.DIVIDEND,
-        "delisting": SharadarActionKind.DELISTING,
-        "tickerchange": SharadarActionKind.TICKER_CHANGE,
-    }
 
     def __init__(
         self,
@@ -128,29 +155,32 @@ class SharadarActionsReader:
         for values in payload.datatable.data:
             if len(values) < len(payload.datatable.columns):
                 raise ValueError("ACTIONS row is shorter than its columns")
-            raw_value = values[columns["value"]]
-            if isinstance(raw_value, float):
-                raise ValueError("ACTIONS values must not be floats")
+            kind = _ACTION_KINDS.get(values[columns["action"]])
+            if kind is None:
+                # Skip-unknown: explicit skip literals and any unrecognized drift both drop
+                # silently here, before validation, so odd fields on a dropped row can never
+                # abort the multi-page fetch.
+                continue
             row = _ActionRow.model_validate(
                 {
                     column: values[index]
                     for column, index in columns.items()
-                    if column in self.COLUMNS
+                    if column in {"ticker", "date", "value"}
                 }
             )
             if not row.ticker.strip():
                 raise ValueError("ACTIONS ticker must not be whitespace-only")
-            kind = self._ACTION_KINDS.get(row.action)
-            if kind is None:
-                raise ValueError("unsupported ACTIONS action")
+            value = row.value
             if kind in {SharadarActionKind.DELISTING, SharadarActionKind.TICKER_CHANGE}:
-                if row.value is not None:
-                    raise ValueError("valueless ACTIONS action has a value")
-            elif row.value is None or not row.value.is_finite():
+                # Real ACTIONS attach a contra/last price to delisting and ticker-change
+                # rows; the kind-blind context builder never uses it, so drop it rather
+                # than fail the fetch.
+                value = None
+            elif value is None or not value.is_finite():
                 raise ValueError("valued ACTIONS action has no finite value")
-            elif kind is SharadarActionKind.SPLIT and row.value <= 0:
-                raise ValueError("split ratio must be positive")
-            actions.append(SharadarAction(row.ticker, row.date, kind, row.value))
+            elif value <= 0:
+                raise ValueError("valued ACTIONS ratio/amount must be positive")
+            actions.append(SharadarAction(row.ticker, row.date, kind, value))
         return actions
 
     def _send(self, params: dict[str, str]) -> httpx.Response:
