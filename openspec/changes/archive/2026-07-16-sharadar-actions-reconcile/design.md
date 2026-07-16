@@ -83,3 +83,14 @@ No migration. Single small PR (well under the 400-line budget); rollback = rever
 ## Open Questions
 
 None. The kind-fold decision is resolved as Option A.
+
+## Post-archive correction (live-data finding)
+
+The "valueless" rows above (23-24, 41, 49, 66) assumed delisted/ticker-change rows never
+carry a value — an assumption inherited from synthetic fixtures. The first live
+`invest-generate-context` pull disproved it: real SHARADAR/ACTIONS attaches a contra/last
+price to delisting and ticker-change rows (e.g. `BLD delisted value=9977.2`), and the
+fail-closed guard aborted every pull. Corrected to **accept and drop**: those kinds accept
+any source value and normalize it to absent, since the kind-blind context builder never
+uses it. Split/dividend positivity checks are unchanged. See the updated main spec scenario
+"Valueless kinds accept and drop any source value".

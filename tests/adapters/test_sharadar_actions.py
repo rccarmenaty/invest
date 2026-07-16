@@ -219,7 +219,6 @@ def test_live_shaped_float_fixture_has_no_precision_loss(monkeypatch: pytest.Mon
         ("dividend", "NaN"),
         ("dividend", "Infinity"),
         ("dividend", None),
-        ("tickerchangeto", "1"),
     ],
 )
 def test_fetch_rejects_invalid_action_rows(
@@ -238,7 +237,6 @@ def test_fetch_rejects_invalid_action_rows(
         ("split", "-2", "valued ACTIONS ratio/amount must be positive"),
         ("dividend", "-2", "valued ACTIONS ratio/amount must be positive"),
         ("dividend", None, "valued ACTIONS action has no finite value"),
-        ("delisted", "3", "valueless ACTIONS action has a value"),
     ],
 )
 def test_rejected_rows_report_why_they_were_rejected(
@@ -254,6 +252,28 @@ def test_rejected_rows_report_why_they_were_rejected(
 
     assert caught.value.reason == "malformed-response"
     assert detail in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["delisted", "regulatorydelisting", "voluntarydelisting", "bankruptcyliquidation",
+     "tickerchangeto", "tickerchangefrom"],
+)
+@pytest.mark.parametrize("value", ["976.0", "2.7", "0", "-5", None])
+def test_valueless_kinds_accept_and_drop_any_value(
+    monkeypatch: pytest.MonkeyPatch, action: str, value: object
+) -> None:
+    """Real SHARADAR/ACTIONS attach a contra/last price to delisting and ticker-change
+    rows that the kind-blind strategy never uses. The reader MUST accept the row and
+    normalize its value to absent instead of failing the fetch."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    events = _reader(
+        lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", action, value]]))
+    ).fetch()
+
+    assert len(events) == 1
+    assert events[0].value is None
 
 
 def test_action_kinds_and_skipped_actions_are_disjoint() -> None:

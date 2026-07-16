@@ -170,14 +170,17 @@ class SharadarActionsReader:
             )
             if not row.ticker.strip():
                 raise ValueError("ACTIONS ticker must not be whitespace-only")
+            value = row.value
             if kind in {SharadarActionKind.DELISTING, SharadarActionKind.TICKER_CHANGE}:
-                if row.value is not None:
-                    raise ValueError("valueless ACTIONS action has a value")
-            elif row.value is None or not row.value.is_finite():
+                # Real ACTIONS attach a contra/last price to delisting and ticker-change
+                # rows; the kind-blind context builder never uses it, so drop it rather
+                # than fail the fetch.
+                value = None
+            elif value is None or not value.is_finite():
                 raise ValueError("valued ACTIONS action has no finite value")
-            elif row.value <= 0:
+            elif value <= 0:
                 raise ValueError("valued ACTIONS ratio/amount must be positive")
-            actions.append(SharadarAction(row.ticker, row.date, kind, row.value))
+            actions.append(SharadarAction(row.ticker, row.date, kind, value))
         return actions
 
     def _send(self, params: dict[str, str]) -> httpx.Response:

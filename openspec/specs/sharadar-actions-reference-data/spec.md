@@ -25,7 +25,7 @@ Provide backtest-only corporate-action history as typed, point-in-time events wi
 
 ### Requirement: Typed corporate-action events
 
-Each returned event MUST contain a ticker, effective date, event kind, and optional value. The reader MUST map the mapped ACTIONS literals `split`, `adrratiosplit`, `dividend`, `spinoffdividend`, `delisted`, `regulatorydelisting`, `voluntarydelisting`, `bankruptcyliquidation`, `tickerchangeto`, and `tickerchangefrom` to typed events: `split` and `adrratiosplit` MUST both produce a split event; `dividend` and `spinoffdividend` MUST both produce a dividend event; `delisted`, `regulatorydelisting`, `voluntarydelisting`, and `bankruptcyliquidation` MUST all produce a delisted event; `tickerchangeto` and `tickerchangefrom` MUST both produce a ticker-change event (directionality is not preserved). Every present monetary or ratio value MUST be represented as an exact `Decimal`, including values supplied as JSON floats, coerced without precision loss. An absent value MUST remain absent, and a delisted or ticker-change event MUST NOT carry a value. Non-finite or non-positive values on a split or dividend event MUST fail closed rather than be silently reclassified.
+Each returned event MUST contain a ticker, effective date, event kind, and optional value. The reader MUST map the mapped ACTIONS literals `split`, `adrratiosplit`, `dividend`, `spinoffdividend`, `delisted`, `regulatorydelisting`, `voluntarydelisting`, `bankruptcyliquidation`, `tickerchangeto`, and `tickerchangefrom` to typed events: `split` and `adrratiosplit` MUST both produce a split event; `dividend` and `spinoffdividend` MUST both produce a dividend event; `delisted`, `regulatorydelisting`, `voluntarydelisting`, and `bankruptcyliquidation` MUST all produce a delisted event; `tickerchangeto` and `tickerchangefrom` MUST both produce a ticker-change event (directionality is not preserved). Every present monetary or ratio value MUST be represented as an exact `Decimal`, including values supplied as JSON floats, coerced without precision loss. An absent value MUST remain absent. A delisted or ticker-change row MAY carry a source value (the live SHARADAR/ACTIONS feed attaches a contra/last price); the reader MUST accept the row and normalize its value to absent, since the kind-blind context builder never uses it. Non-finite or non-positive values on a split or dividend event MUST fail closed rather than be silently reclassified.
 (Previously: only the literals `split`, `dividend`, `delisting`, and `tickerchange` were mapped — two of which never occur in real data — and any row whose `value` was a JSON float was rejected outright.)
 
 #### Scenario: Mapped literals parse to their normalized kind
@@ -43,11 +43,12 @@ Each returned event MUST contain a ticker, effective date, event kind, and optio
 - WHEN the reader converts the rows to events
 - THEN each event's value MUST be an exact `Decimal` matching the source float's full decimal representation with no precision loss
 
-#### Scenario: Valueless events reject a present value
+#### Scenario: Valueless kinds accept and drop any source value
 
-- GIVEN a delisted or ticker-change row that carries a non-null value
-- WHEN the reader validates the row
-- THEN it MUST fail with reason `malformed-response`
+- GIVEN a delisted or ticker-change row that carries any value (a contra/last price, zero, negative, or null)
+- WHEN the reader converts the row to an event
+- THEN it MUST produce the event with an absent value
+- AND it MUST NOT fail the fetch
 
 #### Scenario: Non-finite or non-positive values still fail closed
 
