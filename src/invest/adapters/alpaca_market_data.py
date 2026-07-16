@@ -28,7 +28,7 @@ class _BarPayload(BaseModel):
     high: Decimal = Field(alias="h", gt=0)
     low: Decimal = Field(alias="l", gt=0)
     close: Decimal = Field(alias="c", gt=0)
-    volume: int = Field(alias="v", ge=0)
+    volume: Decimal = Field(alias="v", ge=0)
 
     @model_validator(mode="after")
     def validate_price_relationships(self) -> "_BarPayload":
@@ -189,7 +189,11 @@ class SnapshotWriter:
                         "high": str(bar.high),
                         "low": str(bar.low),
                         "close": str(bar.close),
-                        "volume": bar.volume,
+                        "volume": (
+                            int(bar.volume)
+                            if Decimal(bar.volume) == Decimal(bar.volume).to_integral_value()
+                            else str(bar.volume)
+                        ),
                     }
                     for bar in inputs.bars
                 ],

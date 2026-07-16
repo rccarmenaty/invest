@@ -107,5 +107,5 @@ def _trailing_dollar_volume_median(observed: list[DailyBar], window: int) -> Dec
     """Median of ``adjusted close * volume`` over the trailing ``window`` bars
     (inclusive of the current bar)."""
     trailing = observed[-window:]
-    dollar_volumes = [bar.close * Decimal(bar.volume) for bar in trailing]
+    dollar_volumes = [bar.close * bar.volume for bar in trailing]
     return median(dollar_volumes)

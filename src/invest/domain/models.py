@@ -23,7 +23,7 @@ class DailyBar:
     high: Decimal
     low: Decimal
     close: Decimal
-    volume: int
+    volume: Decimal
 
 
 @dataclass(frozen=True)

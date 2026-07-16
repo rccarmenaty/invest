@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,26 @@ def test_loads_valid_versioned_fixtures(tmp_path: Path) -> None:
         ("ACME", "2026-07-09"),
         ("ACME", "2026-07-10"),
     ]
+
+
+def test_loads_fractional_volume_as_canonical_decimal(tmp_path: Path) -> None:
+    bars = valid_bars()
+    bars["bars"][0]["volume"] = "48037.936"
+
+    inputs = load(tmp_path, valid_universe(), bars)
+
+    assert inputs.bars[0].volume == Decimal("48037.936")
+    assert isinstance(inputs.bars[0].volume, Decimal)
+
+
+def test_rejects_negative_volume_before_producing_daily_bars(tmp_path: Path) -> None:
+    bars = valid_bars()
+    bars["bars"][0]["volume"] = -1
+
+    with pytest.raises(FixtureValidationError) as error:
+        load(tmp_path, valid_universe(), bars)
+
+    assert error.value.reason.value == "fixture-invalid"
 
 
 @pytest.mark.parametrize(

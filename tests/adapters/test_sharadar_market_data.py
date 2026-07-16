@@ -60,7 +60,7 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
             200,
             json=_sep_page(
                 [
-                    ["BETA", "2024-01-02", "10", "13", "8", "10", 250, "20"],
+                    ["BETA", "2024-01-02", "10", "13", "8", "10", 250.125, "20"],
                     ["ACME", "2024-01-02", "5", "7", "4", "5", 100, "5"],
                 ]
             ),
@@ -74,7 +74,13 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
     assert result.universe == Universe("v1", ("BETA", "ACME"))
     assert result.bars == (
         DailyBar(
-            "ACME", date(2024, 1, 2), Decimal("5"), Decimal("7"), Decimal("4"), Decimal("5"), 100
+            "ACME",
+            date(2024, 1, 2),
+            Decimal("5"),
+            Decimal("7"),
+            Decimal("4"),
+            Decimal("5"),
+            Decimal("100"),
         ),
         DailyBar(
             "BETA",
@@ -83,9 +89,53 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
             Decimal("26"),
             Decimal("16"),
             Decimal("20"),
-            250,
+            Decimal("250.125"),
         ),
     )
+    assert isinstance(result.bars[1].volume, Decimal)
+    assert result.bars[1].volume == Decimal("250.125")
+
+
+def test_fetch_range_preserves_exact_fractional_sep_volume(monkeypatch) -> None:
+    """Real adjusted SEP volume like 48037.936 must survive as exact Decimal."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [["ACME", "2024-01-02", "10", "11", "9", "10", "48037.936", "10"]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert result.bars[0].volume == Decimal("48037.936")
+    assert isinstance(result.bars[0].volume, Decimal)
+
+
+def test_fetch_range_rejects_negative_volume_without_partial_bars(monkeypatch) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [
+                    ["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                    ["BETA", "2024-01-02", 10, 11, 9, 10, -1, 10],
+                ]
+            ),
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME", "BETA")), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "malformed-response"
+    assert getattr(caught.value, "bars", None) is None
 
 
 def test_fetch_range_merges_cursor_pages(monkeypatch) -> None:
