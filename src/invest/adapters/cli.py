@@ -6,7 +6,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
+from dotenv import load_dotenv
 from pydantic import ValidationError
+
+load_dotenv()
 
 from invest.adapters.backtest_context_json import BacktestContextJsonReader
 from invest.adapters.fixtures_json import (
