@@ -41,12 +41,12 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Unit 2 — Conditional 20-session time stop (150–250 lines)
 
-- [ ] 2.1 RED: `tests/domain/test_exit_policy.py` — 20 held sessions no +0.5R / no prior-20 high → pending `time-stop`; progress suppresses; stop > trail > time same-bar
-- [ ] 2.2 GREEN: `exit_policy.py` + state — `sessions_held`, `reached_half_r`, `printed_new_prior20_high`; evaluate after 20th close
-- [ ] 2.3 RED: `tests/application/test_backtest_run.py` — time-stop next-open+slippage; missing next → open-at-end+warning; forced-close/hard-stop still win
-- [ ] 2.4 GREEN: wire time-stop pending fill in `backtest_run.py` priority after trail
-- [ ] 2.5 REFACTOR: progress flags only on completed history ≤ t
-- [ ] 2.6 Verify unit 2 focused command green
+- [x] 2.1 RED: `tests/domain/test_exit_policy.py` — 20 held sessions no +0.5R / no prior-20 high → pending `time-stop`; progress suppresses; stop > trail > time same-bar
+- [x] 2.2 GREEN: `exit_policy.py` + state — `sessions_held`, `reached_half_r`, `printed_new_prior20_high`; evaluate after 20th close
+- [x] 2.3 RED: `tests/application/test_backtest_run.py` — time-stop next-open+slippage; missing next → open-at-end+warning; forced-close/hard-stop still win
+- [x] 2.4 GREEN: wire time-stop pending fill in `backtest_run.py` priority after trail
+- [x] 2.5 REFACTOR: progress flags only on completed history ≤ t
+- [x] 2.6 Verify unit 2 focused command green
 
 ## Phase 3: Unit 3 — 3-ATR variant + CLI/report isolation (150–300 lines)
 

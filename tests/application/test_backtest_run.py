@@ -403,6 +403,126 @@ def test_trailing_signal_without_next_session_uses_open_at_end_and_warns() -> No
     assert "missing-next-session-after-exit-signal" in result.warnings
 
 
+def test_time_stop_exits_at_next_open_after_20_held_sessions_without_progress() -> None:
+    """20 held sessions without +0.5R / new prior-20 high → time-stop fill at next raw open."""
+    start = date(2026, 1, 1)
+    symbol = "TSTOP"
+    bars = _breakout_bars(symbol, start)
+    # entry day 21 = session 1 … day 40 = session 20 → pending time-stop
+    # elevated high 11.60 < half-R 11.80 (entry 11.40, stop 10.60, R=0.80)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
+    fill_day = start + timedelta(days=41)
+    bars.append(
+        DailyBar(symbol, fill_day, Decimal("11.10"), Decimal("11.30"), Decimal("11.00"), Decimal("11.20"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    trades = _runner(inputs).replay(inputs).trades
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "time-stop"
+    assert trade.exit_price == Decimal("11.10")  # raw next open
+    assert trade.exit_date == fill_day
+    assert trade.entry_price == Decimal("11.40")  # raw entry open
+
+
+def test_time_stop_signal_without_next_session_uses_open_at_end_and_warns() -> None:
+    start = date(2026, 1, 1)
+    symbol = "TSTAIL"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
+    signal_day = start + timedelta(days=40)  # last elevated day = 20th held session
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "open-at-end"
+    assert trade.exit_date == signal_day
+    assert "missing-next-session-after-exit-signal" in result.warnings
+
+
+def test_hard_stop_beats_pending_time_stop_on_fill_bar() -> None:
+    start = date(2026, 1, 1)
+    symbol = "TSSTOP"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
+    conflict_day = start + timedelta(days=41)
+    bars.append(
+        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("10.00"), Decimal("10.50"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    trades = _runner(inputs).replay(inputs).trades
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "stop"
+    assert trade.exit_price == Decimal("10.60")
+
+
+def test_forced_close_beats_pending_time_stop() -> None:
+    start = date(2026, 1, 1)
+    symbol = "TSFORCE"
+    bars = _breakout_bars(symbol, start)
+    bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
+    forced_day = start + timedelta(days=41)
+    bars.append(
+        DailyBar(symbol, forced_day, Decimal("11.10"), Decimal("11.30"), Decimal("10.50"), Decimal("11.00"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            symbol: (BlockerWindow(forced_day, forced_day, reason=ContextReason.CORPORATE_ACTION),)
+        },
+    )
+
+    result = _runner(inputs, market_context=context).replay(inputs)
+
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_day
+    assert result.trades[0].exit_price == Decimal("10.50")
+
+
+def test_half_r_progress_suppresses_time_stop_in_replay() -> None:
+    start = date(2026, 1, 1)
+    symbol = "HALFR"
+    bars = _breakout_bars(symbol, start)
+    # 20 hold sessions; one bar prints high >= 11.80 (+0.5R) so time-stop must not arm
+    holds = _elevated_hold_bars(symbol, start, first_offset=21, count=20)
+    holds[5] = DailyBar(
+        symbol,
+        start + timedelta(days=26),
+        Decimal("11.40"),
+        Decimal("12.00"),  # >= 11.80 half-R
+        Decimal("11.20"),
+        Decimal("11.40"),
+        100,
+    )
+    bars.extend(holds)
+    bars.append(
+        DailyBar(
+            symbol,
+            start + timedelta(days=41),
+            Decimal("11.10"),
+            Decimal("11.30"),
+            Decimal("11.00"),
+            Decimal("11.20"),
+            100,
+        )
+    )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+
+    trades = _runner(inputs).replay(inputs).trades
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "open-at-end"
+    assert trades[0].exit_reason != "time-stop"
+
+
 def test_forced_close_beats_pending_trailing_channel() -> None:
     start = date(2026, 1, 1)
     symbol = "FORCE"

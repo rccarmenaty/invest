@@ -215,7 +215,7 @@ class BacktestRun:
                     qty=intent.qty,
                     entry_fill=slipped_entry,
                     marked_value=entry_cost,
-                    policy=initial_state(intent.stop),
+                    policy=initial_state(initial_stop=intent.stop, entry_price=raw_entry),
                 )
                 positions[decision.symbol] = position
                 deployed += entry_cost

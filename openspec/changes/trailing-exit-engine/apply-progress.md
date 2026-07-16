@@ -2,11 +2,12 @@
 
 **Change**: trailing-exit-engine  
 **Mode**: Strict TDD  
-**Work unit**: Unit 1 / PR 1 — pure 10-day-low engine + replay wiring  
-**Branch**: `feat/trailing-exit-engine-01-channel` (child of tracker `feat/trailing-exit-engine`)  
-**Note**: Git cannot host both `feat/trailing-exit-engine` and `feat/trailing-exit-engine/01-channel`; child uses hyphen form per chained-pr skill convention (`feat/X-01-slice`).
+**Branch (current)**: `feat/trailing-exit-engine-02-time-stop` (from `feat/trailing-exit-engine-01-channel`)
+**Note**: Git cannot host both `feat/X` and `feat/X/01-slice`; children use hyphen form per chained-pr skill.
 
 ## Completed Tasks
+
+### Unit 1 / PR 1 — pure 10-day-low engine + replay wiring
 
 - [x] 1.1 RED: `tests/domain/test_indicators.py` — `trailing_low` hand windows; caller excludes signal day
 - [x] 1.2 GREEN: `src/invest/domain/indicators.py` — add `trailing_low` mirroring `trailing_high`
@@ -19,92 +20,115 @@
 - [x] 1.9 REFACTOR: pure module seams only; paper/execute/sizing/`OrderIntent.take_profit` untouched
 - [x] 1.10 Verify unit 1 focused command green; paper baselines unchanged
 
+### Unit 2 / PR 2 — Conditional 20-session time stop
+
+- [x] 2.1 RED: `tests/domain/test_exit_policy.py` — 20 held sessions no +0.5R / no prior-20 high → pending `time-stop`; progress suppresses; stop > trail > time same-bar
+- [x] 2.2 GREEN: `exit_policy.py` + state — `sessions_held`, `reached_half_r`, `printed_new_prior20_high`; evaluate after 20th close
+- [x] 2.3 RED: `tests/application/test_backtest_run.py` — time-stop next-open+slippage; missing next → open-at-end+warning; forced-close/hard-stop still win
+- [x] 2.4 GREEN: wire time-stop pending fill in `backtest_run.py` priority after trail
+- [x] 2.5 REFACTOR: progress flags only on completed history ≤ t
+- [x] 2.6 Verify unit 2 focused command green
+
 ## Remaining Tasks
 
-- [ ] 2.1–2.6 Unit 2 — Conditional 20-session time stop
 - [ ] 3.1–3.10 Unit 3 — 3-ATR variant + CLI/report isolation
 
 ## TDD Cycle Evidence
 
+### Unit 1 (preserved)
+
 | Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
 |------|-----------|-------|------------|-----|-------|-------------|----------|
-| 1.1 | `tests/domain/test_indicators.py` | Unit | ✅ 17 domain baseline | ✅ Written (ImportError) | ✅ `trailing_low` | ✅ 3 cases (hand min, outside window, signal-day exclude) | ➖ Mirror of `trailing_high` |
+| 1.1 | `tests/domain/test_indicators.py` | Unit | ✅ 17 domain baseline | ✅ Written (ImportError) | ✅ `trailing_low` | ✅ 3 cases | ➖ Mirror of `trailing_high` |
 | 1.2 | (impl of 1.1) | Unit | — | — | ✅ 13/13 indicators | — | ✅ Clean |
-| 1.3 | `tests/domain/test_exit_policy.py` | Unit | N/A (new) | ✅ Written | ✅ `exit_policy.py` | ✅ 7 cases (ratchet up/hold, strict/equal, stop>pending, next-open, purity) | ✅ Pure frozen state |
+| 1.3 | `tests/domain/test_exit_policy.py` | Unit | N/A (new) | ✅ Written | ✅ `exit_policy.py` | ✅ 7 cases | ✅ Pure frozen state |
 | 1.4 | (impl of 1.3) | Unit | — | — | ✅ 7/7 exit_policy | — | ✅ Clean |
 | 1.5 | `tests/domain/test_backtest_metrics.py` | Unit | ✅ metrics baseline | ✅ Written (enum set fail) | ✅ ExitReason update | ➖ Single contract set | ➖ None needed |
 | 1.6 | (impl of 1.5) | Unit | — | — | ✅ 7/7 metrics | — | ➖ None needed |
-| 1.7 | `tests/application/test_backtest_run.py` | Integration | ✅ 39 backtest baseline | ✅ Written (TP path fail) | ✅ BacktestRun wiring | ✅ next-open, ignore TP, stop>pending, missing-next warn, forced-close, no-look-ahead, twin | ✅ Policy on position |
+| 1.7 | `tests/application/test_backtest_run.py` | Integration | ✅ 39 backtest baseline | ✅ Written (TP path fail) | ✅ BacktestRun wiring | ✅ multi-scenario | ✅ Policy on position |
 | 1.8 | (impl of 1.7) | Integration | — | — | ✅ 53 focused green | — | ✅ Deleted `_simulate_trade` |
 | 1.9 | seams | — | — | — | ✅ sizing/execute/broker green | — | ✅ Paper/intent TP untouched |
 | 1.10 | verify | — | — | — | ✅ Focused 53 + boundaries 19 | — | — |
 
-### Test Summary
+### Unit 2
 
-- **Total tests written/updated (Unit 1)**: ~15 new behavioral tests + contract updates
-- **Focused suite passing**: 53
-- **Layers used**: Unit (indicators, exit_policy, metrics), Integration (BacktestRun.replay)
-- **Approval tests**: N/A — behavior change (TP → trailing), not pure refactor
-- **Pure functions created**: `trailing_low`, `initial_state`, `on_bar` (+ frozen config/state/decision)
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2.1 | `tests/domain/test_exit_policy.py` | Unit | ✅ 34 (exit_policy+backtest) | ✅ Written | ✅ time-stop state/eval | ✅ no-progress, half-R suppress, prior-20 suppress, stop>time, trail>time, channel>time, next-open fill | ✅ Pure flags from history ≤ t |
+| 2.2 | (impl of 2.1) | Unit | — | — | ✅ 14/14 exit_policy | — | ✅ Config `time_stop_sessions`/`half_r` |
+| 2.3 | `tests/application/test_backtest_run.py` | Integration | ✅ Unit 1 suite | ✅ Written | ✅ replay wiring | ✅ next-open, missing-next warn, hard-stop win, forced-close win, half-R suppress | ➖ pending reason path already generic |
+| 2.4 | (impl of 2.3) | Integration | — | — | ✅ `initial_state(..., entry_price=raw_entry)` | — | ✅ No extra app logic |
+| 2.5 | refactor | Unit | — | — | ✅ still green | — | ✅ progress only on completed history ≤ t |
+| 2.6 | verify | — | — | — | ✅ focused unit2 + full 66 | — | — |
+
+### Test Summary (cumulative)
+
+- **Unit 1 focused suite**: 53 passed (at Unit 1 close)
+- **Unit 2 pure + integration additions**: time-stop / progress / priority cases
+- **Current focused (U1+U2 files)**: `uv run pytest tests/domain/test_indicators.py tests/domain/test_exit_policy.py tests/domain/test_backtest_metrics.py tests/application/test_backtest_run.py -q` → **66 passed**
+- **Unit 2 focused filter**: `uv run pytest tests/domain/test_exit_policy.py tests/application/test_backtest_run.py -q -k "time_stop or progress or priority or half_r or forced_close_beats_pending_time"` → **12 passed**
+- **Layers**: Unit + Integration
+- **Pure functions extended**: `on_bar` (sessions/progress/time-stop), `initial_state(entry_price=...)`
 
 ## Work Unit Evidence
 
+### Unit 1 (preserved)
+
 | Evidence | Value |
 |---|---|
-| Focused test command and exact result | `uv run pytest tests/domain/test_indicators.py tests/domain/test_exit_policy.py tests/domain/test_backtest_metrics.py tests/application/test_backtest_run.py -q` → **53 passed** |
-| Runtime harness | `N/A` — pure domain + in-memory `BacktestRun.replay` only; no broker/CLI runtime boundary in Unit 1 |
-| Rollback boundary | Revert `src/invest/domain/exit_policy.py`, `trailing_low` in `indicators.py`, `ExitReason` in `backtest_metrics.py`, `backtest_run.py` wiring; restore fixed-TP tests in `test_backtest_run.py` / `test_backtest_metrics.py`; paper/execute/sizing untouched |
-| Paper/execute baseline | `uv run pytest tests/domain/test_sizing.py tests/application/test_execute_run.py tests/adapters/test_alpaca_broker.py -q` → **pass** (sizing + execute + broker); `tests/test_boundaries.py` → **19 passed** |
+| Focused test | U1 command → **53 passed** |
+| Runtime harness | `N/A` — pure domain + in-memory replay |
+| Rollback boundary | Revert exit_policy/trailing_low/ExitReason/backtest_run; restore fixed-TP tests; paper untouched |
+
+### Unit 2
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/domain/test_exit_policy.py tests/application/test_backtest_run.py -q -k "time_stop or progress or priority or half_r or forced_close_beats_pending_time"` → **12 passed**; full U1+U2 files → **66 passed** |
+| Runtime harness | `N/A` — pure domain + in-memory `BacktestRun.replay` only; no broker/CLI boundary in Unit 2 |
+| Rollback boundary | Revert time-stop fields/eval in `exit_policy.py`, `initial_state(entry_price=...)` wiring, and Unit 2 tests only; channel path remains |
 
 ## Files Changed
 
+### Unit 1
 | File | Action | What Was Done |
 |------|--------|---------------|
-| `src/invest/domain/indicators.py` | Modified | Added `trailing_low` |
-| `src/invest/domain/exit_policy.py` | Created | Pure 10-day-low policy (`ExitPolicyConfig`, state, `on_bar`) |
-| `src/invest/domain/backtest_metrics.py` | Modified | `ExitReason`: `trailing-channel` replaces `take-profit` |
-| `src/invest/application/backtest_run.py` | Modified | Policy state on `_OpenPosition`; default ten-day-low; delete `_simulate_trade`; missing-next warning |
-| `tests/domain/test_indicators.py` | Modified | `trailing_low` RED cases |
-| `tests/domain/test_exit_policy.py` | Created | Pure policy unit tests |
-| `tests/domain/test_backtest_metrics.py` | Modified | ExitReason contract set |
-| `tests/application/test_backtest_run.py` | Modified | Replace TP cases; trail/next-open/priority/determinism |
+| `src/invest/domain/indicators.py` | Modified | `trailing_low` |
+| `src/invest/domain/exit_policy.py` | Created | Pure 10-day-low policy |
+| `src/invest/domain/backtest_metrics.py` | Modified | ExitReason set |
+| `src/invest/application/backtest_run.py` | Modified | Policy wiring; delete `_simulate_trade` |
+| tests (indicators/exit_policy/metrics/backtest_run) | Modified/Created | Unit 1 coverage |
+
+### Unit 2
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `src/invest/domain/exit_policy.py` | Modified | `sessions_held`, progress flags, `time-stop` pending; `entry_price` on state; config `time_stop_sessions`/`half_r` |
+| `src/invest/application/backtest_run.py` | Modified | `initial_state(initial_stop=..., entry_price=raw_entry)` |
+| `tests/domain/test_exit_policy.py` | Modified | Time-stop pure RED/GREEN cases |
+| `tests/application/test_backtest_run.py` | Modified | Time-stop replay integration cases |
 
 ## Workload / PR Boundary
 
-- Mode: chained PR slice (feature-branch-chain)
-- Current work unit: Unit 1 / PR 1
-- Boundary: pure 10-day-low + replay wiring only; no time-stop, ATR, CLI flag, paper changes
-- Authored impact: ~587 lines (tracked + new); under session budget 800; above ideal 400 (expected for Unit 1 forecast 350–500)
-- Tracker: `feat/trailing-exit-engine`
-- Child: `feat/trailing-exit-engine-01-channel` → targets tracker
+- Mode: chained PR slice (`feature-branch-chain`)
+- Unit 1 child: `feat/trailing-exit-engine-01-channel` → tracker
+- Unit 2 child: `feat/trailing-exit-engine-02-time-stop` → PR1 branch
+- Unit 2 scope: conditional 20-session time stop only; no ATR/CLI/paper
+- Authored Unit 2 delta: ~377 lines (under session budget 800)
 
 ## Deviations from Design
 
-- Branch name uses hyphen child (`feat/trailing-exit-engine-01-channel`) instead of slash path because Git refs cannot nest under an existing branch name; matches chained-pr skill examples.
-- Unit 1 does not yet add time-stop / ATR state fields on policy state (deferred to Units 2–3 per tasks).
+- Branch hyphen naming (Git ref constraint) — same as Unit 1.
+- `ExitReason` enum not extended with `time-stop` in Unit 2 (tasks do not require it; free-string reason matches forced-close pattern). Unit 3 may formalize additional reasons.
 
 ## Issues Found
 
 - None blocking.
 
-## Bounded review correction (CRITICAL — raw entry_price / single entry slippage)
+## Bounded review correction (Unit 1 CRITICAL — preserved)
 
-**Claim**: trailing exits record pre-slipped `entry_fill` as `SimulatedTrade.entry_price`, causing double entry slippage in metrics/settlement.
-
-**Verification**: At apply time, `_OpenPosition` already stored `entry_price=entry_bar.open` (raw) and `entry_fill=entry_fill(open)` separately. Runtime probe: trailing trade `entry_price=11.40` (raw), not `11.4057` (slipped). Cash/metrics matched single-slippage hand math.
-
-**Correction applied (defensive, behavior-preserving)**:
-1. RED regression: `test_trailing_channel_trade_records_raw_entry_price_for_single_entry_slippage` — asserts raw entry, ≠ slipped fill, hand-computed `apply_costs`/cash identity.
-2. Keyword-arg construction for `_OpenPosition` and all `SimulatedTrade` exit paths; local names `raw_entry` / `slipped_entry` so positional reorder cannot reintroduce the defect.
-
-**Evidence**:
-```
-uv run pytest tests/application/test_backtest_run.py::test_trailing_channel_trade_records_raw_entry_price_for_single_entry_slippage tests/application/test_backtest_run.py -q
-→ 28 passed
-```
-
-Task checkboxes unchanged (bounded remediation only).
+**Claim**: trailing exits record pre-slipped `entry_fill` as `SimulatedTrade.entry_price`.
+**Result**: defect not present; regression + keyword-arg hardening applied. See prior section in history / Engram.
 
 ## Status
 
-10/26 tasks complete (Unit 1 done). Ready for next batch (Unit 2) or partial verify of Unit 1.
+16/26 tasks complete (Units 1–2 done). Ready for Unit 3 apply or PR 2 review.
