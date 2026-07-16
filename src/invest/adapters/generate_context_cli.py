@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 import httpx
+from dotenv import load_dotenv
 
 from invest.adapters.alpaca_market_data import MarketDataFetchError
 from invest.adapters.backtest_context_json import (
@@ -30,6 +31,8 @@ from invest.application.generate_market_context import (
 )
 from invest.domain.liquidity_screen import ScreenConfig
 from invest.domain.market_context import MarketContextError
+
+load_dotenv()
 
 
 class InvalidArgumentsError(ValueError):

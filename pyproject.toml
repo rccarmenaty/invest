@@ -6,6 +6,7 @@ dependencies = [
     "exchange-calendars>=4.11,<5",
     "httpx>=0.28.1",
     "pydantic>=2.7,<3",
+    "python-dotenv>=1.0,<2",
 ]
 
 [project.scripts]
