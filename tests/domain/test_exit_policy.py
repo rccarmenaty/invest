@@ -352,3 +352,120 @@ def test_pending_time_stop_fills_at_next_open() -> None:
     _, decision = on_bar(state, bar, [bar], config)
 
     assert decision == ExitDecision(reason="time-stop", fill_price=Decimal("10.10"))
+
+
+def test_atr_high_water_floor_never_loosens() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, ExitPolicyState, on_bar
+    from invest.domain.indicators import average_true_range
+
+    start = date(2026, 1, 1)
+    # Build history with stable ATR, then a high-water bar, then a lower high that must not drop floor.
+    history = _flat_history(start, 14, low="9", high="11", close="10")
+    high_day = _bar(start + timedelta(days=14), high="15", low="10", close="14", open_="12")
+    config = ExitPolicyConfig(kind="atr-3-high-water", atr_mult=Decimal("3"))
+    state = ExitPolicyState(
+        initial_stop=Decimal("8.00"),
+        effective_floor=Decimal("8.00"),
+        entry_price=Decimal("10.00"),
+        high_water=None,
+    )
+    state_after_high, _ = on_bar(state, high_day, history + [high_day], config)
+    atr_after = average_true_range(history + [high_day])
+    expected_floor = max(Decimal("8.00"), Decimal("15") - Decimal("3") * atr_after)
+    assert state_after_high.high_water == Decimal("15")
+    assert state_after_high.effective_floor == expected_floor
+
+    lower_day = _bar(start + timedelta(days=15), high="12", low="10", close="11", open_="12")
+    state_held, decision = on_bar(
+        state_after_high, lower_day, history + [high_day, lower_day], config
+    )
+    assert decision is None
+    assert state_held.high_water == Decimal("15")  # high-water never drops
+    assert state_held.effective_floor == expected_floor  # floor never loosens
+
+
+def test_atr_close_below_post_ratchet_floor_sets_pending_atr_trail() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, ExitPolicyState, on_bar
+    from invest.domain.indicators import average_true_range
+
+    start = date(2026, 1, 1)
+    history = _flat_history(start, 14, low="9", high="11", close="10")
+    # Wide range bar to set high-water and a high floor candidate
+    hw = _bar(start + timedelta(days=14), high="20", low="10", close="19", open_="12")
+    config = ExitPolicyConfig(kind="atr-3-high-water", atr_mult=Decimal("3"))
+    state = ExitPolicyState(
+        initial_stop=Decimal("5.00"),
+        effective_floor=Decimal("5.00"),
+        entry_price=Decimal("12.00"),
+        high_water=None,
+    )
+    state, _ = on_bar(state, hw, history + [hw], config)
+    floor = state.effective_floor
+    atr = average_true_range(history + [hw])
+    assert floor == max(Decimal("5.00"), Decimal("20") - Decimal("3") * atr)
+
+    # Next day: close strictly below floor, low stays above hard stop
+    signal_close = floor - Decimal("0.01")
+    signal = _bar(
+        start + timedelta(days=15),
+        high=str(floor + Decimal("1")),
+        low=str(max(Decimal("5.01"), signal_close - Decimal("0.5"))),
+        close=str(signal_close),
+        open_=str(floor + Decimal("0.5")),
+    )
+    # Ensure low > hard stop so we evaluate ATR trail not hard stop
+    assert signal.low > state.initial_stop
+
+    new_state, decision = on_bar(state, signal, history + [hw, signal], config)
+
+    assert decision is None
+    assert new_state.pending_exit_reason == "atr-trail"
+
+
+def test_atr_equal_close_to_floor_does_not_signal() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, ExitPolicyState, on_bar
+
+    start = date(2026, 1, 1)
+    history = _flat_history(start, 14, low="9", high="11", close="10")
+    hw = _bar(start + timedelta(days=14), high="20", low="10", close="19", open_="12")
+    config = ExitPolicyConfig(kind="atr-3-high-water", atr_mult=Decimal("3"))
+    state = ExitPolicyState(
+        initial_stop=Decimal("5.00"),
+        effective_floor=Decimal("5.00"),
+        entry_price=Decimal("12.00"),
+    )
+    state, _ = on_bar(state, hw, history + [hw], config)
+    floor = state.effective_floor
+    equal = _bar(
+        start + timedelta(days=15),
+        high=str(floor + Decimal("1")),
+        low=str(floor - Decimal("0.1")) if floor - Decimal("0.1") > Decimal("5.00") else str(Decimal("5.01")),
+        close=str(floor),
+        open_=str(floor + Decimal("0.5")),
+    )
+    # If equal close would require low through stop, skip by ensuring floor >> stop
+    assert equal.low > state.initial_stop
+
+    new_state, decision = on_bar(state, equal, history + [hw, equal], config)
+
+    assert decision is None
+    assert new_state.pending_exit_reason is None
+
+
+def test_pending_atr_trail_fills_at_next_open() -> None:
+    from invest.domain.exit_policy import ExitDecision, ExitPolicyConfig, ExitPolicyState, on_bar
+
+    start = date(2026, 1, 1)
+    bar = _bar(start, high="12", low="10", close="11", open_="10.55")
+    state = ExitPolicyState(
+        initial_stop=Decimal("8.00"),
+        effective_floor=Decimal("11.00"),
+        entry_price=Decimal("12.00"),
+        high_water=Decimal("15"),
+        pending_exit_reason="atr-trail",
+    )
+    config = ExitPolicyConfig(kind="atr-3-high-water")
+
+    _, decision = on_bar(state, bar, [bar], config)
+
+    assert decision == ExitDecision(reason="atr-trail", fill_price=Decimal("10.55"))

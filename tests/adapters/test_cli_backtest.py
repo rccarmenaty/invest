@@ -721,3 +721,62 @@ def test_backtest_rejects_unknown_strategy_value_with_one_json_error_before_any_
     assert captured.out.count("\n") == 1
     assert json.loads(captured.out) == {"reason": "strategy-invalid"}
     assert captured.err == ""
+
+
+def test_backtest_exit_policy_flag_defaults_to_ten_day_low_and_is_in_report(capsys) -> None:
+    result = cli.backtest_main(_backtest_args("--split-date", "2024-01-23", "--format", "json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert "exit_policy" in payload
+    assert payload["exit_policy"]["kind"] == "ten-day-low"
+    assert list(payload["exit_policy"].keys()) == sorted(payload["exit_policy"].keys())
+    assert payload["exit_policy"]["channel_window"] == 10
+    assert payload["exit_policy"]["atr_mult"] == "3"
+
+
+def test_backtest_exit_policy_atr_variant_recorded_in_report_metadata(capsys) -> None:
+    result = cli.backtest_main(
+        _backtest_args(
+            "--split-date",
+            "2024-01-23",
+            "--format",
+            "json",
+            "--exit-policy",
+            "atr-3-high-water",
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["exit_policy"]["kind"] == "atr-3-high-water"
+    assert list(payload["exit_policy"].keys()) == sorted(payload["exit_policy"].keys())
+
+
+def test_backtest_exit_policy_default_and_explicit_ten_day_low_are_byte_identical(capsys) -> None:
+    default_result = cli.backtest_main(
+        _backtest_args("--split-date", "2024-01-23", "--format", "json")
+    )
+    default_output = capsys.readouterr().out
+
+    explicit_result = cli.backtest_main(
+        _backtest_args(
+            "--split-date",
+            "2024-01-23",
+            "--format",
+            "json",
+            "--exit-policy",
+            "ten-day-low",
+        )
+    )
+    explicit_output = capsys.readouterr().out
+
+    assert default_result == 0
+    assert explicit_result == 0
+    assert default_output == explicit_output
+
+
+def test_backtest_parser_accepts_exit_policy_choices() -> None:
+    options = {action.dest: action for action in cli._backtest_parser()._actions}
+    assert "exit_policy" in options
+    assert set(options["exit_policy"].choices) == {"ten-day-low", "atr-3-high-water"}
