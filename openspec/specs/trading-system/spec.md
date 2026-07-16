@@ -926,19 +926,25 @@ Effective floor MUST update each session as `max(initial_stop, prior_floor, cand
 
 ### Requirement: Conditional 20-session time stop
 
-Hold count MUST use observed trading sessions. After 20th held session closes, signal next-open time stop unless during hold price reached `entry + 0.5R` (`R = entry - initial_stop`) or printed a new prior-20 high. Fill next open with existing slippage; missing next bar uses trailing `open-at-end` + warning.
+Hold count MUST use observed trading sessions. After 20th held session closes, signal next-open time stop unless during hold price reached `entry + 0.5R` (`R = entry - initial_stop`) or a session close was strictly above the maximum closing price of the 20 completed sessions preceding that evaluation session. An intraday high alone MUST NOT satisfy the closing-high progress condition. Fill next open with existing slippage; missing next bar uses trailing `open-at-end` + warning.
 
 #### Scenario: Time stop without progress
 
-- GIVEN 20 held sessions without +0.5R or new prior-20 high
+- GIVEN 20 held sessions without +0.5R or a close strictly above the maximum closing price of the 20 completed sessions preceding its evaluation session
 - WHEN 20th session closes
 - THEN signal time-stop for next open
 
 #### Scenario: Progress suppresses time stop
 
-- GIVEN +0.5R or new prior-20 high during hold
+- GIVEN +0.5R or a close strictly above the maximum closing price of the 20 completed sessions preceding its evaluation session during hold
 - WHEN 20th session closes
 - THEN no time-stop signals
+
+#### Scenario: Intraday high alone does not suppress time stop
+
+- GIVEN 20 held sessions where an intraday high exceeds the maximum closing price of the 20 completed sessions preceding its evaluation session, but no close does
+- WHEN 20th session closes
+- THEN signal time-stop for next open
 
 ### Requirement: Selectable 3-ATR high-water variant
 
