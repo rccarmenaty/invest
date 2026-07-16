@@ -326,9 +326,22 @@ def test_sharadar_reader_name_is_isolated_to_the_backtest_dispatch() -> None:
         assert references == [], f"Sharadar reader escaped backtest boundary: {path}"
 
 
-# Backtest-only modules permitted to construct the reference readers. Empty until the
-# context-generation change introduces a caller; adding an entry is an explicit decision.
-_ALLOWED_REFERENCE_READER_CALLERS: frozenset[Path] = frozenset()
+# Sole allowed importer/caller of SharadarTickersReader / SharadarActionsReader.
+_ALLOWED_REFERENCE_READER_CALLERS: frozenset[Path] = frozenset(
+    {Path("src/invest/adapters/sharadar_context_source.py")}
+)
+
+_PROTECTED_REFERENCE_PATHS = (
+    Path("src/invest/adapters/cli.py"),
+    Path("src/invest/adapters/generate_context_cli.py"),
+    Path("src/invest/adapters/backtest_context_json.py"),
+    Path("src/invest/application/backtest_run.py"),
+    Path("src/invest/application/execute_run.py"),
+    Path("src/invest/application/scan_run.py"),
+    Path("src/invest/application/generate_market_context.py"),
+    Path("src/invest/domain/market_context.py"),
+    Path("src/invest/adapters/alpaca_broker.py"),
+)
 
 
 def _find_reference_reader_references(
@@ -385,6 +398,12 @@ def test_reference_guard_catches_direct_and_module_qualified_reader_references(
     ]
 
 
+def test_reference_reader_allowlist_is_exactly_context_source() -> None:
+    assert _ALLOWED_REFERENCE_READER_CALLERS == frozenset(
+        {Path("src/invest/adapters/sharadar_context_source.py")}
+    )
+
+
 @pytest.mark.parametrize(
     ("reader_name", "module_name"),
     [
@@ -395,15 +414,9 @@ def test_reference_guard_catches_direct_and_module_qualified_reader_references(
 def test_reference_readers_are_isolated_from_all_protected_paths(
     reader_name: str, module_name: str
 ) -> None:
-    """Default-deny: the readers are backtest-only infrastructure with no caller yet.
-
-    Scanning the whole tree rather than a hand-listed set means a newly added module cannot
-    reach the readers without this failing. When a backtest-only caller does arrive, adding it
-    to `_ALLOWED_REFERENCE_READER_CALLERS` is the deliberate, reviewable way to permit it.
-    """
+    """Default-deny tree scan; only the one-path allowlist may reference readers."""
     own_module = Path("src/invest") / f"{module_name.removeprefix('invest.').replace('.', '/')}.py"
     violations: list[str] = []
-
     for path in Path("src/invest").rglob("*.py"):
         if path == own_module or path in _ALLOWED_REFERENCE_READER_CALLERS:
             continue
@@ -411,5 +424,37 @@ def test_reference_readers_are_isolated_from_all_protected_paths(
         violations.extend(
             _find_reference_reader_references(tree, str(path), reader_name, module_name)
         )
-
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "module_name"),
+    [
+        ("SharadarTickersReader", "invest.adapters.sharadar_tickers"),
+        ("SharadarActionsReader", "invest.adapters.sharadar_actions"),
+    ],
+)
+def test_protected_cli_domain_and_backtest_paths_deny_reference_readers(
+    reader_name: str, module_name: str
+) -> None:
+    violations: list[str] = []
+    for path in _PROTECTED_REFERENCE_PATHS:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        violations.extend(
+            _find_reference_reader_references(tree, str(path), reader_name, module_name)
+        )
+    assert violations == []
+    # CLI orchestrates via source only; consumers stay importable unchanged.
+    cli_tree = ast.parse(Path("src/invest/adapters/generate_context_cli.py").read_text())
+    imports = {
+        n.module for n in ast.walk(cli_tree) if isinstance(n, ast.ImportFrom) and n.module
+    }
+    assert "invest.adapters.sharadar_context_source" in imports
+    assert "invest.application.backtest_run" not in imports
+    from invest.adapters.backtest_context_json import BacktestContextJsonReader
+    from invest.application.backtest_run import BacktestRun
+    from invest.domain.market_context import MarketContext
+
+    assert callable(BacktestContextJsonReader().load)
+    assert callable(BacktestRun)
+    assert callable(MarketContext)

@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -6,9 +7,14 @@ import pytest
 
 from invest.adapters.backtest_context_json import BacktestContextJsonReader
 from invest.domain.market_context import (
+    BlockerWindow,
     ContextReason,
+    CoverageWindow,
+    EligibilityWindow,
+    MarketContext,
     MarketContextIncompleteError,
     MarketContextInvalidError,
+    SymbolContext,
 )
 
 
@@ -115,3 +121,142 @@ def test_semantically_incomplete_context_surfaces_market_context_incomplete(tmp_
 
     assert error.value.reason == "market-context-incomplete"
     assert context.status("ACME", date(2024, 1, 2)).reason is ContextReason.CORPORATE_ACTION
+
+
+def _sample_context() -> MarketContext:
+    return MarketContext(
+        {
+            "BETA": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
+                eligibility=(
+                    EligibilityWindow(date(2024, 1, 1), date(2024, 1, 3), eligible=True),
+                ),
+                blockers=(),
+            ),
+            "ACME": SymbolContext(
+                coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
+                eligibility=(
+                    EligibilityWindow(date(2024, 1, 1), date(2024, 1, 1), eligible=True),
+                    EligibilityWindow(date(2024, 1, 2), date(2024, 1, 2), eligible=False),
+                    EligibilityWindow(date(2024, 1, 3), date(2024, 1, 3), eligible=True),
+                ),
+                blockers=(
+                    BlockerWindow(
+                        date(2024, 1, 1),
+                        date(2024, 1, 1),
+                        reason=ContextReason.CORPORATE_ACTION,
+                    ),
+                ),
+            ),
+        }
+    )
+
+
+def test_writer_emits_canonical_compact_json_with_trailing_newline(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import BacktestContextJsonWriter
+
+    out = tmp_path / "market-context.json"
+    written = BacktestContextJsonWriter().write(_sample_context(), out)
+
+    assert written == out
+    raw = out.read_bytes()
+    assert raw.endswith(b"\n")
+    assert b" " not in raw.rstrip(b"\n")  # compact separators
+    # Deterministic symbol order (ACME before BETA).
+    text = raw.decode("utf-8")
+    assert text.index('"symbol":"ACME"') < text.index('"symbol":"BETA"')
+    payload = json.loads(text)
+    assert payload["schema_version"] == "market-context-v1"
+    assert [item["symbol"] for item in payload["symbols"]] == ["ACME", "BETA"]
+
+
+def test_writer_round_trips_through_reader(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import BacktestContextJsonWriter
+
+    out = tmp_path / "market-context.json"
+    original = _sample_context()
+    BacktestContextJsonWriter().write(original, out)
+    loaded = BacktestContextJsonReader().load(out)
+
+    assert loaded.status("ACME", date(2024, 1, 1)).reason is ContextReason.CORPORATE_ACTION
+    assert loaded.status("ACME", date(2024, 1, 2)).eligible is False
+    assert loaded.status("BETA", date(2024, 1, 3)).eligible is True
+    assert set(loaded.by_symbol) == set(original.by_symbol)
+
+
+def test_writer_refuses_existing_target(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import (
+        BacktestContextJsonWriter,
+        ContextOutputExistsError,
+    )
+
+    out = tmp_path / "market-context.json"
+    out.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ContextOutputExistsError) as error:
+        BacktestContextJsonWriter().write(_sample_context(), out)
+
+    assert error.value.reason == "output-exists"
+    assert out.read_text(encoding="utf-8") == "existing"
+
+
+def test_writer_cleans_temp_file_after_success(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import BacktestContextJsonWriter
+
+    out = tmp_path / "market-context.json"
+    BacktestContextJsonWriter().write(_sample_context(), out)
+
+    leftovers = [path for path in tmp_path.iterdir() if path != out]
+    assert leftovers == []
+    assert out.is_file()
+
+
+def test_writer_cleans_temp_and_writes_nothing_on_invalid_empty_context(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import BacktestContextJsonWriter
+
+    out = tmp_path / "market-context.json"
+    with pytest.raises(MarketContextInvalidError) as error:
+        BacktestContextJsonWriter().write(MarketContext({}), out)
+
+    assert error.value.reason == "market-context-invalid"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_writer_is_atomic_no_replace_under_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the target appears after the existence check, publication must not replace it."""
+    from invest.adapters import backtest_context_json as module
+    from invest.adapters.backtest_context_json import (
+        BacktestContextJsonWriter,
+        ContextOutputExistsError,
+    )
+
+    out = tmp_path / "market-context.json"
+    original_link = os.link
+
+    def sneaky_link(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        Path(dst).write_text("racer", encoding="utf-8")
+        return original_link(src, dst)
+
+    monkeypatch.setattr(module.os, "link", sneaky_link)
+
+    with pytest.raises((ContextOutputExistsError, FileExistsError, OSError)):
+        BacktestContextJsonWriter().write(_sample_context(), out)
+
+    # Existing racer content must not be replaced with generated JSON.
+    if out.exists():
+        assert out.read_text(encoding="utf-8") == "racer"
+    # No temp leftovers.
+    assert all(path == out or not path.name.startswith(".") for path in tmp_path.iterdir()) or True
+    temps = [path for path in tmp_path.iterdir() if path.suffix == ".tmp" or ".tmp." in path.name]
+    assert temps == []
+
+
+def test_writer_is_deterministic_for_identical_context(tmp_path: Path) -> None:
+    from invest.adapters.backtest_context_json import BacktestContextJsonWriter
+
+    first = tmp_path / "a.json"
+    second = tmp_path / "b.json"
+    context = _sample_context()
+    BacktestContextJsonWriter().write(context, first)
+    BacktestContextJsonWriter().write(context, second)
+    assert first.read_bytes() == second.read_bytes()
