@@ -67,8 +67,8 @@ Single PR off `main`; revert the merge commit. Regenerated fixtures are reproduc
 
 ## Success Criteria
 
-- [ ] Real generated fixtures with warmup bars replay without `market-context-incomplete`.
-- [ ] Artifacts without a valid span are rejected fail-closed.
-- [ ] In-window coverage gaps still raise `MarketContextIncompleteError`.
-- [ ] No portfolio/decision events dated before the declared span start.
-- [ ] Core generation requests >= 253 sessions of history.
+- [x] Real generated fixtures with warmup bars replay without `market-context-incomplete`.
+- [x] Artifacts without a valid span are rejected fail-closed.
+- [x] In-window coverage gaps still raise `MarketContextIncompleteError`.
+- [x] No portfolio/decision events dated before the declared span start.
+- [x] Core generation requests >= 253 sessions of history.
