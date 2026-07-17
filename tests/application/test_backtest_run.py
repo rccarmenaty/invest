@@ -10,6 +10,7 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
     MarketContext,
     MarketContextIncompleteError,
     SymbolContext,
@@ -64,12 +65,14 @@ def _context_for_inputs(
     *,
     eligibility_by_symbol: dict[str, tuple[EligibilityWindow, ...]] | None = None,
     blockers_by_symbol: dict[str, tuple[BlockerWindow, ...]] | None = None,
+    generation_span: GenerationSpan | None = None,
 ) -> MarketContext:
     replay_dates = sorted({bar.date for bar in inputs.bars})
     start = replay_dates[0]
     end = replay_dates[-1]
     return MarketContext(
-        {
+        generation_span=generation_span or GenerationSpan(start, end),
+        by_symbol={
             symbol: SymbolContext(
                 coverage=(CoverageWindow(start, end),),
                 eligibility=(eligibility_by_symbol or {}).get(
@@ -78,7 +81,7 @@ def _context_for_inputs(
                 blockers=(blockers_by_symbol or {}).get(symbol, ()),
             )
             for symbol in inputs.universe.symbols
-        }
+        },
     )
 
 
@@ -163,12 +166,13 @@ def test_replay_rejects_incomplete_context_before_scanning() -> None:
     inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
     covered_end = start + timedelta(days=20)
     context = MarketContext(
-        {
+        generation_span=GenerationSpan(start, start + timedelta(days=21)),
+        by_symbol={
             "ACME": SymbolContext(
                 coverage=(CoverageWindow(start, covered_end),),
                 eligibility=(EligibilityWindow(start, covered_end, eligible=True),),
             )
-        }
+        },
     )
 
     class CountingScanner(MomentumScanner):
@@ -186,6 +190,87 @@ def test_replay_rejects_incomplete_context_before_scanning() -> None:
 
     assert error.value.reason == "market-context-incomplete"
     assert scanner.calls == 0
+
+
+def test_warmup_bars_are_scanner_visible_but_never_replay_events() -> None:
+    start = date(2026, 1, 1)
+    replay_start = start + timedelta(days=20)
+    bars = _breakout_bars("ACME", start, extra_days=2)
+    inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
+    recorder = _RecordingScanner()
+    context = _context_for_inputs(
+        inputs,
+        generation_span=GenerationSpan(replay_start, start + timedelta(days=22)),
+    )
+    runner = _runner(inputs, scanner=recorder, market_context=context)
+
+    decisions = runner.scan_decisions(inputs)
+    result = runner.replay(inputs)
+
+    assert [decision.decision_date for decision in decisions] == [replay_start]
+    assert len(recorder.windows[0]) == 21
+    event_dates = [trade.entry_date for trade in result.trades]
+    event_dates += [trade.exit_date for trade in result.trades]
+    event_dates += [entry.decision_date for entry in result.skipped_entries]
+    event_dates += [entry.entry_date for entry in result.skipped_entries]
+    event_dates += [outcome.date for outcome in result.context_outcomes]
+    assert event_dates
+    assert min(event_dates) >= replay_start
+    assert result.equity_summary.trading_day_count == 3
+
+
+def test_replay_checks_each_observed_in_span_date_for_every_fixture_symbol() -> None:
+    start = date(2026, 1, 1)
+    replay_start = start + timedelta(days=20)
+    bars = _breakout_bars("ACME", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
+    context = MarketContext(
+        generation_span=GenerationSpan(replay_start, start + timedelta(days=21)),
+        by_symbol={
+            "ACME": SymbolContext(
+                coverage=(CoverageWindow(replay_start, start + timedelta(days=21)),),
+                eligibility=(EligibilityWindow(replay_start, replay_start, eligible=True),),
+            )
+        },
+    )
+
+    with pytest.raises(MarketContextIncompleteError) as error:
+        _runner(inputs, market_context=context).replay(inputs)
+
+    assert str(error.value) == "missing eligibility for ACME on 2026-01-22"
+
+
+def test_replay_rejects_post_span_bars_with_stable_reason() -> None:
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("ACME", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        generation_span=GenerationSpan(start, start + timedelta(days=20)),
+    )
+
+    with pytest.raises(ValueError) as error:
+        _runner(inputs, market_context=context).replay(inputs)
+
+    assert getattr(error.value, "reason", None) == "replay-window-invalid"
+
+
+def test_replay_rejects_empty_in_span_partition_with_stable_reason() -> None:
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("ACME", start)
+    inputs = FixtureInputs(Universe("v1", ("ACME",)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        generation_span=GenerationSpan(
+            start + timedelta(days=30),
+            start + timedelta(days=31),
+        ),
+    )
+
+    with pytest.raises(ValueError) as error:
+        _runner(inputs, market_context=context).replay(inputs)
+
+    assert getattr(error.value, "reason", None) == "replay-window-invalid"
 
 
 def test_entry_skipped_when_no_next_session_bar_exists() -> None:

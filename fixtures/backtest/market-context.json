@@ -1,5 +1,9 @@
 {
-  "schema_version": "market-context-v1",
+  "schema_version": "market-context-v2",
+  "generation_span": {
+    "start": "2024-01-02",
+    "end": "2024-01-24"
+  },
   "symbols": [
     {
       "symbol": "WIN",

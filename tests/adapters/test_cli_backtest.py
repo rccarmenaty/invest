@@ -43,6 +43,15 @@ def _backtest_args(*extra: str) -> list[str]:
     ]
 
 
+def _context_with_span(tmp_path: Path, start: str, end: str) -> Path:
+    payload = json.loads(MARKET_CONTEXT.read_text(encoding="utf-8"))
+    payload["schema_version"] = "market-context-v2"
+    payload["generation_span"] = {"start": start, "end": end}
+    path = tmp_path / f"market-context-{start}-{end}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def test_backtest_bars_run_prints_one_report_with_metrics_and_disclaimers_and_touches_no_broker(
     capsys, monkeypatch
 ) -> None:
@@ -144,9 +153,9 @@ def test_backtest_live_range_infra_failure_prints_one_record_and_exits_two(
             "--universe",
             str(UNIVERSE),
             "--start",
-            "2024-01-01",
+            "2024-01-02",
             "--end",
-            "2024-12-31",
+            "2024-01-24",
             "--market-context",
             str(MARKET_CONTEXT),
             "--split-date",
@@ -202,9 +211,9 @@ def test_backtest_live_range_missing_symbol_bars_fails_closed_with_one_record(
             "--universe",
             str(UNIVERSE),
             "--start",
-            "2024-01-01",
+            "2024-01-02",
             "--end",
-            "2024-12-31",
+            "2024-01-24",
             "--market-context",
             str(MARKET_CONTEXT),
             "--split-date",
@@ -244,9 +253,9 @@ def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> No
             "--universe",
             str(UNIVERSE),
             "--start",
-            "2024-01-01",
+            "2024-01-02",
             "--end",
-            "2024-12-31",
+            "2024-01-24",
             "--market-context",
             str(MARKET_CONTEXT),
             "--split-date",
@@ -284,9 +293,9 @@ def test_backtest_explicit_sharadar_source_fetches_the_requested_range(monkeypat
             "--source",
             "sharadar",
             "--start",
-            "2024-01-01",
+            "2024-01-02",
             "--end",
-            "2024-12-31",
+            "2024-01-24",
             "--market-context",
             str(MARKET_CONTEXT),
             "--split-date",
@@ -296,7 +305,7 @@ def test_backtest_explicit_sharadar_source_fetches_the_requested_range(monkeypat
 
     assert result == 0
     assert json.loads(capsys.readouterr().out)["trade_count"] == 1
-    assert fetch_calls == [(loaded_inputs.universe.symbols, date(2024, 1, 1), date(2024, 12, 31))]
+    assert fetch_calls == [(loaded_inputs.universe.symbols, date(2024, 1, 2), date(2024, 1, 24))]
 
 
 def test_backtest_default_fixture_source_is_byte_identical_to_explicit_fixture(capsys) -> None:
@@ -328,9 +337,9 @@ def test_backtest_default_alpaca_source_is_byte_identical_to_explicit_alpaca(
         "--universe",
         str(UNIVERSE),
         "--start",
-        "2024-01-01",
+        "2024-01-02",
         "--end",
-        "2024-12-31",
+        "2024-01-24",
         "--market-context",
         str(MARKET_CONTEXT),
         "--split-date",
@@ -425,14 +434,138 @@ def test_backtest_requires_valid_in_range_split_date_as_one_json_error(capsys) -
     assert captured.err == ""
 
 
-@pytest.mark.parametrize("split_date", ["not-a-date", "2023-12-31", "2025-01-01"])
-def test_backtest_rejects_malformed_or_out_of_range_split_date(split_date, capsys) -> None:
+def test_backtest_accepts_exact_observed_in_span_split_date(tmp_path, capsys) -> None:
+    context = _context_with_span(tmp_path, "2024-01-10", "2024-01-24")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--market-context",
+            str(context),
+            "--split-date",
+            "2024-01-23",
+        ]
+    )
+
+    assert result == 0
+    assert "trade_count" in json.loads(capsys.readouterr().out)
+
+
+def test_backtest_rejects_warmup_split_date_with_replay_window_record(tmp_path, capsys) -> None:
+    context = _context_with_span(tmp_path, "2024-01-10", "2024-01-24")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--market-context",
+            str(context),
+            "--split-date",
+            "2024-01-02",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "replay-window-invalid"}
+
+
+def test_backtest_rejects_unobserved_in_span_split_date(tmp_path, capsys) -> None:
+    bars_payload = json.loads(BARS.read_text(encoding="utf-8"))
+    bars_payload["bars"] = [bar for bar in bars_payload["bars"] if bar["date"] != "2024-01-10"]
+    bars = tmp_path / "bars.json"
+    bars.write_text(json.dumps(bars_payload), encoding="utf-8")
+    context = _context_with_span(tmp_path, "2024-01-02", "2024-01-24")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(bars),
+            "--market-context",
+            str(context),
+            "--split-date",
+            "2024-01-10",
+        ]
+    )
+
+    assert result == 2
+    assert json.loads(capsys.readouterr().out) == {"reason": "replay-window-invalid"}
+
+
+def test_backtest_rejects_post_span_bar_with_one_replay_window_record(tmp_path, capsys) -> None:
+    context = _context_with_span(tmp_path, "2024-01-02", "2024-01-23")
+
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--bars",
+            str(BARS),
+            "--market-context",
+            str(context),
+            "--split-date",
+            "2024-01-23",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "replay-window-invalid"}
+
+
+def test_backtest_live_range_must_exactly_match_declared_span(tmp_path, monkeypatch, capsys) -> None:
+    context = _context_with_span(tmp_path, "2024-01-02", "2024-01-24")
+
+    class UnexpectedReader:
+        def __init__(self, **kwargs) -> None:
+            pytest.fail("range mismatch must fail before fetching bars")
+
+    monkeypatch.setattr(cli, "AlpacaMarketDataReader", UnexpectedReader)
+    result = cli.backtest_main(
+        [
+            "--universe",
+            str(UNIVERSE),
+            "--start",
+            "2024-01-01",
+            "--end",
+            "2024-01-24",
+            "--market-context",
+            str(context),
+            "--split-date",
+            "2024-01-23",
+        ]
+    )
+
+    assert result == 2
+    assert json.loads(capsys.readouterr().out) == {"reason": "replay-window-invalid"}
+
+
+@pytest.mark.parametrize(
+    "split_date,reason",
+    [
+        ("not-a-date", "split-date-invalid"),
+        ("2023-12-31", "replay-window-invalid"),
+        ("2025-01-01", "replay-window-invalid"),
+    ],
+)
+def test_backtest_rejects_malformed_or_out_of_range_split_date(
+    split_date, reason, capsys
+) -> None:
     result = cli.backtest_main(_backtest_args("--split-date", split_date, "--format", "json"))
 
     captured = capsys.readouterr()
     assert result == 2
     assert captured.out.count("\n") == 1
-    assert json.loads(captured.out) == {"reason": "split-date-invalid"}
+    assert json.loads(captured.out) == {"reason": reason}
     assert captured.err == ""
 
 
@@ -578,7 +711,8 @@ def test_backtest_incomplete_market_context_prints_one_context_error_and_no_part
     incomplete_context.write_text(
         json.dumps(
             {
-                "schema_version": "market-context-v1",
+                "schema_version": "market-context-v2",
+                "generation_span": {"start": "2024-01-02", "end": "2024-01-24"},
                 "symbols": [
                     {
                         "symbol": "WIN",

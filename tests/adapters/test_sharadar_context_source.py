@@ -214,10 +214,10 @@ def test_load_coalesces_identical_duplicate_tickers() -> None:
     assert [listing.symbol for listing in inputs.listings] == ["ACME"]
 
 
-def test_load_fetches_preceding_xnys_sessions_for_seasoning() -> None:
+def test_load_fetches_scanner_sufficient_preceding_xnys_sessions() -> None:
     start = date(2024, 1, 8)
     end = date(2024, 1, 10)
-    config = _small_config()  # min_observed_bars=3
+    config = _small_config()  # Core HISTORY_DAYS must dominate these smaller windows.
     sep_gte: list[date] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -240,9 +240,8 @@ def test_load_fetches_preceding_xnys_sessions_for_seasoning() -> None:
     inputs = _source(handler).load(start, end, config)
 
     assert len(sep_gte) == 1
-    # Need max(min_bars, volume_window)=3 observed bars by first session → 2 preceding.
-    expected_sessions = _sessions_for(sep_gte[0], end)
-    assert len(expected_sessions) >= 3
+    expected_sessions = _sessions_for(sep_gte[0], start)
+    assert len(expected_sessions) == 253
     # First fetch day must be strictly before the requested start.
     assert sep_gte[0] < start
     assert inputs.sessions[0] == start or inputs.sessions[0] >= start

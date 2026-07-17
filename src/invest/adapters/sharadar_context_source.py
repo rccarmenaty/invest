@@ -25,6 +25,7 @@ from invest.application.generate_market_context import (
 )
 from invest.domain.liquidity_screen import ScreenConfig
 from invest.domain.models import DailyBar, Universe
+from invest.domain.momentum_selection_scanner import HISTORY_DAYS
 
 
 class SharadarContextSource:
@@ -126,7 +127,11 @@ class SharadarContextSource:
         if not candidates:
             return ()
 
-        needed = max(config.min_observed_bars, config.dollar_volume_window)
+        needed = max(
+            config.min_observed_bars,
+            config.dollar_volume_window,
+            HISTORY_DAYS,
+        )
         cohorts: dict[tuple[date, date], list[str]] = {}
         for listing in candidates:
             fetch_start, fetch_end = self._cohort_window(listing, start, end, needed)
@@ -154,12 +159,12 @@ class SharadarContextSource:
             )
 
         first_session = self.XNYS_CALENDAR.date_to_session(active_start, direction="next")
-        # sessions_window(session, -(n-1)) returns n sessions ending at session.
-        lookback = max(needed_bars - 1, 0)
-        if lookback == 0:
+        # This exchange-calendars version returns exactly ``n`` sessions for
+        # sessions_window(session, -n), including ``session`` itself.
+        if needed_bars <= 1:
             fetch_start = first_session.date()
         else:
-            window = self.XNYS_CALENDAR.sessions_window(first_session, -lookback)
+            window = self.XNYS_CALENDAR.sessions_window(first_session, -needed_bars)
             fetch_start = window[0].date()
 
         # Never request SEP before listing: absent pre-listing rows are normal

@@ -37,18 +37,18 @@ Chain strategy: single-pr
 
 ## 3. Replay partition
 
-- [ ] 3.1 **RED** Extend `tests/application/test_backtest_run.py` for warmup/replay partitioning, scanner-visible history, full in-span completeness gaps, no pre-span events, and `replay-window-invalid` for post-span or empty replay input.
-- [ ] 3.2 **GREEN/REFACTOR** Partition once in `src/invest/application/backtest_run.py`; scan only replay dates with prior history and process only replay bars/events.
+- [x] 3.1 **RED** Extend `tests/application/test_backtest_run.py` for warmup/replay partitioning, scanner-visible history, full in-span completeness gaps, no pre-span events, and `replay-window-invalid` for post-span or empty replay input.
+- [x] 3.2 **GREEN/REFACTOR** Partition once in `src/invest/application/backtest_run.py`; scan only replay dates with prior history and process only replay bars/events.
 
 ## 4. Backtest CLI coherence
 
-- [ ] 4.1 **RED** Extend `tests/adapters/test_cli_backtest.py` for exact observed in-span `--split-date`, exact live `--start/--end`, warmup-date rejection, and one `{"reason":"replay-window-invalid"}` record.
-- [ ] 4.2 **GREEN/REFACTOR** Enforce split/range coherence and stable error serialization in `src/invest/adapters/cli.py`.
+- [x] 4.1 **RED** Extend `tests/adapters/test_cli_backtest.py` for exact observed in-span `--split-date`, exact live `--start/--end`, warmup-date rejection, and one `{"reason":"replay-window-invalid"}` record.
+- [x] 4.2 **GREEN/REFACTOR** Enforce split/range coherence and stable error serialization in `src/invest/adapters/cli.py`.
 
 ## 5. Scanner-sufficient warmup
 
-- [ ] 5.1 **RED** Extend `tests/adapters/test_sharadar_context_source.py` for depth `max(min_observed_bars, dollar_volume_window, HISTORY_DAYS)` = at least 253 and listing-date clipping.
-- [ ] 5.2 **GREEN/REFACTOR** Import domain `HISTORY_DAYS` and apply bounded warmup depth in `src/invest/adapters/sharadar_context_source.py`.
+- [x] 5.1 **RED** Extend `tests/adapters/test_sharadar_context_source.py` for depth `max(min_observed_bars, dollar_volume_window, HISTORY_DAYS)` = at least 253 and listing-date clipping.
+- [x] 5.2 **GREEN/REFACTOR** Import domain `HISTORY_DAYS` and apply bounded warmup depth in `src/invest/adapters/sharadar_context_source.py`.
 
 ## 6. Paired generation outputs
 
