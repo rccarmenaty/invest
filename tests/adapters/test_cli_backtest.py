@@ -797,7 +797,7 @@ def test_backtest_strategy_core_replays_through_the_same_harness(capsys) -> None
             "--market-context",
             str(MARKET_CONTEXT_252),
             "--split-date",
-            "2020-06-01",
+            "2020-09-12",
             "--strategy",
             "core",
             "--format",

@@ -52,17 +52,17 @@ Chain strategy: single-pr
 
 ## 6. Paired generation outputs
 
-- [ ] 6.1 **RED** Extend `tests/adapters/test_generate_context_cli.py` for v2 span output, byte determinism, and paired bars containing permitted pre-span warmup.
-- [ ] 6.2 **GREEN/REFACTOR** Wire span-bearing context and paired bars in `src/invest/adapters/generate_context_cli.py` and `src/invest/application/generate_market_context.py`.
+- [x] 6.1 **RED** Extend `tests/adapters/test_generate_context_cli.py` for v2 span output, byte determinism, and paired bars containing permitted pre-span warmup.
+- [x] 6.2 **GREEN/REFACTOR** Wire span-bearing context and paired bars in `src/invest/adapters/generate_context_cli.py` and `src/invest/application/generate_market_context.py`.
 
 ## 7. Scanner contract guard
 
-- [ ] 7.1 Verify `HISTORY_DAYS == 253` and unchanged insufficient-history behavior in `tests/domain/test_momentum_selection_scanner.py`; preserve `src/invest/domain/momentum_selection_scanner.py` strategy logic.
+- [x] 7.1 Verify `HISTORY_DAYS == 253` and unchanged insufficient-history behavior in `tests/domain/test_momentum_selection_scanner.py`; preserve `src/invest/domain/momentum_selection_scanner.py` strategy logic.
 
 ## 8. Deterministic fixture regression
 
-- [ ] 8.1 **RED** Update `tests/fixtures/test_backtest_252_fixtures.py` to require v2 span, allow pre-span bars as history, require in-span completeness, and reject pre-span replay events.
-- [ ] 8.2 **GREEN** Regenerate `fixtures/backtest-252/{bars,market-context,universe}.json` and associated checked-in replay goldens; confirm all emitted events are in-span.
+- [x] 8.1 **RED** Update `tests/fixtures/test_backtest_252_fixtures.py` to require v2 span, allow pre-span bars as history, require in-span completeness, and reject pre-span replay events.
+- [x] 8.2 **GREEN** Regenerate `fixtures/backtest-252/{bars,market-context,universe}.json` and associated checked-in replay goldens; confirm all emitted events are in-span.
 
 ## 9. Final verification
 

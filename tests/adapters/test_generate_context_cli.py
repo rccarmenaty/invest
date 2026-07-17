@@ -77,8 +77,37 @@ def test_success_writes_context_silent_exit_zero(tmp_path, capsys, monkeypatch) 
     assert captured.out == ""
     assert captured.err == ""
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "market-context-v1"
+    assert payload["schema_version"] == "market-context-v2"
+    assert payload["generation_span"] == {"start": "2024-01-02", "end": "2024-01-04"}
     assert payload["symbols"][0]["symbol"] == "ACME"
+
+
+def test_bars_out_writes_deterministic_pair_with_pre_span_warmup(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    from invest.adapters.fixtures_json import JsonFixtureReader
+
+    cli = _install_fake_source(monkeypatch)
+    first_context = tmp_path / "first-context.json"
+    second_context = tmp_path / "second-context.json"
+    first_bars = tmp_path / "first-bars"
+    second_bars = tmp_path / "second-bars"
+
+    first_result = cli.main(_args(first_context, "--bars-out", str(first_bars)))
+    second_result = cli.main(_args(second_context, "--bars-out", str(second_bars)))
+
+    captured = capsys.readouterr()
+    assert first_result == second_result == 0
+    assert captured.out == ""
+    assert first_context.read_bytes() == second_context.read_bytes()
+    assert (first_bars / "universe.json").read_bytes() == (
+        second_bars / "universe.json"
+    ).read_bytes()
+    assert (first_bars / "bars.json").read_bytes() == (second_bars / "bars.json").read_bytes()
+    inputs = JsonFixtureReader().load(first_bars / "universe.json", first_bars / "bars.json")
+    context_payload = json.loads(first_context.read_text(encoding="utf-8"))
+    assert min(bar.date for bar in inputs.bars) == date(2023, 12, 31)
+    assert context_payload["generation_span"]["start"] == "2024-01-02"
 
 
 @pytest.mark.parametrize(
@@ -190,3 +219,4 @@ def test_core_defaults_and_no_banned_flags() -> None:
         "impact", "bars", "market_context", "strategy", "execute",
     ):
         assert banned not in dests
+    assert "bars_out" in dests
