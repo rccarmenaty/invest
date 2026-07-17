@@ -11,6 +11,7 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
     MarketContext,
     MarketContextInvalidError,
     SymbolContext,
@@ -65,7 +66,8 @@ class _SymbolContextPayload(BaseModel):
 class _MarketContextPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal["market-context-v1"]
+    schema_version: Literal["market-context-v2"]
+    generation_span: _DateRangePayload
     symbols: list[_SymbolContextPayload] = Field(min_length=1)
 
 
@@ -97,11 +99,17 @@ class BacktestContextJsonReader:
                     for window in symbol_payload.blockers
                 ),
             )
-        return MarketContext(by_symbol)
+        return MarketContext(
+            generation_span=GenerationSpan(
+                start=payload.generation_span.start,
+                end=payload.generation_span.end,
+            ),
+            by_symbol=by_symbol,
+        )
 
 
 class BacktestContextJsonWriter:
-    """Atomically publish a reader-valid market-context-v1 document.
+    """Atomically publish a reader-valid market-context-v2 document.
 
     Writes a same-directory temporary file, fsyncs, reader-validates, then
     creates the final path without replacement (``os.link``). Existing targets
@@ -174,7 +182,14 @@ class BacktestContextJsonWriter:
                     ],
                 )
             )
-        return _MarketContextPayload(schema_version="market-context-v1", symbols=symbols)
+        return _MarketContextPayload(
+            schema_version="market-context-v2",
+            generation_span=_DateRangePayload(
+                start=context.generation_span.start,
+                end=context.generation_span.end,
+            ),
+            symbols=symbols,
+        )
 
     @staticmethod
     def _write_temp(out: Path, body: str) -> Path:

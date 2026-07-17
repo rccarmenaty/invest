@@ -19,7 +19,9 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
     MarketContext,
+    MarketContextInvalidError,
     SymbolContext,
 )
 from invest.domain.models import DailyBar
@@ -61,7 +63,7 @@ def build_market_context(
     """
     sorted_sessions = sorted(sessions)
     if not sorted_sessions:
-        return MarketContext({})
+        raise MarketContextInvalidError("generation span is empty")
 
     session_set = set(sorted_sessions)
     coverage_start = sorted_sessions[0]
@@ -80,7 +82,10 @@ def build_market_context(
             blockers=blockers,
         )
 
-    return MarketContext(by_symbol)
+    return MarketContext(
+        generation_span=GenerationSpan(coverage_start, coverage_end),
+        by_symbol=by_symbol,
+    )
 
 
 def _eligibility_per_session(
