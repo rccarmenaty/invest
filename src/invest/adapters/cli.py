@@ -9,8 +9,6 @@ from typing import Sequence
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-load_dotenv()
-
 from invest.adapters.backtest_context_json import BacktestContextJsonReader
 from invest.adapters.fixtures_json import (
     FixtureValidationError,
@@ -48,6 +46,8 @@ from invest.domain.scanner import MomentumScanner
 from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
 from invest.domain.market_context import MarketContextError
 from invest.domain.models import Universe
+
+load_dotenv()
 
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")

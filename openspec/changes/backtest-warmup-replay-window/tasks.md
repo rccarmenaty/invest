@@ -66,7 +66,7 @@ Chain strategy: single-pr
 
 ## 9. Final verification
 
-- [ ] 9.1 Run the full suite: `uv run pytest`.
-- [ ] 9.2 Run lint: `uv run ruff check`.
+- [x] 9.1 Run the full suite: `uv run pytest`.
+- [x] 9.2 Run lint: `uv run ruff check`.
 
 > Post-merge operational note: regenerate `fixtures/real-years/**`; this is not part of the code change.
