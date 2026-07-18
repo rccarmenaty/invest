@@ -114,10 +114,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.end.isoformat(),
                     tuple(sorted(listing.symbol for listing in inputs.listings)),
                 )
-                BarsFixtureWriter().write(
-                    FixtureInputs(universe=universe, bars=inputs.bars),
-                    args.bars_out,
-                )
+                try:
+                    BarsFixtureWriter().write(
+                        FixtureInputs(universe=universe, bars=inputs.bars),
+                        args.bars_out,
+                    )
+                except BaseException:
+                    # Keep the context/bars pair invariant: never leave an
+                    # unpaired context artifact behind on a bars failure.
+                    try:
+                        out.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
         return 0
     except InvalidArgumentsError:
         return _fail("invalid-arguments")

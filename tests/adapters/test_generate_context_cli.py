@@ -110,6 +110,52 @@ def test_bars_out_writes_deterministic_pair_with_pre_span_warmup(
     assert context_payload["generation_span"]["start"] == "2024-01-02"
 
 
+def test_bars_write_failure_leaves_no_orphan_context(tmp_path, capsys, monkeypatch) -> None:
+    """A failed --bars-out write must not leave an unpaired context file behind."""
+    cli = _install_fake_source(monkeypatch)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "bars"
+    bars_out.mkdir()  # pre-existing bars path → BarsFixtureExistsError
+
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.err == ""
+    assert json.loads(captured.out) == {"reason": "bars-out-exists"}
+    assert not out.exists()
+
+    # Retry with the same context path and a fresh bars path must succeed.
+    retry_bars = tmp_path / "bars-retry"
+    assert cli.main(_args(out, "--bars-out", str(retry_bars))) == 0
+    assert out.is_file()
+    assert (retry_bars / "bars.json").is_file()
+
+
+def test_bars_storage_failure_leaves_no_orphan_context(tmp_path, capsys, monkeypatch) -> None:
+    """Storage-level bars failures must also keep the pair invariant."""
+    from invest.adapters import generate_context_cli as cli_module
+    from invest.adapters.bars_fixture_json import BarsFixtureStorageError
+
+    cli = _install_fake_source(monkeypatch)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "bars"
+
+    class _FailingWriter:
+        def write(self, inputs, path):
+            raise BarsFixtureStorageError("disk full")
+
+    monkeypatch.setattr(cli_module, "BarsFixtureWriter", _FailingWriter)
+
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out) == {"reason": "storage-failure"}
+    assert not out.exists()
+    assert not bars_out.exists()
+
+
 @pytest.mark.parametrize(
     ("argv_extra", "reason"),
     [
