@@ -6,5 +6,6 @@ __pycache__/
 .atl/
 .codegraph/
 openspec/changes/*/reviews/
+openspec/changes/archive/*/reviews/
 fixtures/snapshots/sharadar/
 *.sqlite

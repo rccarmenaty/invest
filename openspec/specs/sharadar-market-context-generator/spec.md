@@ -23,6 +23,23 @@ The generator SHALL discover, deduplicate, and deterministically order TICKERS w
 - WHEN daily context is derived
 - THEN dates outside its point-in-time listing status MUST be ineligible
 
+### Requirement: Scanner-sufficient warmup fetch
+
+Core generation MUST request at least 253 trading sessions of bar history, sharing `MomentumSelectionScanner.HISTORY_DAYS` rather than defining a divergent value. The request MUST be bounded by each symbol's listing date and MUST NOT fabricate unavailable observations.
+
+#### Scenario: Full-history symbol receives scanner depth
+
+- GIVEN a symbol was listed at least 253 sessions before its first replay evaluation
+- WHEN Core generation fetches its bars
+- THEN the requested history depth MUST be at least 253 trading sessions
+
+#### Scenario: Listing date bounds warmup
+
+- GIVEN a symbol was listed fewer than 253 sessions before its first replay evaluation
+- WHEN Core generation fetches its bars
+- THEN the request MUST start no earlier than the listing date
+- AND insufficient observations MUST remain a scanner-level history outcome
+
 ### Requirement: Configurable point-in-time liquidity screen
 
 The generator SHALL apply a daily, parameterized, no-look-ahead screen. Core defaults MUST remain price >= $10, median 20-bar dollar volume >= $10M, and 252 observed bars. Dollar volume MUST multiply adjusted close by canonical volume using exact `Decimal` arithmetic through median and threshold evaluation. AUM, ADV-fraction, and price-impact rules MUST remain excluded.
@@ -65,13 +82,26 @@ The generator SHALL emit `MarketContext`-compatible coverage, eligibility, and b
 
 ### Requirement: Deterministic schema output
 
-The generator SHALL write one `market-context-v1` document accepted unchanged by `BacktestContextJsonReader`. It MUST deterministically serialize symbols/windows and reject invalid output without fallback.
+The generator SHALL write one versioned market-context document accepted unchanged by `BacktestContextJsonReader`. The document MUST declare a required top-level generation span. It MUST deterministically serialize the span, symbols, and windows; missing or malformed span data MUST invalidate the artifact without inference or fallback. When bars output is requested, the context artifact and bars fixture MUST form one pair governed by that declared span.
 
 #### Scenario: Reproduce generated JSON
 
 - GIVEN identical validated inputs, configuration, and date range
 - WHEN generation runs twice
-- THEN both files MUST be byte-identical and reader-valid
+- THEN both context files MUST be byte-identical and reader-valid
+
+#### Scenario: Reject absent or malformed span
+
+- GIVEN a generated artifact has a missing, empty, malformed, or inverted span
+- WHEN output validation or reading occurs
+- THEN it MUST be rejected with no usable context artifact
+
+#### Scenario: Pair bars output with the declared span
+
+- GIVEN generation writes both context and bars outputs
+- WHEN the pair is read for replay
+- THEN the context MUST declare the requested generation span
+- AND the bars fixture MAY include pre-span warmup bars governed by that span
 
 ### Requirement: Standalone generator interface and failure behavior
 
