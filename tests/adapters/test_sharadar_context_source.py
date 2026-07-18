@@ -107,6 +107,27 @@ def _sep_rows_for(symbols: tuple[str, ...], start: date, end: date) -> list[list
     return rows
 
 
+def test_xnys_calendar_start_pinned_before_sharadar_history() -> None:
+    """The module calendar must not float with today's date (now minus 20 years).
+
+    Sharadar SEP begins ~1998; the calendar start must be fixed early enough
+    that a >=253-session warmup lookback near the 20-year horizon never
+    underflows the calendar's first session.
+    """
+    from datetime import timedelta
+
+    from invest.adapters.sharadar_context_source import SharadarContextSource
+
+    calendar = SharadarContextSource.XNYS_CALENDAR
+    assert calendar.first_session.date() <= date(1998, 1, 1)
+
+    # A warmup window anchored ~19.5 years back must not raise ValueError.
+    anchor_date = date.today() - timedelta(days=round(19.5 * 365.25))
+    anchor = calendar.date_to_session(anchor_date, direction="next")
+    window = calendar.sessions_window(anchor, -253)
+    assert len(window) == 253
+
+
 def test_load_reuses_primary_common_and_listing_facts() -> None:
     from invest.adapters.sharadar_context_source import SharadarContextSource
 

@@ -31,7 +31,10 @@ from invest.domain.momentum_selection_scanner import HISTORY_DAYS
 class SharadarContextSource:
     """Load normalized generator inputs from TICKERS, SEP, and ACTIONS."""
 
-    XNYS_CALENDAR = xcals.get_calendar("XNYS")
+    # Pinned start: the default calendar begins at "now minus 20 years", a
+    # floating boundary that makes deep warmup lookbacks underflow the first
+    # session over time. Sharadar SEP begins ~1998; 1990 gives permanent headroom.
+    XNYS_CALENDAR = xcals.get_calendar("XNYS", start="1990-01-01")
 
     def __init__(
         self,
