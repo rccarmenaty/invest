@@ -133,6 +133,35 @@ def test_eligible_when_core_defaults_met() -> None:
     assert screen_eligible(bars, as_of, listing, ScreenConfig.core_defaults()) is True
 
 
+def test_eligibility_uses_fractional_volume_in_decimal_dollar_volume() -> None:
+    as_of = date(2024, 1, 1)
+    close = Decimal("10")
+    volume = Decimal("48037.936")
+    exact_product = close * volume
+    truncated_product = close * Decimal(int(volume))
+    bar = DailyBar(
+        symbol="ACME",
+        date=as_of,
+        open=Decimal("10"),
+        high=Decimal("11"),
+        low=Decimal("9"),
+        close=close,
+        volume=volume,
+    )
+    listing = ListingFacts(as_of, as_of, primary_common=True)
+    config = ScreenConfig(
+        price_floor=Decimal("1"),
+        dollar_volume_floor=exact_product,
+        dollar_volume_window=1,
+        min_observed_bars=1,
+    )
+
+    assert exact_product == Decimal("480379.36")
+    assert truncated_product < exact_product
+    assert screen_eligible((bar,), as_of, listing, config) is True
+    assert isinstance(exact_product, Decimal)
+
+
 # ---------------------------------------------------------------------------
 # Daily eligibility — rejection paths (no AUM / ADV / impact)
 # ---------------------------------------------------------------------------

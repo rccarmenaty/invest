@@ -124,6 +124,7 @@ def test_bars_write_failure_leaves_no_orphan_context(tmp_path, capsys, monkeypat
     assert captured.err == ""
     assert json.loads(captured.out) == {"reason": "bars-out-exists"}
     assert not out.exists()
+    assert list(bars_out.iterdir()) == []
 
     # Retry with the same context path and a fresh bars path must succeed.
     retry_bars = tmp_path / "bars-retry"
@@ -266,3 +267,115 @@ def test_core_defaults_and_no_banned_flags() -> None:
     ):
         assert banned not in dests
     assert "bars_out" in dests
+
+
+def test_bars_out_writes_fixture_pair_without_second_fetch(tmp_path, capsys, monkeypatch) -> None:
+    from invest.adapters import generate_context_cli as cli
+    from invest.adapters.fixtures_json import JsonFixtureReader
+
+    load_calls = 0
+    inputs = _eligible_inputs()
+
+    class _CountingSource:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def load(self, start, end, config):
+            nonlocal load_calls
+            load_calls += 1
+            return inputs
+
+    monkeypatch.setattr(cli, "SharadarContextSource", _CountingSource)
+
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "fixtures"
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert out.is_file()
+    assert load_calls == 1
+    loaded = JsonFixtureReader().load(bars_out / "universe.json", bars_out / "bars.json")
+    assert {bar.symbol for bar in loaded.bars} == {"ACME"}
+    assert loaded.universe.symbols == ("ACME",)
+    assert loaded.universe.fixture_version == "2024-01-04"
+
+
+def test_bars_out_omitted_creates_no_fixture_directory(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_fake_source(monkeypatch)
+    out = tmp_path / "context.json"
+    result = cli.main(_args(out))
+    capsys.readouterr()
+    assert result == 0
+    assert out.is_file()
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_bars_out_storage_failure_maps_to_storage_failure(tmp_path, capsys, monkeypatch) -> None:
+    from pathlib import Path as _Path
+
+    cli = _install_fake_source(monkeypatch)
+
+    original = _Path.write_bytes
+
+    def failing_write(path: _Path, data: bytes) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_Path, "write_bytes", failing_write)
+
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "fixtures"
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out) == {"reason": "storage-failure"}
+    assert not bars_out.exists()
+    monkeypatch.setattr(_Path, "write_bytes", original)
+
+
+def test_bars_out_duplicate_bar_maps_to_duplicate_bar(tmp_path, capsys, monkeypatch) -> None:
+    from invest.application.generate_market_context import GeneratorInputs, NormalizedListing
+
+    start = date(2024, 1, 2)
+    sessions = (start, start + timedelta(days=1), start + timedelta(days=2))
+    duplicate_inputs = GeneratorInputs(
+        sessions=sessions,
+        listings=(
+            NormalizedListing("ACME", start - timedelta(days=2), start + timedelta(days=365), True),
+        ),
+        bars=(_bar("ACME", start), _bar("ACME", start)),
+        actions=(),
+    )
+    cli = _install_fake_source(monkeypatch, inputs=duplicate_inputs)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "fixtures"
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out) == {"reason": "duplicate-bar"}
+    assert not bars_out.exists()
+
+
+def test_bars_out_symbol_mismatch_maps_to_bars_universe_mismatch(tmp_path, capsys, monkeypatch) -> None:
+    from invest.application.generate_market_context import GeneratorInputs, NormalizedListing
+
+    start = date(2024, 1, 2)
+    sessions = (start, start + timedelta(days=1), start + timedelta(days=2))
+    mismatched_inputs = GeneratorInputs(
+        sessions=sessions,
+        listings=(
+            NormalizedListing("ACME", start - timedelta(days=2), start + timedelta(days=365), True),
+        ),
+        bars=(),
+        actions=(),
+    )
+    cli = _install_fake_source(monkeypatch, inputs=mismatched_inputs)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "fixtures"
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out) == {"reason": "bars-universe-mismatch"}
+    assert not bars_out.exists()

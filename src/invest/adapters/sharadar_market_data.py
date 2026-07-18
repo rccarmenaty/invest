@@ -3,7 +3,7 @@ import os
 import time
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import exchange_calendars as xcals
 import httpx
@@ -43,7 +43,7 @@ class _SepRow(BaseModel):
     high: Decimal = Field(gt=0)
     low: Decimal = Field(gt=0)
     close: Decimal = Field(gt=0)
-    volume: int = Field(ge=0)
+    volume: Decimal = Field(ge=0)
     closeadj: Decimal = Field(gt=0)
 
     @model_validator(mode="after")
@@ -63,6 +63,7 @@ class SharadarMarketDataReader:
     XNYS_CALENDAR = xcals.get_calendar("XNYS")
     CALENDAR_BUFFER_DAYS = 40
     MAX_PAGES = 512
+    MAX_TICKER_PARAM_CHARS = 4000
     MAX_ATTEMPTS = 3
     BACKOFF_BASE_SECONDS = 0.5
     BACKOFF_CAP_SECONDS = 4.0
@@ -79,12 +80,35 @@ class SharadarMarketDataReader:
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs:
         return self.fetch_range(universe, as_of - timedelta(days=self.CALENDAR_BUFFER_DAYS), as_of)
 
+    def _chunk_symbols(self, symbols: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+        chunk: list[str] = []
+        chunk_len = 0
+        for symbol in symbols:
+            if len(symbol) > self.MAX_TICKER_PARAM_CHARS:
+                raise MarketDataFetchError("request-too-large", symbol)
+            added_len = len(symbol) if not chunk else len(symbol) + 1
+            if chunk and chunk_len + added_len > self.MAX_TICKER_PARAM_CHARS:
+                yield tuple(chunk)
+                chunk = []
+                added_len = len(symbol)
+                chunk_len = 0
+            chunk.append(symbol)
+            chunk_len += added_len
+        if chunk:
+            yield tuple(chunk)
+
     def fetch_range(self, universe: Universe, start: date, end: date) -> FixtureInputs:
+        bars: list[DailyBar] = []
+        for chunk in self._chunk_symbols(universe.symbols):
+            bars.extend(self._fetch_chunk(chunk, start, end))
+        return self._validate_and_finalize(bars, universe, start, end)
+
+    def _fetch_chunk(self, symbols: tuple[str, ...], start: date, end: date) -> list[DailyBar]:
         bars: list[DailyBar] = []
         bar_keys: set[tuple[str, date]] = set()
         cursor: str | None = None
         for page_number in range(1, self.MAX_PAGES + 1):
-            params = self._request_params(universe, start, end)
+            params = self._request_params(symbols, start, end)
             if cursor is not None:
                 params["qopts.cursor_id"] = cursor
             try:
@@ -100,29 +124,33 @@ class SharadarMarketDataReader:
                 raise MarketDataFetchError("malformed-response") from None
             cursor = payload.meta.next_cursor_id
             if cursor is None:
-                missing = sorted(set(universe.symbols) - {bar.symbol for bar in bars})
-                if missing:
-                    raise MarketDataFetchError("symbol-missing-at-fetch", ",".join(missing))
-                dates_by_symbol = {
-                    symbol: {bar.date for bar in bars if bar.symbol == symbol}
-                    for symbol in universe.symbols
-                }
-                reported_dates = set().union(*dates_by_symbol.values())
-                incomplete = sorted(
-                    symbol for symbol, dates in dates_by_symbol.items() if dates != reported_dates
-                )
-                expected_dates = {
-                    session.date() for session in self.XNYS_CALENDAR.sessions_in_range(start, end)
-                }
-                if incomplete or reported_dates != expected_dates:
-                    raise MarketDataFetchError("malformed-response", "incomplete date coverage")
-                return FixtureInputs(
-                    universe=universe,
-                    bars=tuple(sorted(bars, key=lambda bar: (bar.symbol, bar.date))),
-                )
+                return bars
             if page_number == self.MAX_PAGES:
                 raise MarketDataFetchError("malformed-response")
         raise AssertionError("pagination loop must return or raise")
+
+    def _validate_and_finalize(
+        self, bars: list[DailyBar], universe: Universe, start: date, end: date
+    ) -> FixtureInputs:
+        missing = sorted(set(universe.symbols) - {bar.symbol for bar in bars})
+        if missing:
+            raise MarketDataFetchError("symbol-missing-at-fetch", ",".join(missing))
+        dates_by_symbol = {
+            symbol: {bar.date for bar in bars if bar.symbol == symbol} for symbol in universe.symbols
+        }
+        reported_dates = set().union(*dates_by_symbol.values())
+        incomplete = sorted(
+            symbol for symbol, dates in dates_by_symbol.items() if dates != reported_dates
+        )
+        expected_dates = {
+            session.date() for session in self.XNYS_CALENDAR.sessions_in_range(start, end)
+        }
+        if incomplete or reported_dates != expected_dates:
+            raise MarketDataFetchError("malformed-response", "incomplete date coverage")
+        return FixtureInputs(
+            universe=universe,
+            bars=tuple(sorted(bars, key=lambda bar: (bar.symbol, bar.date))),
+        )
 
     def _rows_to_bars(self, payload: _SepResponse) -> list[DailyBar]:
         if not payload.datatable.columns or not payload.datatable.data:
@@ -171,6 +199,8 @@ class SharadarMarketDataReader:
                     raise MarketDataFetchError(reason)
                 self._sleep(self._backoff(attempt, response.headers.get("Retry-After")))
                 continue
+            if response.status_code == 414:
+                raise MarketDataFetchError("request-too-large")
             if response.is_error:
                 raise MarketDataFetchError("network-failure")
             return response
@@ -198,9 +228,9 @@ class SharadarMarketDataReader:
             "GET", self.ENDPOINT, params={**params, "api_key": api_key}
         )
 
-    def _request_params(self, universe: Universe, start: date, end: date) -> dict[str, str]:
+    def _request_params(self, symbols: tuple[str, ...], start: date, end: date) -> dict[str, str]:
         return {
-            "ticker": ",".join(universe.symbols),
+            "ticker": ",".join(symbols),
             "date.gte": start.isoformat(),
             "date.lte": end.isoformat(),
             "qopts.columns": ",".join(self.COLUMNS),

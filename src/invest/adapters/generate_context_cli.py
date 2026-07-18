@@ -112,7 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.bars_out is not None:
                 universe = Universe(
                     args.end.isoformat(),
-                    tuple(sorted(listing.symbol for listing in inputs.listings)),
+                    tuple(sorted({listing.symbol for listing in inputs.listings})),
                 )
                 try:
                     BarsFixtureWriter().write(

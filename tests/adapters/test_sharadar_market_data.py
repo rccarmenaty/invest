@@ -21,6 +21,40 @@ def _sep_page(rows: list[list[object]], cursor: str | None = None) -> dict[str, 
     }
 
 
+def test_chunk_symbols_splits_at_the_character_budget_boundary() -> None:
+    """Symbols that together exceed the budget split into ordered, in-budget chunks."""
+    reader = SharadarMarketDataReader(client=httpx.Client())
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    symbols = ("AAAA", "BBBB", "CCCC")
+
+    chunks = list(reader._chunk_symbols(symbols))
+
+    assert chunks == [("AAAA", "BBBB"), ("CCCC",)]
+    assert all(len(",".join(chunk)) <= reader.MAX_TICKER_PARAM_CHARS for chunk in chunks)
+    assert set().union(*chunks) == set(symbols)
+
+
+def test_chunk_symbols_yields_one_chunk_when_within_budget() -> None:
+    """A universe that fits inside the default budget stays a single chunk."""
+    reader = SharadarMarketDataReader(client=httpx.Client())
+    symbols = ("AAAA", "BBBB", "CCCC")
+
+    chunks = list(reader._chunk_symbols(symbols))
+
+    assert chunks == [symbols]
+
+
+def test_chunk_symbols_fails_closed_for_a_single_symbol_over_budget() -> None:
+    """A lone symbol that alone exceeds the budget cannot be split further."""
+    reader = SharadarMarketDataReader(client=httpx.Client())
+    reader.MAX_TICKER_PARAM_CHARS = 3
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        list(reader._chunk_symbols(("AAAA",)))
+
+    assert caught.value.reason == "request-too-large"
+
+
 def test_fetch_uses_calendar_buffer_window_bounded_by_as_of(monkeypatch) -> None:
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
 
@@ -60,7 +94,7 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
             200,
             json=_sep_page(
                 [
-                    ["BETA", "2024-01-02", "10", "13", "8", "10", 250, "20"],
+                    ["BETA", "2024-01-02", "10", "13", "8", "10", 250.125, "20"],
                     ["ACME", "2024-01-02", "5", "7", "4", "5", 100, "5"],
                 ]
             ),
@@ -74,7 +108,13 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
     assert result.universe == Universe("v1", ("BETA", "ACME"))
     assert result.bars == (
         DailyBar(
-            "ACME", date(2024, 1, 2), Decimal("5"), Decimal("7"), Decimal("4"), Decimal("5"), 100
+            "ACME",
+            date(2024, 1, 2),
+            Decimal("5"),
+            Decimal("7"),
+            Decimal("4"),
+            Decimal("5"),
+            Decimal("100"),
         ),
         DailyBar(
             "BETA",
@@ -83,9 +123,204 @@ def test_fetch_range_maps_adjusted_sep_bars_in_deterministic_symbol_date_order(m
             Decimal("26"),
             Decimal("16"),
             Decimal("20"),
-            250,
+            Decimal("250.125"),
         ),
     )
+    assert isinstance(result.bars[1].volume, Decimal)
+    assert result.bars[1].volume == Decimal("250.125")
+
+
+def test_fetch_range_preserves_exact_fractional_sep_volume(monkeypatch) -> None:
+    """Real adjusted SEP volume like 48037.936 must survive as exact Decimal."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [["ACME", "2024-01-02", "10", "11", "9", "10", "48037.936", "10"]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert result.bars[0].volume == Decimal("48037.936")
+    assert isinstance(result.bars[0].volume, Decimal)
+
+
+def test_fetch_range_rejects_negative_volume_without_partial_bars(monkeypatch) -> None:
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [
+                    ["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                    ["BETA", "2024-01-02", 10, 11, 9, 10, -1, 10],
+                ]
+            ),
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME", "BETA")), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "malformed-response"
+    assert getattr(caught.value, "bars", None) is None
+
+
+def test_fetch_range_splits_an_oversized_universe_into_multiple_in_budget_requests(
+    monkeypatch,
+) -> None:
+    """An over-budget universe issues N disjoint, in-budget ticker requests."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    captured_tickers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ticker_param = request.url.params["ticker"]
+        captured_tickers.append(ticker_param)
+        rows = [
+            [ticker, "2024-01-02", 10, 11, 9, 10, 100, 10] for ticker in ticker_param.split(",")
+        ]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    universe = Universe("v1", ("AAAA", "BBBB", "CCCC"))
+
+    result = reader.fetch_range(universe, date(2024, 1, 2), date(2024, 1, 2))
+
+    assert captured_tickers == ["AAAA,BBBB", "CCCC"]
+    assert all(len(ticker) <= reader.MAX_TICKER_PARAM_CHARS for ticker in captured_tickers)
+    requested_symbols = {symbol for ticker in captured_tickers for symbol in ticker.split(",")}
+    assert requested_symbols == set(universe.symbols)
+    assert {bar.symbol for bar in result.bars} == set(universe.symbols)
+
+
+def test_fetch_range_merges_multi_chunk_bars_sorted_and_duplicate_free(monkeypatch) -> None:
+    """Merged multi-chunk bars equal the unbounded-single-request expectation."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ticker_param = request.url.params["ticker"]
+        rows = [
+            [ticker, "2024-01-02", 10, 11, 9, 10, 100, 10] for ticker in ticker_param.split(",")
+        ]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    universe = Universe("v1", ("AAAA", "BBBB", "CCCC"))
+
+    result = reader.fetch_range(universe, date(2024, 1, 2), date(2024, 1, 2))
+
+    expected_bars = tuple(
+        DailyBar(symbol, date(2024, 1, 2), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10"), Decimal("100"))
+        for symbol in ("AAAA", "BBBB", "CCCC")
+    )
+    assert result.bars == expected_bars
+    assert len({(bar.symbol, bar.date) for bar in result.bars}) == len(result.bars)
+    assert list(result.bars) == sorted(result.bars, key=lambda bar: (bar.symbol, bar.date))
+
+
+def test_fetch_range_fully_walks_a_multi_page_chunk_before_the_next_chunk(monkeypatch) -> None:
+    """A chunk spanning multiple cursor pages is drained before the next chunk is fetched."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    call_order: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ticker_param = request.url.params["ticker"]
+        cursor = request.url.params.get("qopts.cursor_id")
+        call_order.append(f"{ticker_param}:{cursor}")
+        if ticker_param == "AAAA,BBBB":
+            if cursor is None:
+                rows = [
+                    ["AAAA", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                    ["BBBB", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                ]
+                return httpx.Response(200, json=_sep_page(rows, "page-2"))
+            rows = [
+                ["AAAA", "2024-01-03", 10, 11, 9, 10, 100, 10],
+                ["BBBB", "2024-01-03", 10, 11, 9, 10, 100, 10],
+            ]
+            return httpx.Response(200, json=_sep_page(rows))
+        rows = [
+            ["CCCC", "2024-01-02", 10, 11, 9, 10, 100, 10],
+            ["CCCC", "2024-01-03", 10, 11, 9, 10, 100, 10],
+        ]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    universe = Universe("v1", ("AAAA", "BBBB", "CCCC"))
+
+    reader.fetch_range(universe, date(2024, 1, 2), date(2024, 1, 3))
+
+    assert call_order == ["AAAA,BBBB:None", "AAAA,BBBB:page-2", "CCCC:None"]
+
+
+def test_fetch_range_reports_a_symbol_missing_across_every_chunk_only_after_merge(
+    monkeypatch,
+) -> None:
+    """Missing-symbol validation fires once, post-merge — not per chunk."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    requested_tickers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ticker_param = request.url.params["ticker"]
+        requested_tickers.append(ticker_param)
+        if ticker_param == "AAAA,BBBB":
+            rows = [["AAAA", "2024-01-02", 10, 11, 9, 10, 100, 10]]
+        else:
+            rows = [["CCCC", "2024-01-02", 10, 11, 9, 10, 100, 10]]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    universe = Universe("v1", ("AAAA", "BBBB", "CCCC"))
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(universe, date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "symbol-missing-at-fetch"
+    assert "BBBB" in str(caught.value)
+    assert requested_tickers == ["AAAA,BBBB", "CCCC"]
+
+
+def test_fetch_range_reports_incomplete_merged_date_coverage_only_after_merge(
+    monkeypatch,
+) -> None:
+    """Date-coverage validation fires once, post-merge — not per chunk."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    requested_tickers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ticker_param = request.url.params["ticker"]
+        requested_tickers.append(ticker_param)
+        if ticker_param == "AAAA,BBBB":
+            rows = [
+                ["AAAA", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                ["BBBB", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                ["AAAA", "2024-01-03", 10, 11, 9, 10, 100, 10],
+                ["BBBB", "2024-01-03", 10, 11, 9, 10, 100, 10],
+            ]
+        else:
+            rows = [["CCCC", "2024-01-02", 10, 11, 9, 10, 100, 10]]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+    universe = Universe("v1", ("AAAA", "BBBB", "CCCC"))
+
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(universe, date(2024, 1, 2), date(2024, 1, 3))
+
+    assert caught.value.reason == "malformed-response"
+    assert "incomplete date coverage" in str(caught.value)
+    assert requested_tickers == ["AAAA,BBBB", "CCCC"]
 
 
 def test_fetch_range_merges_cursor_pages(monkeypatch) -> None:
@@ -299,6 +534,24 @@ def test_fetch_range_rejects_absent_or_empty_nasdaq_key_before_request(
         reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 1, 31))
 
     assert caught.value.reason == "auth-failure"
+
+
+def test_send_labels_a_414_response_as_request_too_large_without_retry(monkeypatch) -> None:
+    """A 414 (URI too long) is a distinct, non-retryable reason from generic network-failure."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(414, json={"error": "uri too long"})
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 1), date(2024, 1, 31))
+
+    assert caught.value.reason == "request-too-large"
+    assert attempts == 1
 
 
 @pytest.mark.parametrize("status", [401, 403])
