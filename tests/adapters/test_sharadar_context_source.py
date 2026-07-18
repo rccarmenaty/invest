@@ -107,6 +107,27 @@ def _sep_rows_for(symbols: tuple[str, ...], start: date, end: date) -> list[list
     return rows
 
 
+def test_xnys_calendar_start_pinned_before_sharadar_history() -> None:
+    """The module calendar must not float with today's date (now minus 20 years).
+
+    Sharadar SEP begins ~1998; the calendar start must be fixed early enough
+    that a >=253-session warmup lookback near the 20-year horizon never
+    underflows the calendar's first session.
+    """
+    from datetime import timedelta
+
+    from invest.adapters.sharadar_context_source import SharadarContextSource
+
+    calendar = SharadarContextSource.XNYS_CALENDAR
+    assert calendar.first_session.date() <= date(1998, 1, 1)
+
+    # A warmup window anchored ~19.5 years back must not raise ValueError.
+    anchor_date = date.today() - timedelta(days=round(19.5 * 365.25))
+    anchor = calendar.date_to_session(anchor_date, direction="next")
+    window = calendar.sessions_window(anchor, -253)
+    assert len(window) == 253
+
+
 def test_load_reuses_primary_common_and_listing_facts() -> None:
     from invest.adapters.sharadar_context_source import SharadarContextSource
 
@@ -214,10 +235,10 @@ def test_load_coalesces_identical_duplicate_tickers() -> None:
     assert [listing.symbol for listing in inputs.listings] == ["ACME"]
 
 
-def test_load_fetches_preceding_xnys_sessions_for_seasoning() -> None:
+def test_load_fetches_scanner_sufficient_preceding_xnys_sessions() -> None:
     start = date(2024, 1, 8)
     end = date(2024, 1, 10)
-    config = _small_config()  # min_observed_bars=3
+    config = _small_config()  # Core HISTORY_DAYS must dominate these smaller windows.
     sep_gte: list[date] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -240,9 +261,8 @@ def test_load_fetches_preceding_xnys_sessions_for_seasoning() -> None:
     inputs = _source(handler).load(start, end, config)
 
     assert len(sep_gte) == 1
-    # Need max(min_bars, volume_window)=3 observed bars by first session → 2 preceding.
-    expected_sessions = _sessions_for(sep_gte[0], end)
-    assert len(expected_sessions) >= 3
+    expected_sessions = _sessions_for(sep_gte[0], start)
+    assert len(expected_sessions) == 253
     # First fetch day must be strictly before the requested start.
     assert sep_gte[0] < start
     assert inputs.sessions[0] == start or inputs.sessions[0] >= start

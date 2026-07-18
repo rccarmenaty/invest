@@ -33,6 +33,19 @@ class MarketContextIncompleteError(MarketContextError):
 
 
 @dataclass(frozen=True)
+class GenerationSpan:
+    start: date
+    end: date
+
+    def __post_init__(self) -> None:
+        if self.end < self.start:
+            raise MarketContextInvalidError("generation span end precedes start")
+
+    def contains(self, as_of: date) -> bool:
+        return self.start <= as_of <= self.end
+
+
+@dataclass(frozen=True)
 class CoverageWindow:
     start: date
     end: date
@@ -130,6 +143,7 @@ class ContextOutcome:
 
 @dataclass(frozen=True)
 class MarketContext:
+    generation_span: GenerationSpan
     by_symbol: Mapping[str, SymbolContext]
 
     def __post_init__(self) -> None:
@@ -146,6 +160,11 @@ class MarketContext:
             self._validate_symbol(symbol, context)
 
     def status(self, symbol: str, as_of: date) -> ContextStatus:
+        if not self.generation_span.contains(as_of):
+            raise MarketContextIncompleteError(
+                f"date {as_of.isoformat()} is outside generation span "
+                f"{self.generation_span.start.isoformat()}..{self.generation_span.end.isoformat()}"
+            )
         context = self.by_symbol.get(symbol)
         if context is None or not any(window.contains(as_of) for window in context.coverage):
             raise MarketContextIncompleteError(f"missing coverage for {symbol} on {as_of.isoformat()}")

@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from invest.domain.models import DailyBar, Universe
-from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
+from invest.domain.momentum_selection_scanner import HISTORY_DAYS, MomentumSelectionScanner
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 
@@ -71,6 +71,7 @@ def _no_signal_breakout_reject_history(symbol: str, start: date) -> tuple[DailyB
 
 
 def test_rejects_insufficient_history_and_excludes_it_from_ranking() -> None:
+    assert HISTORY_DAYS == 253
     start = date(2026, 1, 1)
     short_history = _uptrend_history("SHORT", start, Decimal("1"), count=252)
     sufficient_history = _uptrend_history("LONG", start, Decimal("1"), count=253)

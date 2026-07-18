@@ -9,8 +9,6 @@ from typing import Sequence
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-load_dotenv()
-
 from invest.adapters.backtest_context_json import BacktestContextJsonReader
 from invest.adapters.fixtures_json import (
     FixtureValidationError,
@@ -24,7 +22,11 @@ from invest.adapters.alpaca_market_data import (
 )
 from invest.adapters.alpaca_broker import AlpacaBroker, BrokerFetchError
 from invest.adapters.journal_memory import MemoryJournal
-from invest.application.backtest_run import BacktestRun, POINT_IN_TIME_CONTEXT_VALIDATED
+from invest.application.backtest_run import (
+    BacktestRun,
+    POINT_IN_TIME_CONTEXT_VALIDATED,
+    ReplayWindowInvalidError,
+)
 from invest.application.execute_run import ExecuteRun
 from invest.application.scan_run import ScanRun
 from invest.contracts.events import FailedScan
@@ -44,6 +46,8 @@ from invest.domain.scanner import MomentumScanner
 from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
 from invest.domain.market_context import MarketContextError
 from invest.domain.models import Universe
+
+load_dotenv()
 
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")
@@ -197,6 +201,11 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
                 raise MarketDataFetchError(
                     "fixture-invalid", "either --bars or --start/--end is required"
                 )
+            span = market_context.generation_span
+            if args.start != span.start or args.end != span.end:
+                raise ReplayWindowInvalidError(
+                    "live range must exactly match the declared generation span"
+                )
             try:
                 payload = _UniversePayload.model_validate_json(
                     args.universe.read_text(encoding="utf-8")
@@ -228,9 +237,6 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             split_date = date.fromisoformat(args.split_date)
         except ValueError:
             return _backtest_split_error()
-        dates = [bar.date for bar in inputs.bars]
-        if not dates or split_date < min(dates) or split_date > max(dates):
-            return _backtest_split_error()
         scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
         exit_policy = resolve_exit_policy(args.exit_policy)
         result = BacktestRun(
@@ -258,10 +264,17 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
         return 2
     except MarketContextError as error:
         return _backtest_context_error(error.reason)
+    except ReplayWindowInvalidError:
+        return _backtest_replay_window_error()
 
 
 def _backtest_split_error() -> int:
     print(json.dumps({"reason": "split-date-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_replay_window_error() -> int:
+    print(json.dumps({"reason": "replay-window-invalid"}, sort_keys=True))
     return 2
 
 

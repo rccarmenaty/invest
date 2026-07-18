@@ -11,6 +11,7 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
     MarketContext,
     MarketContextIncompleteError,
     MarketContextInvalidError,
@@ -25,7 +26,8 @@ def _write_context(path: Path, payload: object) -> Path:
 
 def _valid_payload() -> dict[str, object]:
     return {
-        "schema_version": "market-context-v1",
+        "schema_version": "market-context-v2",
+        "generation_span": {"start": "2024-01-01", "end": "2024-01-03"},
         "symbols": [
             {
                 "symbol": "ACME",
@@ -37,11 +39,13 @@ def _valid_payload() -> dict[str, object]:
     }
 
 
-def test_loads_strict_v1_market_context() -> None:
-    context = BacktestContextJsonReader().load(Path("fixtures/backtest/market-context.json"))
+def test_loads_strict_v2_market_context(tmp_path: Path) -> None:
+    context = BacktestContextJsonReader().load(
+        _write_context(tmp_path / "market-context.json", _valid_payload())
+    )
 
-    assert context.status("WIN", date(2024, 1, 23)).eligible is True
-    assert context.status("WIN", date(2024, 1, 23)).reason is None
+    assert context.generation_span == GenerationSpan(date(2024, 1, 1), date(2024, 1, 3))
+    assert context.status("ACME", date(2024, 1, 1)).eligible is True
 
 
 def test_rejects_unreadable_bytes_as_market_context_invalid(tmp_path: Path) -> None:
@@ -66,7 +70,26 @@ def test_rejects_malformed_json_as_market_context_invalid(tmp_path: Path) -> Non
 
 def test_rejects_unsupported_schema_version(tmp_path: Path) -> None:
     payload = _valid_payload()
-    payload["schema_version"] = "market-context-v2"
+    payload["schema_version"] = "market-context-v1"
+
+    with pytest.raises(MarketContextInvalidError) as error:
+        BacktestContextJsonReader().load(_write_context(tmp_path / "market-context.json", payload))
+
+    assert error.value.reason == "market-context-invalid"
+
+
+@pytest.mark.parametrize(
+    "generation_span",
+    [None, {}, [], {"start": "2024-01-03", "end": "2024-01-01"}],
+)
+def test_rejects_missing_malformed_empty_or_inverted_generation_span(
+    tmp_path: Path, generation_span: object
+) -> None:
+    payload = _valid_payload()
+    if generation_span is None:
+        payload.pop("generation_span")
+    else:
+        payload["generation_span"] = generation_span
 
     with pytest.raises(MarketContextInvalidError) as error:
         BacktestContextJsonReader().load(_write_context(tmp_path / "market-context.json", payload))
@@ -125,7 +148,8 @@ def test_semantically_incomplete_context_surfaces_market_context_incomplete(tmp_
 
 def _sample_context() -> MarketContext:
     return MarketContext(
-        {
+        generation_span=GenerationSpan(date(2024, 1, 1), date(2024, 1, 3)),
+        by_symbol={
             "BETA": SymbolContext(
                 coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
                 eligibility=(
@@ -148,7 +172,7 @@ def _sample_context() -> MarketContext:
                     ),
                 ),
             ),
-        }
+        },
     )
 
 
@@ -166,7 +190,8 @@ def test_writer_emits_canonical_compact_json_with_trailing_newline(tmp_path: Pat
     text = raw.decode("utf-8")
     assert text.index('"symbol":"ACME"') < text.index('"symbol":"BETA"')
     payload = json.loads(text)
-    assert payload["schema_version"] == "market-context-v1"
+    assert payload["schema_version"] == "market-context-v2"
+    assert payload["generation_span"] == {"start": "2024-01-01", "end": "2024-01-03"}
     assert [item["symbol"] for item in payload["symbols"]] == ["ACME", "BETA"]
 
 
@@ -181,6 +206,7 @@ def test_writer_round_trips_through_reader(tmp_path: Path) -> None:
     assert loaded.status("ACME", date(2024, 1, 1)).reason is ContextReason.CORPORATE_ACTION
     assert loaded.status("ACME", date(2024, 1, 2)).eligible is False
     assert loaded.status("BETA", date(2024, 1, 3)).eligible is True
+    assert loaded.generation_span == original.generation_span
     assert set(loaded.by_symbol) == set(original.by_symbol)
 
 
@@ -216,7 +242,13 @@ def test_writer_cleans_temp_and_writes_nothing_on_invalid_empty_context(tmp_path
 
     out = tmp_path / "market-context.json"
     with pytest.raises(MarketContextInvalidError) as error:
-        BacktestContextJsonWriter().write(MarketContext({}), out)
+        BacktestContextJsonWriter().write(
+            MarketContext(
+                generation_span=GenerationSpan(date(2024, 1, 1), date(2024, 1, 1)),
+                by_symbol={},
+            ),
+            out,
+        )
 
     assert error.value.reason == "market-context-invalid"
     assert list(tmp_path.iterdir()) == []

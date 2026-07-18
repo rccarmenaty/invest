@@ -77,8 +77,84 @@ def test_success_writes_context_silent_exit_zero(tmp_path, capsys, monkeypatch) 
     assert captured.out == ""
     assert captured.err == ""
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "market-context-v1"
+    assert payload["schema_version"] == "market-context-v2"
+    assert payload["generation_span"] == {"start": "2024-01-02", "end": "2024-01-04"}
     assert payload["symbols"][0]["symbol"] == "ACME"
+
+
+def test_bars_out_writes_deterministic_pair_with_pre_span_warmup(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    from invest.adapters.fixtures_json import JsonFixtureReader
+
+    cli = _install_fake_source(monkeypatch)
+    first_context = tmp_path / "first-context.json"
+    second_context = tmp_path / "second-context.json"
+    first_bars = tmp_path / "first-bars"
+    second_bars = tmp_path / "second-bars"
+
+    first_result = cli.main(_args(first_context, "--bars-out", str(first_bars)))
+    second_result = cli.main(_args(second_context, "--bars-out", str(second_bars)))
+
+    captured = capsys.readouterr()
+    assert first_result == second_result == 0
+    assert captured.out == ""
+    assert first_context.read_bytes() == second_context.read_bytes()
+    assert (first_bars / "universe.json").read_bytes() == (
+        second_bars / "universe.json"
+    ).read_bytes()
+    assert (first_bars / "bars.json").read_bytes() == (second_bars / "bars.json").read_bytes()
+    inputs = JsonFixtureReader().load(first_bars / "universe.json", first_bars / "bars.json")
+    context_payload = json.loads(first_context.read_text(encoding="utf-8"))
+    assert min(bar.date for bar in inputs.bars) == date(2023, 12, 31)
+    assert context_payload["generation_span"]["start"] == "2024-01-02"
+
+
+def test_bars_write_failure_leaves_no_orphan_context(tmp_path, capsys, monkeypatch) -> None:
+    """A failed --bars-out write must not leave an unpaired context file behind."""
+    cli = _install_fake_source(monkeypatch)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "bars"
+    bars_out.mkdir()  # pre-existing bars path → BarsFixtureExistsError
+
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.err == ""
+    assert json.loads(captured.out) == {"reason": "bars-out-exists"}
+    assert not out.exists()
+    assert list(bars_out.iterdir()) == []
+
+    # Retry with the same context path and a fresh bars path must succeed.
+    retry_bars = tmp_path / "bars-retry"
+    assert cli.main(_args(out, "--bars-out", str(retry_bars))) == 0
+    assert out.is_file()
+    assert (retry_bars / "bars.json").is_file()
+
+
+def test_bars_storage_failure_leaves_no_orphan_context(tmp_path, capsys, monkeypatch) -> None:
+    """Storage-level bars failures must also keep the pair invariant."""
+    from invest.adapters import generate_context_cli as cli_module
+    from invest.adapters.bars_fixture_json import BarsFixtureStorageError
+
+    cli = _install_fake_source(monkeypatch)
+    out = tmp_path / "context.json"
+    bars_out = tmp_path / "bars"
+
+    class _FailingWriter:
+        def write(self, inputs, path):
+            raise BarsFixtureStorageError("disk full")
+
+    monkeypatch.setattr(cli_module, "BarsFixtureWriter", _FailingWriter)
+
+    result = cli.main(_args(out, "--bars-out", str(bars_out)))
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out) == {"reason": "storage-failure"}
+    assert not out.exists()
+    assert not bars_out.exists()
 
 
 @pytest.mark.parametrize(
@@ -235,23 +311,6 @@ def test_bars_out_omitted_creates_no_fixture_directory(tmp_path, capsys, monkeyp
     assert result == 0
     assert out.is_file()
     assert list(tmp_path.iterdir()) == [out]
-
-
-def test_bars_out_preexisting_dir_maps_to_bars_out_exists(tmp_path, capsys, monkeypatch) -> None:
-    # --out is already written by the time --bars-out is attempted (it comes
-    # after in main()), so unlike _assert_fail's other cases `out` legitimately
-    # exists here — only the fixture directory step failed.
-    cli = _install_fake_source(monkeypatch)
-    out = tmp_path / "context.json"
-    bars_out = tmp_path / "fixtures"
-    bars_out.mkdir()
-    result = cli.main(_args(out, "--bars-out", str(bars_out)))
-    captured = capsys.readouterr()
-    assert result == 2
-    assert captured.err == ""
-    assert json.loads(captured.out) == {"reason": "bars-out-exists"}
-    assert out.is_file()
-    assert list(bars_out.iterdir()) == []
 
 
 def test_bars_out_storage_failure_maps_to_storage_failure(tmp_path, capsys, monkeypatch) -> None:

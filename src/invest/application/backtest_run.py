@@ -62,6 +62,20 @@ MISSING_NEXT_SESSION_AFTER_EXIT_SIGNAL = "missing-next-session-after-exit-signal
 DEFAULT_EXIT_POLICY = ExitPolicyConfig(kind="ten-day-low", channel_window=10)
 
 
+class ReplayWindowInvalidError(ValueError):
+    def __init__(self, message: str) -> None:
+        self.reason = "replay-window-invalid"
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class _ReplayPartition:
+    all_bars: tuple[DailyBar, ...]
+    warmup_bars: tuple[DailyBar, ...]
+    replay_bars: tuple[DailyBar, ...]
+    replay_dates: tuple[date, ...]
+
+
 @dataclass
 class _OpenPosition:
     symbol: str
@@ -102,28 +116,42 @@ class BacktestRun:
         scanner's candidate bar is always `window[-1]`, this fires exactly once per
         symbol per day, the day its bar first enters the window.
         """
-        bars = sorted(inputs.bars, key=lambda bar: (bar.date, bar.symbol))
-        dates = sorted({bar.date for bar in bars})
+        partition = self._partition_bars(inputs.bars)
+        return self._scan_decisions(inputs.universe, partition)
+
+    def _scan_decisions(
+        self,
+        universe: Universe,
+        partition: _ReplayPartition,
+    ) -> list[ScanDecision]:
         collected: list[ScanDecision] = []
-        for d in dates:
-            replay_universe = self._filtered_universe(inputs.universe, d)
+        for d in partition.replay_dates:
+            replay_universe = self._filtered_universe(universe, d)
             eligible_symbols = set(replay_universe.symbols)
-            window = tuple(bar for bar in bars if bar.date <= d and bar.symbol in eligible_symbols)
+            window = tuple(
+                bar
+                for bar in partition.all_bars
+                if bar.date <= d and bar.symbol in eligible_symbols
+            )
             for decision in self._scanner.scan(replay_universe, window):
                 if decision.accepted and decision.decision_date == d:
                     collected.append(decision)
         return collected
 
     def replay(self, inputs: FixtureInputs, *, split_date: date | None = None) -> BacktestResult:
-        replay_dates = sorted({bar.date for bar in inputs.bars})
-        self._market_context.require_complete(replay_dates, inputs.universe.symbols)
-        decisions = self.scan_decisions(inputs)
+        partition = self._partition_bars(inputs.bars)
+        if split_date is not None and split_date not in partition.replay_dates:
+            raise ReplayWindowInvalidError(
+                f"split date {split_date.isoformat()} is not an observed replay date"
+            )
+        self._market_context.require_complete(partition.replay_dates, inputs.universe.symbols)
+        decisions = self._scan_decisions(inputs.universe, partition)
         by_symbol: dict[str, list[DailyBar]] = defaultdict(list)
-        for bar in sorted(inputs.bars, key=lambda item: (item.symbol, item.date)):
+        for bar in sorted(partition.all_bars, key=lambda item: (item.symbol, item.date)):
             by_symbol[bar.symbol].append(bar)
 
         bars_by_date: dict[date, dict[str, DailyBar]] = defaultdict(dict)
-        for bar in inputs.bars:
+        for bar in partition.replay_bars:
             bars_by_date[bar.date][bar.symbol] = bar
         pending: dict[date, list[ScanDecision]] = defaultdict(list)
         for decision in decisions:
@@ -292,6 +320,29 @@ class BacktestRun:
             ),
             warnings=base_warnings + tuple(extra_warnings),
             exit_policy=policy_provenance(self._exit_policy),
+        )
+
+    def _partition_bars(self, bars: tuple[DailyBar, ...]) -> _ReplayPartition:
+        ordered = tuple(sorted(bars, key=lambda bar: (bar.date, bar.symbol)))
+        span = self._market_context.generation_span
+        warmup: list[DailyBar] = []
+        replay: list[DailyBar] = []
+        for bar in ordered:
+            if bar.date < span.start:
+                warmup.append(bar)
+            elif bar.date <= span.end:
+                replay.append(bar)
+            else:
+                raise ReplayWindowInvalidError(
+                    f"bar for {bar.symbol} on {bar.date.isoformat()} is after generation span"
+                )
+        if not replay:
+            raise ReplayWindowInvalidError("no bars fall inside generation span")
+        return _ReplayPartition(
+            all_bars=ordered,
+            warmup_bars=tuple(warmup),
+            replay_bars=tuple(replay),
+            replay_dates=tuple(sorted({bar.date for bar in replay})),
         )
 
     def _filtered_universe(self, universe: Universe, as_of: date) -> Universe:

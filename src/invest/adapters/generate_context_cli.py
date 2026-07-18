@@ -111,9 +111,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             BacktestContextJsonWriter().write(context, out)
             if args.bars_out is not None:
                 universe = Universe(
-                    args.end.isoformat(), tuple(sorted({l.symbol for l in inputs.listings}))
+                    args.end.isoformat(),
+                    tuple(sorted({listing.symbol for listing in inputs.listings})),
                 )
-                BarsFixtureWriter().write(FixtureInputs(universe, inputs.bars), args.bars_out)
+                try:
+                    BarsFixtureWriter().write(
+                        FixtureInputs(universe=universe, bars=inputs.bars),
+                        args.bars_out,
+                    )
+                except BaseException:
+                    # Keep the context/bars pair invariant: never leave an
+                    # unpaired context artifact behind on a bars failure.
+                    try:
+                        out.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
         return 0
     except InvalidArgumentsError:
         return _fail("invalid-arguments")

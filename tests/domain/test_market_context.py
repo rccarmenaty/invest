@@ -9,6 +9,7 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
     MarketContext,
     MarketContextIncompleteError,
     MarketContextInvalidError,
@@ -18,14 +19,47 @@ from invest.domain.market_context import (
 
 def _context(*, eligibility: tuple[EligibilityWindow, ...], blockers: tuple[BlockerWindow, ...] = ()) -> MarketContext:
     return MarketContext(
-        {
+        generation_span=GenerationSpan(date(2024, 1, 1), date(2024, 1, 5)),
+        by_symbol={
             "ACME": SymbolContext(
                 coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 5)),),
                 eligibility=eligibility,
                 blockers=blockers,
             )
-        }
+        },
     )
+
+
+def test_generation_span_is_immutable_and_rejects_inversion() -> None:
+    span = GenerationSpan(date(2024, 1, 1), date(2024, 1, 5))
+
+    with pytest.raises(AttributeError):
+        span.start = date(2024, 1, 2)  # type: ignore[misc]
+    with pytest.raises(MarketContextInvalidError) as error:
+        GenerationSpan(date(2024, 1, 5), date(2024, 1, 1))
+
+    assert span.start == date(2024, 1, 1)
+    assert span.end == date(2024, 1, 5)
+    assert error.value.reason == "market-context-invalid"
+
+
+@pytest.mark.parametrize("operation", ["status", "require_complete", "eligible_symbols"])
+def test_context_queries_fail_closed_outside_generation_span(operation: str) -> None:
+    context = _context(
+        eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 5), eligible=True),)
+    )
+    outside = date(2023, 12, 31)
+
+    with pytest.raises(MarketContextIncompleteError) as error:
+        if operation == "status":
+            context.status("ACME", outside)
+        elif operation == "require_complete":
+            context.require_complete((outside,), ("ACME",))
+        else:
+            context.eligible_symbols(("ACME",), outside)
+
+    assert error.value.reason == "market-context-incomplete"
+    assert "outside generation span" in str(error.value)
 
 
 def test_status_resolves_complete_matrix_and_exact_outcome_values() -> None:
@@ -66,7 +100,8 @@ def test_status_resolves_complete_matrix_and_exact_outcome_values() -> None:
 
 def test_require_complete_accepts_a_complete_multi_symbol_matrix() -> None:
     context = MarketContext(
-        {
+        generation_span=GenerationSpan(date(2024, 1, 1), date(2024, 1, 2)),
+        by_symbol={
             "ACME": SymbolContext(
                 coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 2)),),
                 eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 2), eligible=True),),
@@ -78,7 +113,7 @@ def test_require_complete_accepts_a_complete_multi_symbol_matrix() -> None:
                     EligibilityWindow(date(2024, 1, 2), date(2024, 1, 2), eligible=False),
                 ),
             ),
-        }
+        },
     )
 
     context.require_complete(
@@ -100,7 +135,8 @@ def test_require_complete_accepts_a_complete_multi_symbol_matrix() -> None:
 
 def test_require_complete_checks_later_symbols_for_missing_dates() -> None:
     context = MarketContext(
-        {
+        generation_span=GenerationSpan(date(2024, 1, 1), date(2024, 1, 3)),
+        by_symbol={
             "ACME": SymbolContext(
                 coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
                 eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 3), eligible=True),),
@@ -109,7 +145,7 @@ def test_require_complete_checks_later_symbols_for_missing_dates() -> None:
                 coverage=(CoverageWindow(date(2024, 1, 1), date(2024, 1, 3)),),
                 eligibility=(EligibilityWindow(date(2024, 1, 1), date(2024, 1, 2), eligible=True),),
             ),
-        }
+        },
     )
 
     with pytest.raises(MarketContextIncompleteError) as error:

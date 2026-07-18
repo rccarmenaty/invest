@@ -17,6 +17,8 @@ from invest.domain.market_context import (
     ContextReason,
     CoverageWindow,
     EligibilityWindow,
+    GenerationSpan,
+    MarketContextInvalidError,
 )
 from invest.domain.market_context_builder import (
     CorporateActionEvent,
@@ -119,6 +121,7 @@ def test_single_eligible_symbol_full_coverage_and_single_rle_window() -> None:
 
     context = build_market_context(sessions, [symbol], _small_config())
 
+    assert context.generation_span == GenerationSpan(start, start + timedelta(days=2))
     assert "ACME" in context.by_symbol
     sym = context.by_symbol["ACME"]
     assert sym.coverage == (CoverageWindow(start, start + timedelta(days=2)),)
@@ -372,9 +375,11 @@ def test_build_is_deterministic_for_identical_inputs() -> None:
         assert first.by_symbol[sym] == second.by_symbol[sym]
 
 
-def test_empty_sessions_produce_empty_context() -> None:
-    context = build_market_context([], [], _small_config())
-    assert tuple(context.by_symbol) == ()
+def test_empty_sessions_reject_an_empty_generation_span() -> None:
+    with pytest.raises(MarketContextInvalidError) as error:
+        build_market_context([], [], _small_config())
+
+    assert error.value.reason == "market-context-invalid"
 
 
 # ---------------------------------------------------------------------------
