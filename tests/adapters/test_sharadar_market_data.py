@@ -156,7 +156,9 @@ def test_fetch_range_keeps_adjusted_ohlc_envelope_when_high_equals_close(
     """Live GSBD 2024-12-13: high==close and closeadj ratio yields high slightly below close.
 
     Without an envelope clamp, bars fail JsonFixtureReader OHLC validation and
-    offline backtest reports fixture-invalid.
+    offline backtest reports fixture-invalid. The clamp is minimal: high becomes
+    exactly the max of the four adjusted candidates and low/open keep their exact
+    Decimal products, so a silently widening clamp fails this test.
     """
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
 
@@ -173,11 +175,50 @@ def test_fetch_range_keeps_adjusted_ohlc_envelope_when_high_equals_close(
         client=httpx.Client(transport=httpx.MockTransport(handler))
     ).fetch_range(Universe("v1", ("GSBD",)), date(2024, 12, 13), date(2024, 12, 13))
 
+    ratio = Decimal("9.711") / Decimal("12.87")
+    exact_open = Decimal("12.83") * ratio
+    exact_high = Decimal("12.87") * ratio
+    exact_low = Decimal("12.75") * ratio
+    # Premise of the regression: the exact Decimal product for high drifts below closeadj.
+    assert exact_high < Decimal("9.711")
+
     bar = result.bars[0]
     assert bar.close == Decimal("9.711")
-    assert bar.low <= bar.open <= bar.high
-    assert bar.low <= bar.close <= bar.high
-    assert bar.high >= bar.close
+    assert bar.open == exact_open
+    assert bar.high == max(exact_open, exact_high, exact_low, Decimal("9.711"))
+    assert bar.high == Decimal("9.711")
+    assert bar.low == min(exact_open, exact_high, exact_low, Decimal("9.711"))
+    assert bar.low == exact_low
+
+
+def test_fetch_range_preserves_exact_adjusted_products_when_no_clamp_is_needed(
+    monkeypatch,
+) -> None:
+    """A fractional closeadj/close ratio with a well-formed envelope keeps exact products.
+
+    Open/high/low must equal raw * (closeadj/close) exactly; the re-envelope must
+    be a no-op whenever the exact products already satisfy the OHLC envelope.
+    """
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [["ACME", "2024-01-02", 12.83, 13.50, 12.00, 12.87, 1000.0, 9.711]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    ratio = Decimal("9.711") / Decimal("12.87")
+    bar = result.bars[0]
+    assert bar.open == Decimal("12.83") * ratio
+    assert bar.high == Decimal("13.50") * ratio
+    assert bar.low == Decimal("12.00") * ratio
+    assert bar.close == Decimal("9.711")
 
 
 

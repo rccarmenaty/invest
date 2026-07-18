@@ -24,19 +24,26 @@ The system MUST expose `fetch(universe, as_of)` and `fetch_range(universe, start
 
 ### Requirement: Deterministic OHLC adjustment
 
-Per-bar open/high/low MUST be adjusted using factor `closeadj/close`, computed and applied with exact Decimal arithmetic before constructing `DailyBar`. `DailyBar`'s shape MUST remain unchanged.
+Per-bar open/high/low MUST be computed as the raw value times factor `closeadj/close` with exact Decimal arithmetic, then minimally re-enveloped before constructing `DailyBar`: high MUST become `max(high, open, close, low)` and low MUST become `min(low, open, close, high)`, so every adjusted bar satisfies `low <= min(open, close)` and `high >= max(open, close)`. The re-envelope MUST NOT alter open or close, and adjusted values MUST deviate from the exact Decimal products only when the exact products themselves violate the OHLC envelope (Decimal rounding/ULP drift, e.g. raw `high == close` combined with a fractional `closeadj/close` ratio). The adjustment MUST remain deterministic, and `DailyBar`'s shape MUST remain unchanged.
 
 #### Scenario: Adjustment factor scales open/high/low
 
-- GIVEN a raw SEP bar with `close`, `closeadj`, `open`, `high`, `low`
+- GIVEN a raw SEP bar with `close`, `closeadj`, `open`, `high`, `low` whose exact Decimal products already satisfy the OHLC envelope
 - WHEN the reader builds the `DailyBar`
-- THEN open/high/low MUST equal the raw value times `closeadj/close`, computed with Decimal precision
+- THEN open/high/low MUST equal the raw value times `closeadj/close` exactly, computed with Decimal precision, with no re-envelope deviation
 
 #### Scenario: Unadjusted bar is unchanged
 
 - GIVEN a bar where `closeadj` equals `close`
 - WHEN the adjustment is applied
 - THEN open/high/low MUST equal their raw input values exactly
+
+#### Scenario: Envelope drift clamps adjusted high minimally
+
+- GIVEN the live GSBD 2024-12-13 bar shape where raw `high` equals raw `close` (open `12.83`, high `12.87`, low `12.75`, close `12.87`, closeadj `9.711`) and the exact Decimal product for high falls below `closeadj` by rounding drift
+- WHEN the reader builds the `DailyBar`
+- THEN adjusted high MUST equal the maximum of the four adjusted candidates — exactly `closeadj` here — and not any wider value
+- AND adjusted open and low MUST remain their exact Decimal products
 
 ### Requirement: Fail-closed credential and response validation
 
