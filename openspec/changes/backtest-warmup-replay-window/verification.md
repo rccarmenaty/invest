@@ -2,8 +2,8 @@
 
 - Change: `backtest-warmup-replay-window`
 - Worktree: `/Users/rcty/invest/.worktrees/backtest-warmup-replay-window`
-- Branch: `feat/backtest-warmup-replay-window` (4 commits ahead of `main`: `e00f040`, `d0db49b`, `e5d062e`, `f15f875`)
-- Verified: 2026-07-17
+- Branch: `feat/backtest-warmup-replay-window` (7 commits ahead of `main`: `e00f040`, `d0db49b`, `e5d062e`, `f15f875`, `5cf1023`, `91c09c9`, `4e7aeda`)
+- Verified: 2026-07-17 (refreshed 2026-07-18 after review correction — see Review Correction Addendum)
 - **Executor note**: this verify pass ran on the Claude native agent because Codex quota was exhausted (chain routing deviation from the standard Codex-executed verify phase).
 
 ## Verdict: PASS
@@ -149,50 +149,51 @@ Both outcomes match the design contract exactly (positive: exit 0, complete repo
 
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| 1 | Real generated fixtures with warmup bars replay without `market-context-incomplete` | Yes (via checked-in deterministic fixture, per design.md's explicit fallback: real Sharadar-credentialed regeneration of `fixtures/real-years/**` is called out as a "post-merge operational note", not part of this code change) | §4 positive run against `fixtures/backtest-252` (260 observed bar-dates, 7 in-span replay dates, 253 pre-span warmup dates) exits 0 with a complete report and no `market-context-incomplete`/`market-context-invalid` |
+| 1 | Real generated fixtures with warmup bars replay without `market-context-incomplete` | Yes (via checked-in deterministic fixture, per design.md's explicit fallback: real Sharadar-credentialed regeneration of `fixtures/real-years/**` is called out as a "post-merge operational note", not part of this code change) | §4 positive run against `fixtures/backtest-252` (260 observed bar-dates, 8 in-span replay dates, 252 pre-span warmup dates) exits 0 with a complete report and no `market-context-incomplete`/`market-context-invalid` |
 | 2 | Artifacts without a valid span are rejected fail-closed | Yes | `test_rejects_missing_malformed_empty_or_inverted_generation_span`, `test_rejects_unsupported_schema_version` (§1) |
 | 3 | In-window coverage gaps still raise `MarketContextIncompleteError` | Yes | `test_replay_checks_each_observed_in_span_date_for_every_fixture_symbol`, `test_replay_rejects_incomplete_context_before_scanning` (asserts scanner never invoked) |
 | 4 | No portfolio/decision events dated before the declared span start | Yes | `test_warmup_bars_are_scanner_visible_but_never_replay_events`, `test_backtest_252_replay_emits_no_pre_span_events` (§1, §7) — both assert `min(event_date) >= span.start` over trades, skipped entries, and context outcomes |
 | 5 | Core generation requests >= 253 sessions of history | Yes | `test_load_fetches_scanner_sufficient_preceding_xnys_sessions` asserts `len(expected_sessions) == 253`; `test_backtest_252_every_symbol_has_at_least_253_bars` on the checked-in fixture |
 
-All 5 success criteria are met with test or runtime evidence. (Note: the `proposal.md` checkboxes themselves are still rendered `- [ ]` in the source file — see SUGGESTION below.)
+All 5 success criteria are met with test or runtime evidence. (The `proposal.md` Success Criteria checkboxes at lines 70-74 are rendered `- [x]` — the earlier SUGGESTION about unchecked boxes has been addressed by commit `5cf1023`.)
 
 ---
 
 ## 6. Scope Audit
 
 ```
-$ git diff --stat main..HEAD
- fixtures/backtest-252/market-context.json          |  18 ++-
+$ git diff --stat main...HEAD
+ fixtures/backtest-252/market-context.json          |  18 +-
  fixtures/backtest/market-context.json              |   6 +-
- openspec/changes/backtest-warmup-replay-window/design.md        |  41 +++++
- openspec/changes/backtest-warmup-replay-window/exploration.md   |  88 +++++++++++
- openspec/changes/backtest-warmup-replay-window/proposal.md      |  74 +++++++++
- openspec/changes/backtest-warmup-replay-window/specs/point-in-time-market-context/spec.md    |  44 ++++++
- openspec/changes/backtest-warmup-replay-window/specs/sharadar-market-context-generator/spec.md |  46 ++++++
- openspec/changes/backtest-warmup-replay-window/specs/trading-system/spec.md |  84 +++++++++++
- openspec/changes/backtest-warmup-replay-window/tasks.md         |  72 +++++++++
- src/invest/adapters/backtest_context_json.py       |  23 ++-
- src/invest/adapters/bars_fixture_json.py           | 112 ++++++++++++++
- src/invest/adapters/cli.py                         |  25 +++-
- src/invest/adapters/generate_context_cli.py        |  26 ++++
- src/invest/adapters/sharadar_context_source.py     |  15 +-
- src/invest/application/backtest_run.py             |  71 +++++++--
- src/invest/domain/market_context.py                |  19 +++
+ .../backtest-warmup-replay-window/design.md        |  41 ++++
+ .../backtest-warmup-replay-window/exploration.md   |  88 ++++++++
+ .../backtest-warmup-replay-window/proposal.md      |  74 +++++++
+ .../specs/point-in-time-market-context/spec.md     |  44 ++++
+ .../sharadar-market-context-generator/spec.md      |  46 ++++
+ .../specs/trading-system/spec.md                   |  84 +++++++
+ .../changes/backtest-warmup-replay-window/tasks.md |  72 ++++++
+ .../backtest-warmup-replay-window/verification.md  | 242 +++++++++++++++++++++
+ src/invest/adapters/backtest_context_json.py       |  23 +-
+ src/invest/adapters/bars_fixture_json.py           | 112 ++++++++++
+ src/invest/adapters/cli.py                         |  25 ++-
+ src/invest/adapters/generate_context_cli.py        |  35 +++
+ src/invest/adapters/sharadar_context_source.py     |  20 +-
+ src/invest/application/backtest_run.py             |  71 +++++-
+ src/invest/domain/market_context.py                |  19 ++
  src/invest/domain/market_context_builder.py        |   9 +-
- tests/adapters/test_backtest_context_json.py       |  52 +++++--
- tests/adapters/test_cli_backtest.py                | 166 +++++++++++++++++++--
- tests/adapters/test_generate_context_cli.py        |  32 +++-
- tests/adapters/test_sharadar_context_source.py     |   9 +-
- tests/application/test_backtest_run.py             |  93 +++++++++++-
- tests/domain/test_market_context.py                |  48 +++++-
+ tests/adapters/test_backtest_context_json.py       |  52 ++++-
+ tests/adapters/test_cli_backtest.py                | 166 ++++++++++++--
+ tests/adapters/test_generate_context_cli.py        |  78 ++++++-
+ tests/adapters/test_sharadar_context_source.py     |  30 ++-
+ tests/application/test_backtest_run.py             |  93 +++++++-
+ tests/domain/test_market_context.py                |  48 +++-
  tests/domain/test_market_context_builder.py        |  11 +-
  tests/domain/test_momentum_selection_scanner.py    |   3 +-
- tests/fixtures/test_backtest_252_fixtures.py       |  53 ++++++-
- 26 files changed, 1155 insertions(+), 85 deletions(-)
+ tests/fixtures/test_backtest_252_fixtures.py       |  53 ++++-
+ 27 files changed, 1477 insertions(+), 86 deletions(-)
 ```
 
-All 26 changed files map to the contract's Affected Areas (`design.md`) or its tests/fixtures. No unrelated files touched.
+All 27 changed files map to the contract's Affected Areas (`design.md`), its tests/fixtures, or this change's own OpenSpec artifacts. No unrelated files touched.
 
 **Known deviation: `src/invest/adapters/bars_fixture_json.py` restoration.**
 
@@ -224,7 +225,7 @@ Confirmed structurally and via test/runtime assertions:
 **WARNING**: none.
 
 **SUGGESTION** (non-blocking):
-- `openspec/changes/backtest-warmup-replay-window/proposal.md` Success Criteria checkboxes (lines 70-74) are still rendered `- [ ]` (unchecked) even though all 5 criteria are met per §5 evidence. Recommend checking them off at archive time for artifact hygiene; does not block archive since `tasks.md`'s 19/19 items are already `[x]` and the underlying evidence is present.
+- (Addressed) `openspec/changes/backtest-warmup-replay-window/proposal.md` Success Criteria checkboxes (lines 70-74) were rendered `- [ ]` at initial verification; they are now `- [x]` (commit `5cf1023`).
 
 ## Tasks vs. Code State
 
@@ -240,3 +241,14 @@ All 19 items in `tasks.md` are marked `[x]`. Spot-checked against code:
 - Group 9 (final verification): `uv run pytest` / `uv run ruff check` — re-run independently in §3, both green.
 
 No task is marked complete without matching code/tests.
+
+---
+
+## Review Correction Addendum (2026-07-18)
+
+Bounded review of this change produced two CRITICAL findings, corrected in two commits:
+
+- `91c09c9` `fix(market-data): keep context and bars outputs paired on bars-write failure` (REL-001) — `generate_context_cli.py` no longer leaves an unpaired context artifact on disk when the `--bars-out` write fails; a retry with the same context path now succeeds. Tests: `test_bars_write_failure_leaves_no_orphan_context`, `test_bars_storage_failure_leaves_no_orphan_context`.
+- `4e7aeda` `fix(market-data): pin XNYS calendar start to remove floating warmup boundary` (RES-001) — `sharadar_context_source.py` builds the XNYS calendar with `start="1990-01-01"` so the >=253-session warmup lookback can never underflow the calendar's floating default first session (now minus 20 years). Test: `test_xnys_calendar_start_pinned_before_sharadar_history`.
+
+Report figures above (commit list, 27-file scope, 8 in-span replay dates / 252 pre-span warmup dates, checked proposal boxes) were refreshed to the post-correction branch state in the same pass.
