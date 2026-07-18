@@ -178,7 +178,10 @@ class SharadarActionsReader:
                 value = None
             elif value is None or not value.is_finite():
                 raise ValueError("valued ACTIONS action has no finite value")
-            elif value <= 0:
+            elif value < 0:
+                # Exact zero appears on live dividend rows (e.g. RVPH 2026-02-23).
+                # Keep the event so kind-blind corporate-action blockers still fire;
+                # only negative ratios/amounts remain fail-closed.
                 raise ValueError("valued ACTIONS ratio/amount must be positive")
             actions.append(SharadarAction(row.ticker, row.date, kind, value))
         return actions

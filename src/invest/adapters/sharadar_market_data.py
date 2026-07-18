@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterator
 
 import exchange_calendars as xcals
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from invest.adapters.alpaca_market_data import MarketDataFetchError
 from invest.domain.models import DailyBar, FixtureInputs, Universe
@@ -45,6 +45,11 @@ class _SepRow(BaseModel):
     close: Decimal = Field(gt=0)
     volume: Decimal = Field(ge=0)
     closeadj: Decimal = Field(gt=0)
+
+    @field_validator("volume", mode="before")
+    @classmethod
+    def reconcile_null_volume(cls, value: Any) -> Any:
+        return Decimal("0") if value is None else value
 
     @model_validator(mode="after")
     def validate_price_relationships(self) -> "_SepRow":
@@ -169,14 +174,23 @@ class SharadarMarketDataReader:
                     if column in self.COLUMNS
                 }
             )
+            open_ = _adjust(row.open, row.close, row.closeadj)
+            high_ = _adjust(row.high, row.close, row.closeadj)
+            low_ = _adjust(row.low, row.close, row.closeadj)
+            close_ = row.closeadj
+            # Decimal ratio closeadj/close can leave high a few ULPs below closeadj
+            # when raw high==close (live GSBD 2024-12-13). Re-envelope so adjusted
+            # bars satisfy OHLC and JsonFixtureReader validation.
+            high_ = max(high_, open_, close_, low_)
+            low_ = min(low_, open_, close_, high_)
             bars.append(
                 DailyBar(
                     symbol=row.ticker,
                     date=row.date,
-                    open=_adjust(row.open, row.close, row.closeadj),
-                    high=_adjust(row.high, row.close, row.closeadj),
-                    low=_adjust(row.low, row.close, row.closeadj),
-                    close=row.closeadj,
+                    open=open_,
+                    high=high_,
+                    low=low_,
+                    close=close_,
                     volume=row.volume,
                 )
             )

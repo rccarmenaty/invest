@@ -212,9 +212,7 @@ def test_live_shaped_float_fixture_has_no_precision_loss(monkeypatch: pytest.Mon
 @pytest.mark.parametrize(
     ("action", "value"),
     [
-        ("split", "0"),
         ("split", "-2"),
-        ("dividend", "0"),
         ("dividend", "-2"),
         ("dividend", "NaN"),
         ("dividend", "Infinity"),
@@ -229,6 +227,36 @@ def test_fetch_rejects_invalid_action_rows(
         _reader(
             lambda _: httpx.Response(200, json=_page([["ACME", "2024-02-15", action, value]]))
         ).fetch()
+
+
+@pytest.mark.parametrize(
+    ("action", "value"),
+    [
+        ("dividend", "0"),
+        ("dividend", 0.0),
+        ("split", "0"),
+        ("spinoffdividend", "0.0"),
+    ],
+)
+def test_fetch_accepts_exact_zero_valued_actions(
+    monkeypatch: pytest.MonkeyPatch, action: str, value: object
+) -> None:
+    """Real SHARADAR/ACTIONS emits dividend value 0.0 (e.g. RVPH 2026-02-23).
+
+    Zero is a present exact Decimal, not absence; the kind-blind context builder
+    still uses the effective date as a corporate-action blocker. Rejecting zero
+    aborts the multi-page ACTIONS fetch (~11 live rows historically).
+    """
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    events = _reader(
+        lambda _: httpx.Response(200, json=_page([["RVPH", "2026-02-23", action, value]]))
+    ).fetch()
+
+    assert len(events) == 1
+    assert events[0].ticker == "RVPH"
+    assert events[0].value == Decimal("0")
+    assert isinstance(events[0].value, Decimal)
 
 
 @pytest.mark.parametrize(
