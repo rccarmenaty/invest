@@ -25,8 +25,8 @@ Provide backtest-only corporate-action history as typed, point-in-time events wi
 
 ### Requirement: Typed corporate-action events
 
-Each returned event MUST contain a ticker, effective date, event kind, and optional value. The reader MUST map the mapped ACTIONS literals `split`, `adrratiosplit`, `dividend`, `spinoffdividend`, `delisted`, `regulatorydelisting`, `voluntarydelisting`, `bankruptcyliquidation`, `tickerchangeto`, and `tickerchangefrom` to typed events: `split` and `adrratiosplit` MUST both produce a split event; `dividend` and `spinoffdividend` MUST both produce a dividend event; `delisted`, `regulatorydelisting`, `voluntarydelisting`, and `bankruptcyliquidation` MUST all produce a delisted event; `tickerchangeto` and `tickerchangefrom` MUST both produce a ticker-change event (directionality is not preserved). Every present monetary or ratio value MUST be represented as an exact `Decimal`, including values supplied as JSON floats, coerced without precision loss. An absent value MUST remain absent. A delisted or ticker-change row MAY carry a source value (the live SHARADAR/ACTIONS feed attaches a contra/last price); the reader MUST accept the row and normalize its value to absent, since the kind-blind context builder never uses it. Non-finite or non-positive values on a split or dividend event MUST fail closed rather than be silently reclassified.
-(Previously: only the literals `split`, `dividend`, `delisting`, and `tickerchange` were mapped — two of which never occur in real data — and any row whose `value` was a JSON float was rejected outright.)
+Each returned event MUST contain a ticker, effective date, event kind, and optional value. The reader MUST map the mapped ACTIONS literals `split`, `adrratiosplit`, `dividend`, `spinoffdividend`, `delisted`, `regulatorydelisting`, `voluntarydelisting`, `bankruptcyliquidation`, `tickerchangeto`, and `tickerchangefrom` to typed events: `split` and `adrratiosplit` MUST both produce a split event; `dividend` and `spinoffdividend` MUST both produce a dividend event; `delisted`, `regulatorydelisting`, `voluntarydelisting`, and `bankruptcyliquidation` MUST all produce a delisted event; `tickerchangeto` and `tickerchangefrom` MUST both produce a ticker-change event (directionality is not preserved). Every present monetary or ratio value MUST be represented as an exact `Decimal`, including values supplied as JSON floats, coerced without precision loss. An absent value MUST remain absent. A delisted or ticker-change row MAY carry a source value (the live SHARADAR/ACTIONS feed attaches a contra/last price); the reader MUST accept the row and normalize its value to absent, since the kind-blind context builder never uses it. Exact zero on a split or dividend event MUST be accepted as a present `Decimal("0")` (live SHARADAR/ACTIONS emits zero-amount dividends). Non-finite or negative values on a split or dividend event MUST fail closed rather than be silently reclassified.
+(Previously: only the literals `split`, `dividend`, `delisting`, and `tickerchange` were mapped — two of which never occur in real data — and any row whose `value` was a JSON float was rejected outright. Exact zero on valued kinds also failed closed, which aborted multi-page ACTIONS pulls against live data.)
 
 #### Scenario: Mapped literals parse to their normalized kind
 
@@ -50,9 +50,16 @@ Each returned event MUST contain a ticker, effective date, event kind, and optio
 - THEN it MUST produce the event with an absent value
 - AND it MUST NOT fail the fetch
 
-#### Scenario: Non-finite or non-positive values still fail closed
+#### Scenario: Exact zero valued actions are retained
 
-- GIVEN a split or dividend row with a non-finite, zero, or negative value
+- GIVEN a split or dividend row whose value is exact zero (including JSON float `0.0`)
+- WHEN the reader converts the row to an event
+- THEN it MUST produce the event with value `Decimal("0")`
+- AND it MUST NOT fail the fetch
+
+#### Scenario: Non-finite or negative values still fail closed
+
+- GIVEN a split or dividend row with a non-finite or negative value
 - WHEN the reader validates the row
 - THEN it MUST fail with reason `malformed-response`
 

@@ -150,6 +150,126 @@ def test_fetch_range_preserves_exact_fractional_sep_volume(monkeypatch) -> None:
     assert isinstance(result.bars[0].volume, Decimal)
 
 
+def test_fetch_range_keeps_adjusted_ohlc_envelope_when_high_equals_close(
+    monkeypatch,
+) -> None:
+    """Live GSBD 2024-12-13: high==close and closeadj ratio yields high slightly below close.
+
+    Without an envelope clamp, bars fail JsonFixtureReader OHLC validation and
+    offline backtest reports fixture-invalid. The clamp is minimal: high becomes
+    exactly the max of the four adjusted candidates and low/open keep their exact
+    Decimal products, so a silently widening clamp fails this test.
+    """
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                # open, high, low, close, volume, closeadj — live GSBD shape
+                [["GSBD", "2024-12-13", 12.83, 12.87, 12.75, 12.87, 622000.0, 9.711]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("GSBD",)), date(2024, 12, 13), date(2024, 12, 13))
+
+    ratio = Decimal("9.711") / Decimal("12.87")
+    exact_open = Decimal("12.83") * ratio
+    exact_high = Decimal("12.87") * ratio
+    exact_low = Decimal("12.75") * ratio
+    # Premise of the regression: the exact Decimal product for high drifts below closeadj.
+    assert exact_high < Decimal("9.711")
+
+    bar = result.bars[0]
+    assert bar.close == Decimal("9.711")
+    assert bar.open == exact_open
+    assert bar.high == max(exact_open, exact_high, exact_low, Decimal("9.711"))
+    assert bar.high == Decimal("9.711")
+    assert bar.low == min(exact_open, exact_high, exact_low, Decimal("9.711"))
+    assert bar.low == exact_low
+
+
+def test_fetch_range_preserves_exact_adjusted_products_when_no_clamp_is_needed(
+    monkeypatch,
+) -> None:
+    """A fractional closeadj/close ratio with a well-formed envelope keeps exact products.
+
+    Open/high/low must equal raw * (closeadj/close) exactly; the re-envelope must
+    be a no-op whenever the exact products already satisfy the OHLC envelope.
+    """
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [["ACME", "2024-01-02", 12.83, 13.50, 12.00, 12.87, 1000.0, 9.711]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
+
+    ratio = Decimal("9.711") / Decimal("12.87")
+    bar = result.bars[0]
+    assert bar.open == Decimal("12.83") * ratio
+    assert bar.high == Decimal("13.50") * ratio
+    assert bar.low == Decimal("12.00") * ratio
+    assert bar.close == Decimal("9.711")
+
+
+
+def test_fetch_range_reconciles_null_volume_as_a_retained_zero_volume_bar(monkeypatch) -> None:
+    """A real SEP no-trade row remains complete and uses exact Decimal zero volume."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [["BAYA", "2024-12-31", "10.68", "10.68", "10.68", "10.68", None, "10.68"]]
+            ),
+        )
+
+    result = SharadarMarketDataReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).fetch_range(Universe("v1", ("BAYA",)), date(2024, 12, 31), date(2024, 12, 31))
+
+    assert result.bars == (
+        DailyBar(
+            "BAYA",
+            date(2024, 12, 31),
+            Decimal("10.68"),
+            Decimal("10.68"),
+            Decimal("10.68"),
+            Decimal("10.68"),
+            Decimal("0"),
+        ),
+    )
+    assert isinstance(result.bars[0].volume, Decimal)
+
+
+def test_fetch_range_rejects_null_non_volume_field_without_partial_bars(monkeypatch) -> None:
+    """Null reconciliation is limited to volume; required prices remain fail-closed."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_sep_page([["BAYA", "2024-12-31", None, "10.68", "10.68", "10.68", 0, "10.68"]]),
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("BAYA",)), date(2024, 12, 31), date(2024, 12, 31))
+
+    assert caught.value.reason == "malformed-response"
+    assert getattr(caught.value, "bars", None) is None
+
+
 def test_fetch_range_rejects_negative_volume_without_partial_bars(monkeypatch) -> None:
     monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
 
@@ -167,6 +287,39 @@ def test_fetch_range_rejects_negative_volume_without_partial_bars(monkeypatch) -
     reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
     with pytest.raises(MarketDataFetchError) as caught:
         reader.fetch_range(Universe("v1", ("ACME", "BETA")), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert caught.value.reason == "malformed-response"
+    assert getattr(caught.value, "bars", None) is None
+
+
+def test_fetch_range_rejects_absent_volume_field_without_partial_bars(monkeypatch) -> None:
+    """A missing volume column fails closed; null-volume reconciliation is not absence."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+    columns_without_volume = (
+        "ticker",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "closeadj",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "datatable": {
+                    "columns": [{"name": name} for name in columns_without_volume],
+                    "data": [["ACME", "2024-01-02", 10, 11, 9, 10, 10]],
+                },
+                "meta": {"next_cursor_id": None},
+            },
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MarketDataFetchError) as caught:
+        reader.fetch_range(Universe("v1", ("ACME",)), date(2024, 1, 2), date(2024, 1, 2))
 
     assert caught.value.reason == "malformed-response"
     assert getattr(caught.value, "bars", None) is None
