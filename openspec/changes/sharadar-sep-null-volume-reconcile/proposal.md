@@ -10,11 +10,16 @@ Real SHARADAR/SEP no-trade rows can contain `volume=null` while ticker, date, OH
 - Characterize the real BAYA-shaped row at the public `fetch_range` seam.
 - Normalize exact SEP `volume=None` to `Decimal("0")` at `_SepRow` validation.
 - Preserve the bar, full XNYS coverage, exact non-null volumes, and fail-closed validation.
+- Minimal adjusted-OHLC re-envelope in `_rows_to_bars`: after exact Decimal adjustment, `high := max(high, open, close, low)` and `low := min(low, open, close, high)` so Decimal-drift bars (live GSBD 2024-12-13) satisfy the OHLC envelope and `JsonFixtureReader` validation.
+- Accept exact-zero values on valued ACTIONS rows in `sharadar_actions.py` (guard narrowed to `value < 0`), retaining live zero-amount dividends (RVPH 2026-02-23) as typed events.
+
+> Scope amended during review (REL-102): the adjusted-OHLC re-envelope and the ACTIONS zero-value acceptance ship in this change's diff and are formalized into this change rather than reverted or split out.
 
 ### Out of Scope
 - Normalizing missing, empty, NaN, negative, or non-volume invalid fields.
 - Changing broad parse-error masking or auditing all SEP/ACTIONS nullability.
-- Changing adjustment, pagination, chunking, domain models, fixtures, or live/execution paths.
+- Changing the adjustment factor/formula (`closeadj/close` exact Decimal) beyond the minimal post-adjustment re-envelope above.
+- Changing pagination, chunking, domain models, fixtures, or live/execution paths.
 
 ## Capabilities
 
@@ -34,9 +39,12 @@ Use strict TDD: first replay the real one-day SEP row and require a retained `Da
 
 | Area | Impact | Description |
 |------|--------|-------------|
-| `src/invest/adapters/sharadar_market_data.py` | Modified | Provider-boundary normalization only. |
-| `tests/adapters/test_sharadar_market_data.py` | Modified | Null-volume regression and fail-closed guards. |
-| `openspec/specs/sharadar-sep-market-data/spec.md` | Modified | Delta defines the reconciliation contract. |
+| `src/invest/adapters/sharadar_market_data.py` | Modified | Provider-boundary normalization plus minimal adjusted-OHLC re-envelope. |
+| `tests/adapters/test_sharadar_market_data.py` | Modified | Null-volume regression, fail-closed guards, and envelope-clamp/exact-product pins. |
+| `openspec/specs/sharadar-sep-market-data/spec.md` | Modified | Delta defines the reconciliation and re-envelope contracts. |
+| `src/invest/adapters/sharadar_actions.py` | Modified | Valued-action guard narrowed to reject only negative values (review-absorbed). |
+| `tests/adapters/test_sharadar_actions.py` | Modified | Exact-zero valued-action regressions. |
+| `openspec/specs/sharadar-actions-reference-data/spec.md` | Modified | Zero-value acceptance documented in-place with a Previously note. |
 
 ## Risks
 

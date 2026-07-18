@@ -4,8 +4,8 @@ evidence_revision: sha256:44f1c46e017aa2b3874f9db9afabf1fa23feaff8dc0319578ab593
 verdict: pass
 blockers: 0
 critical_findings: 0
-requirements: 1/1
-scenarios: 6/6
+requirements: 2/2
+scenarios: 9/9
 test_command: SSL_CERT_FILE=/etc/ssl/cert.pem uv run pytest
 test_exit_code: 0
 test_output_hash: sha256:457d3e03423116768a21aa80c6f690d4addd880e791da303e599bd3571506006
@@ -165,3 +165,28 @@ None.
 **PASS**
 
 All 6/6 normative scenarios are runtime-compliant, 10/10 tasks are substantiated, design decisions match the implementation, focused/adapter/full tests pass, and touched-file Ruff is clean. Next lifecycle step is archive only after any required post-apply review receipt is obtained for the current candidate; this verify phase does not create that receipt.
+
+## Review Addendum (correction for REL-101 / REL-102)
+
+The shipped diff contains two behavior changes beyond the null-volume requirement verified above: the adjusted-OHLC minimal re-envelope (`src/invest/adapters/sharadar_market_data.py:181-185`) and the ACTIONS exact-zero value acceptance (`src/invest/adapters/sharadar_actions.py:179-185`). Both are KEPT and formalized into this change per the review decision; this addendum extends compliance coverage to them. The front-matter counts above now include the review-absorbed "Deterministic OHLC adjustment" delta requirement (2 requirements, 9 scenarios); the original sections of this report predate the amendment and cover only the null-volume requirement.
+
+### Extended Compliance Coverage
+
+| Behavior | Contract | Covering tests | Evidence class | Result |
+|---|---|---|---|---|
+| Adjusted-OHLC minimal re-envelope | Delta + main spec `sharadar-sep-market-data` requirement "Deterministic OHLC adjustment" (MODIFIED during review) | `tests/adapters/test_sharadar_market_data.py::test_fetch_range_keeps_adjusted_ohlc_envelope_when_high_equals_close` (existing GSBD regression, tightened during correction to pin `high == max(exact candidates)` exactly, so a widening clamp fails) and `::test_fetch_range_preserves_exact_adjusted_products_when_no_clamp_is_needed` (new exact-product invariant with a fractional `closeadj/close` ratio) | deterministic | ✅ COMPLIANT |
+| ACTIONS exact-zero valued rows | Main spec `sharadar-actions-reference-data` requirement "Typed corporate-action events" (amended in this diff with a Previously note; scenario "Exact zero valued actions are retained") | `tests/adapters/test_sharadar_actions.py::test_fetch_accepts_exact_zero_valued_actions` (parameterized over `dividend`/`split`/`spinoffdividend` zero forms, RVPH 2026-02-23 shape) and `::test_rejected_rows_report_why_they_were_rejected` (negative/absent values remain fail-closed) | deterministic | ✅ COMPLIANT |
+
+### Correction Command Evidence
+
+| Purpose | Exact command | Exit | Result |
+|---|---|---:|---|
+| Envelope pins (focused) | `.venv/bin/python -m pytest tests/adapters/test_sharadar_market_data.py -q -k "envelope or exact_adjusted"` | 0 | 2 passed |
+| SEP adapter suite | `.venv/bin/python -m pytest tests/adapters/test_sharadar_market_data.py -q` | 0 | 39 passed |
+| ACTIONS adapter suite | `.venv/bin/python -m pytest tests/adapters/test_sharadar_actions.py -q` | 0 | 97 passed |
+
+### TDD Deviation (documented, not remediated)
+
+Both review-absorbed behaviors pre-dated formal SDD tracking on this branch, so RED-phase TDD evidence is historically unavailable for them and is not fabricated here. The two envelope tests added/tightened during this correction are regression pins: they were written and confirmed to PASS against the current implementation (not observed RED). The behaviors are formalized via review correction of findings REL-101 (BLOCKER, spec/test contract) and REL-102 (CRITICAL, scope/verification coverage); the frozen findings ledger at `openspec/changes/sharadar-sep-null-volume-reconcile/reviews/ledger.json` is unchanged by this addendum.
+
+The related untracked draft `openspec/changes/sharadar-live-data-reconcile/` has been annotated so its Unit 1 (ACTIONS zero-value) and Unit 3 (OHLC envelope) are marked as absorbed by this change; future appliers must not re-implement or revert them.
