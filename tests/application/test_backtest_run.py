@@ -15,16 +15,18 @@ from invest.domain.market_context import (
     MarketContextIncompleteError,
     SymbolContext,
 )
-from invest.domain.models import DailyBar, FixtureInputs, Universe
+from invest.domain.models import DailyBar, FixtureInputs, SkippedEntry, Universe
 from invest.domain.scanner import MomentumScanner
 
 
 def _breakout_bars(symbol: str, start: date, extra_days: int = 0) -> list[DailyBar]:
     """20 flat bars (no signal) followed by one breakout bar that MomentumScanner accepts.
 
-    History: open=10, high=10.40, low=9.60, close=10, vol=100 (ATR=0.80 per bar).
+    History: open=10, high=10.40, low=9.60, close=10, vol=100 (ATR(20)=0.80 per bar).
     Breakout (day 20): open=10, high=11.50, low=10, close=11.40, vol=250 -> accepted.
-    compute_intent off this history yields entry=11.40, stop=10.60, take_profit=13.00, qty=1250.
+    Fill day (first extra day, open=11.40, no gap): compute_intent yields entry=11.40,
+    breakout_low=10, ATR leg=11.40-2*0.80=9.80 -> stop=min(10, 9.80)=9.80 (ATR leg wins),
+    take_profit=11.40+1.60=13.00, risk_capital=100000*0.0035=350, qty=floor(350/1.60)=218.
     """
     bars = [
         DailyBar(symbol, start + timedelta(days=i), Decimal("10"), Decimal("10.40"), Decimal("9.60"), Decimal("10"), 100)
@@ -299,7 +301,9 @@ def test_trade_enters_at_day_n_plus_1_open() -> None:
     assert trade.symbol == symbol
     assert trade.entry_date == day_n1
     assert trade.entry_price == Decimal("12.00")
-    assert trade.qty == 1250
+    # breakout_low=10, ATR leg=12.00-1.60=10.40 -> stop=min(10, 10.40)=10 (breakout_low wins).
+    # stop_distance=2.00 -> qty=floor(350/2.00)=175.
+    assert trade.qty == 175
 
 
 def _elevated_hold_bars(symbol: str, start: date, first_offset: int, count: int) -> list[DailyBar]:
@@ -408,13 +412,14 @@ def test_intent_take_profit_is_ignored_for_replay_exits() -> None:
 
 
 def test_stop_touch_exits_at_min_of_open_and_stop_gap_down_honored() -> None:
+    # entry=11.40, stop=9.80 (see _breakout_bars docstring) -> day2 gaps open below stop.
     start = date(2026, 1, 1)
     symbol = "LOSS"
     bars = _breakout_bars(symbol, start)
     day1 = start + timedelta(days=21)
     day2 = start + timedelta(days=22)
     bars.append(DailyBar(symbol, day1, Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40"), 100))
-    bars.append(DailyBar(symbol, day2, Decimal("11.00"), Decimal("11.20"), Decimal("10.50"), Decimal("10.60"), 100))
+    bars.append(DailyBar(symbol, day2, Decimal("9.50"), Decimal("9.70"), Decimal("9.00"), Decimal("9.20"), 100))
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
 
     trades = _runner(inputs).replay(inputs).trades
@@ -422,11 +427,12 @@ def test_stop_touch_exits_at_min_of_open_and_stop_gap_down_honored() -> None:
     assert len(trades) == 1
     trade = trades[0]
     assert trade.exit_reason == "stop"
-    assert trade.exit_price == Decimal("10.60")
+    assert trade.exit_price == Decimal("9.50")  # min(open=9.50, stop=9.80)
     assert trade.exit_date == day2
 
 
 def test_hard_stop_beats_pending_trailing_channel_on_same_bar() -> None:
+    # entry=11.40, stop=9.80 (see _breakout_bars docstring).
     start = date(2026, 1, 1)
     symbol = "TIE"
     bars = _breakout_bars(symbol, start)
@@ -436,9 +442,9 @@ def test_hard_stop_beats_pending_trailing_channel_on_same_bar() -> None:
     bars.append(
         DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
     )
-    # Pending trail + hard-stop touch on the fill bar → stop wins
+    # Pending trail + hard-stop touch (low breaches 9.80) on the fill bar → stop wins
     bars.append(
-        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("10.00"), Decimal("10.50"), 100)
+        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("9.50"), Decimal("10.50"), 100)
     )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
 
@@ -447,7 +453,7 @@ def test_hard_stop_beats_pending_trailing_channel_on_same_bar() -> None:
     assert len(trades) == 1
     trade = trades[0]
     assert trade.exit_reason == "stop"
-    assert trade.exit_price == Decimal("10.60")  # min(open=11.00, stop=10.60)
+    assert trade.exit_price == Decimal("9.80")  # min(open=11.00, stop=9.80)
 
 
 def test_open_at_end_when_no_exit_trigger_before_data_ends() -> None:
@@ -530,13 +536,14 @@ def test_time_stop_signal_without_next_session_uses_open_at_end_and_warns() -> N
 
 
 def test_hard_stop_beats_pending_time_stop_on_fill_bar() -> None:
+    # entry=11.40, stop=9.80 (see _breakout_bars docstring).
     start = date(2026, 1, 1)
     symbol = "TSSTOP"
     bars = _breakout_bars(symbol, start)
     bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
     conflict_day = start + timedelta(days=41)
     bars.append(
-        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("10.00"), Decimal("10.50"), 100)
+        DailyBar(symbol, conflict_day, Decimal("11.00"), Decimal("11.20"), Decimal("9.50"), Decimal("10.50"), 100)
     )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
 
@@ -545,7 +552,7 @@ def test_hard_stop_beats_pending_time_stop_on_fill_bar() -> None:
     assert len(trades) == 1
     trade = trades[0]
     assert trade.exit_reason == "stop"
-    assert trade.exit_price == Decimal("10.60")
+    assert trade.exit_price == Decimal("9.80")  # min(open=11.00, stop=9.80)
 
 
 def test_forced_close_beats_pending_time_stop() -> None:
@@ -576,13 +583,14 @@ def test_half_r_progress_suppresses_time_stop_in_replay() -> None:
     start = date(2026, 1, 1)
     symbol = "HALFR"
     bars = _breakout_bars(symbol, start)
-    # 20 hold sessions; one bar prints high >= 11.80 (+0.5R) so time-stop must not arm
+    # entry=11.40, stop=9.80 -> risk=1.60, half-R level = 11.40 + 0.5*1.60 = 12.20.
+    # 20 hold sessions; one bar prints high >= 12.20 (+0.5R) so time-stop must not arm
     holds = _elevated_hold_bars(symbol, start, first_offset=21, count=20)
     holds[5] = DailyBar(
         symbol,
         start + timedelta(days=26),
         Decimal("11.40"),
-        Decimal("12.00"),  # >= 11.80 half-R
+        Decimal("12.30"),  # >= 12.20 half-R
         Decimal("11.20"),
         Decimal("11.40"),
         100,
@@ -689,27 +697,336 @@ def test_replaying_same_range_twice_is_byte_identical() -> None:
     assert first == second
 
 
+def _tight_stop_bars(
+    symbol: str,
+    start: date,
+    *,
+    pre_days: int,
+    near_level: Decimal,
+    volume: int = 100,
+    breakout_volume: int | None = None,
+) -> list[DailyBar]:
+    """Flat `pre_days` history at `near_level` (ATR(20)=0.80), a breakout day, and a
+    no-gap fill day. entry=near_level+1.40, breakout_low=near_level-0.50,
+    ATR-leg=entry-1.60=near_level-0.20 -> stop=breakout_low (structural stop wins),
+    stop_distance=1.90 -> ~20.5% of equity per position (tight enough that two
+    same-day fills breach the 25% max-equity-deployed cap). `breakout_volume`
+    defaults to 3x `volume` to clear MomentumScanner's relative-volume gate."""
+    breakout_volume = volume * 3 if breakout_volume is None else breakout_volume
+    bars = [
+        DailyBar(
+            symbol,
+            start + timedelta(days=i),
+            near_level,
+            near_level + Decimal("0.40"),
+            near_level - Decimal("0.40"),
+            near_level,
+            volume,
+        )
+        for i in range(pre_days)
+    ]
+    bars.append(
+        DailyBar(
+            symbol,
+            start + timedelta(days=pre_days),
+            near_level,
+            near_level + Decimal("1.90"),
+            near_level - Decimal("0.50"),
+            near_level + Decimal("1.40"),
+            breakout_volume,
+        )
+    )
+    fill_price = near_level + Decimal("1.40")
+    bars.append(
+        DailyBar(
+            symbol,
+            start + timedelta(days=pre_days + 1),
+            fill_price,
+            fill_price + Decimal("0.10"),
+            fill_price - Decimal("0.10"),
+            fill_price,
+            volume,
+        )
+    )
+    return bars
+
+
 def test_portfolio_replay_orders_same_day_entries_and_enforces_deployed_cap() -> None:
+    """Scenario: Higher-momentum symbol fills first when capital admits only one.
+
+    ALPHA and BRAVO share an identical near-term (last ~21 bars) price/ATR/stop shape
+    -- so both size to the same ~20.5%-of-equity position -- but differ in their
+    252-day-ago reference close, giving BRAVO a much higher 252/21-day momentum
+    return. `len(w) > RANK_MOMENTUM_FAR(252)` here (253-bar window), so momentum
+    ranking (not the short-history fallback) decides fill order.
+    """
     start = date(2026, 1, 1)
-    symbols = ("ALPHA", "BRAVO")
-    bars = [bar for symbol in symbols for bar in _breakout_bars(symbol, start, extra_days=1)]
-    inputs = FixtureInputs(Universe("v1", symbols), tuple(bars))
+    near_level = Decimal("110")
+    far_days = 231  # bars 0..230 are the momentum far-reference window
 
-    result = _runner(inputs).replay(inputs, split_date=start + timedelta(days=21))
+    def _bars(symbol: str, far_close: Decimal) -> list[DailyBar]:
+        far_bars = [
+            DailyBar(
+                symbol,
+                start + timedelta(days=i),
+                far_close,
+                far_close + Decimal("0.40"),
+                far_close - Decimal("0.40"),
+                far_close,
+                100,
+            )
+            for i in range(far_days)
+        ]
+        return far_bars + _tight_stop_bars(
+            symbol, start + timedelta(days=far_days), pre_days=21, near_level=near_level
+        )
 
-    assert [trade.symbol for trade in result.trades] == ["ALPHA"]
+    alpha_bars = _bars("ALPHA", far_close=Decimal("109"))  # momentum ~= 110/109 - 1 = 0.9%
+    bravo_bars = _bars("BRAVO", far_close=Decimal("80"))  # momentum = 110/80 - 1 = 37.5%
+    inputs = FixtureInputs(Universe("v1", ("ALPHA", "BRAVO")), tuple(alpha_bars + bravo_bars))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert [trade.symbol for trade in result.trades] == ["BRAVO"]
     assert result.portfolio.open_position_count == 1
     assert result.gates.label == "portfolio-gates-simulated"
     assert result.gates.counts == {"max-equity-deployed": 1}
-    assert result.equity_summary.trading_day_count == 22
+    assert result.skipped_entries[0].symbol == "ALPHA"
+    assert result.skipped_entries[0].reason == "max-equity-deployed"
+
+
+def test_portfolio_replay_short_history_same_day_fill_uses_liquidity_then_symbol() -> None:
+    """Scenario (Benchmark-Strategy Interaction): with only ~21 bars of history
+    (`len(w) <= RANK_MOMENTUM_FAR`), momentum/proximity fall back to 0 for both
+    candidates, so fill order is decided by liquidity (descending) then symbol
+    ascending -- NOT alphabetical. "AAA" sorts first alphabetically but has far
+    lower dollar volume than "ZZZ", so "ZZZ" MUST fill first.
+    """
+    start = date(2026, 1, 1)
+    low_liquidity = _tight_stop_bars("AAA", start, pre_days=20, near_level=Decimal("110"), volume=100)
+    high_liquidity = _tight_stop_bars("ZZZ", start, pre_days=20, near_level=Decimal("110"), volume=100_000)
+    inputs = FixtureInputs(Universe("v1", ("AAA", "ZZZ")), tuple(low_liquidity + high_liquidity))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert [trade.symbol for trade in result.trades] == ["ZZZ"]
+    assert result.skipped_entries[0].symbol == "AAA"
+    assert result.skipped_entries[0].reason == "max-equity-deployed"
+
+
+def _cooldown_fixture_bars(symbol: str, start: date) -> list[DailyBar]:
+    """Breakout, fill, and hard-stop close (session T=day22, session-index 22),
+    followed by flat bars so later re-signals have a stable non-degenerate entry."""
+    bars = [
+        DailyBar(symbol, start + timedelta(days=i), Decimal("10"), Decimal("10.40"), Decimal("9.60"), Decimal("10"), 100)
+        for i in range(20)
+    ]
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=20), Decimal("10"), Decimal("11.50"), Decimal("10"), Decimal("11.40"), 250)
+    )
+    bars.append(
+        DailyBar(
+            symbol, start + timedelta(days=21), Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40"), 100
+        )
+    )
+    # day22: gap-down hard stop breach closes the day21 entry -> cooldown session T=22.
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=22), Decimal("9.50"), Decimal("9.70"), Decimal("9.00"), Decimal("9.20"), 100)
+    )
+    for i in range(23, 40):
+        bars.append(
+            DailyBar(
+                symbol, start + timedelta(days=i), Decimal("11.40"), Decimal("11.60"), Decimal("11.20"), Decimal("11.40"), 100
+            )
+        )
+    return bars
+
+
+def test_cooldown_blocks_reentry_for_ten_sessions_then_allows_at_eleven() -> None:
+    """Scenario: Cooldown blocks re-entry within 10 sessions of any close.
+
+    The day21 entry closes via hard stop on session T=day22 (session-index 22).
+    Re-signals scheduled to be EVALUATED (fill-day gate check) at T+1 (day23) and
+    T+10 (day32) must be skipped `cooldown-active`; a re-signal evaluated at T+11
+    (day33) must be allowed to fill -- pinning the exact boundary the design
+    flags as an open question (blocks sessions i+1..i+10 inclusive).
+    """
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    symbol = "CD"
+    bars = _cooldown_fixture_bars(symbol, start)
+    # Signal days chosen so their fill/gate-evaluation day lands on T+1, T+10, T+11:
+    # signal day22 -> evaluated day23 (T+1); day31 -> evaluated day32 (T+10);
+    # day32 -> evaluated day33 (T+11).
+    signal_days = {20, 22, 31, 32}
+
+    class ScheduledScanner(MomentumScanner):
+        def scan(self, universe, bars_):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars_)
+            for offset in signal_days:
+                if current_day == start + timedelta(days=offset):
+                    return [ScanDecision(symbol, current_day, True)]
+            return []
+
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    result = _runner(inputs, scanner=ScheduledScanner()).replay(inputs)
+
+    cooldown_skips = [entry for entry in result.skipped_entries if entry.reason == "cooldown-active"]
+    assert [entry.decision_date for entry in cooldown_skips] == [
+        start + timedelta(days=22),  # evaluated at T+1 (day23)
+        start + timedelta(days=31),  # evaluated at T+10 (day32)
+    ]
+    assert result.gates.counts["cooldown-active"] == 2
+    assert [(trade.entry_date, trade.exit_reason) for trade in result.trades] == [
+        (start + timedelta(days=21), "stop"),
+        (start + timedelta(days=33), "open-at-end"),  # T+11 re-entry allowed
+    ]
+
+
+def test_forced_close_also_starts_cooldown() -> None:
+    """Scenario: Forced close also starts the cooldown.
+
+    A position closed by `_process_unsafe_positions` (market-context forced close,
+    not a trailing exit or stop) on session T=day22 must still start the cooldown --
+    a re-signal evaluated within 10 sessions (T+8, day30) must be skipped
+    `cooldown-active`.
+    """
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    symbol = "FC"
+    forced_close_day = start + timedelta(days=22)
+    bars = _cooldown_fixture_bars(symbol, start)
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            symbol: (BlockerWindow(forced_close_day, forced_close_day, reason=ContextReason.CORPORATE_ACTION),)
+        },
+    )
+    signal_days = {20, 29}  # day20 initial breakout; day29 -> evaluated day30 (T+8)
+
+    class ScheduledScanner(MomentumScanner):
+        def scan(self, universe, bars_):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars_)
+            for offset in signal_days:
+                if current_day == start + timedelta(days=offset):
+                    return [ScanDecision(symbol, current_day, True)]
+            return []
+
+    result = _runner(inputs, scanner=ScheduledScanner(), market_context=context).replay(inputs)
+
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_close_day
+    cooldown_skips = [entry for entry in result.skipped_entries if entry.reason == "cooldown-active"]
+    assert cooldown_skips == [SkippedEntry(symbol, start + timedelta(days=29), start + timedelta(days=30), "cooldown-active")]
+
+
+def test_scan_decisions_ignores_cooldown_state() -> None:
+    """Scenario: scan_decisions() remains unaffected by cooldown.
+
+    A symbol inside its post-close cooldown window must still be evaluated (and
+    collected if accepted) by the position-blind `scan_decisions()` collector,
+    exactly as if no cooldown were active -- cooldown state is a `replay()`-local
+    concept the collector never reads or writes.
+    """
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    symbol = "CD"
+    bars = _cooldown_fixture_bars(symbol, start)
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    signal_days = {20, 22, 25}  # day22 closes the day21 entry; day25 is well inside the cooldown window
+
+    class ScheduledScanner(MomentumScanner):
+        def scan(self, universe, bars_):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars_)
+            for offset in signal_days:
+                if current_day == start + timedelta(days=offset):
+                    return [ScanDecision(symbol, current_day, True)]
+            return []
+
+    runner = _runner(inputs, scanner=ScheduledScanner())
+    decisions = runner.scan_decisions(inputs)
+    result = runner.replay(inputs)
+
+    # scan_decisions() collects every accepted decision, regardless of cooldown state.
+    assert {decision.decision_date for decision in decisions} == {
+        start + timedelta(days=20),
+        start + timedelta(days=22),
+        start + timedelta(days=25),
+    }
+    # replay(), by contrast, blocks the day25 candidate's fill (day26 evaluation, T+4).
+    cooldown_skips = [entry for entry in result.skipped_entries if entry.reason == "cooldown-active"]
+    assert start + timedelta(days=25) in {entry.decision_date for entry in cooldown_skips}
+
+
+def test_same_day_round_trip_close_starts_cooldown() -> None:
+    """RELIABILITY-001 regression: a position that opens AND closes on the same day
+    (same-day stop-out via `_exit_for_bar`) must still start the cooldown.
+
+    The cooldown-recording loop runs at the TOP of each day's iteration (it must
+    stay there -- it also blocks same-day re-entry after a morning exit), but a
+    same-day close is appended to `trades` LATER in that same iteration (inside
+    the pending-entries loop), after that day's cooldown snapshot was already
+    taken -- so the close was never recorded as a cooldown source.
+    """
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    symbol = "SD"
+    bars = [
+        DailyBar(symbol, start + timedelta(days=i), Decimal("10"), Decimal("10.40"), Decimal("9.60"), Decimal("10"), 100)
+        for i in range(20)
+    ]
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=20), Decimal("10"), Decimal("11.50"), Decimal("10"), Decimal("11.40"), 250)
+    )
+    # day21: fill day's own low also breaches the stop -> same-day round trip close.
+    bars.append(
+        DailyBar(symbol, start + timedelta(days=21), Decimal("11.40"), Decimal("11.50"), Decimal("9.50"), Decimal("10.00"), 100)
+    )
+    for i in range(22, 40):
+        bars.append(
+            DailyBar(
+                symbol, start + timedelta(days=i), Decimal("11.40"), Decimal("11.60"), Decimal("11.20"), Decimal("11.40"), 100
+            )
+        )
+
+    # day20 initial breakout; day22 -> evaluated day23 (T+2, must be cooldown-blocked);
+    # day30 -> evaluated day31 (T+10, the last blocked session);
+    # day31 -> evaluated day32 (T+11, must be eligible again).
+    signal_days = {20, 22, 30, 31}
+
+    class ScheduledScanner(MomentumScanner):
+        def scan(self, universe, bars_):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars_)
+            for offset in signal_days:
+                if current_day == start + timedelta(days=offset):
+                    return [ScanDecision(symbol, current_day, True)]
+            return []
+
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    result = _runner(inputs, scanner=ScheduledScanner()).replay(inputs)
+
+    same_day_trade = next(trade for trade in result.trades if trade.entry_date == start + timedelta(days=21))
+    assert same_day_trade.exit_date == start + timedelta(days=21)
+    assert same_day_trade.exit_reason == "stop"
+
+    cooldown_skips = {entry.decision_date for entry in result.skipped_entries if entry.reason == "cooldown-active"}
+    assert start + timedelta(days=22) in cooldown_skips
+    assert start + timedelta(days=30) in cooldown_skips
+    assert any(trade.entry_date == start + timedelta(days=32) for trade in result.trades)
 
 
 def test_portfolio_replay_records_insufficient_buying_power_as_visible_skip() -> None:
+    # entry=11.40, qty=218 -> notional ~2485.20; buying_power set below that.
     start = date(2026, 1, 1)
     bars = _breakout_bars("CASH", start, extra_days=1)
     inputs = FixtureInputs(Universe("v1", ("CASH",)), tuple(bars))
 
-    result = _runner(inputs, equity=Decimal("100000"), buying_power=Decimal("10000")).replay(inputs)
+    result = _runner(inputs, equity=Decimal("100000"), buying_power=Decimal("2000")).replay(inputs)
 
     assert result.trades == ()
     assert result.gates.counts == {"insufficient-buying-power": 1}
@@ -718,11 +1035,26 @@ def test_portfolio_replay_records_insufficient_buying_power_as_visible_skip() ->
 
 
 def test_portfolio_replay_releases_cash_on_exit_and_uses_prior_equity_for_kill_switch() -> None:
+    """0.35%-risk sizing caps a normal-stop loss around ~2.5% of equity, too small to
+    breach the -3% kill-switch on its own -- so this fixture uses a wide structural
+    stop (tight ATR, low breakout_low) to raise qty enough that a catastrophic gap
+    breaches the kill-switch threshold, matching the original scenario's intent."""
     from invest.domain.models import ScanDecision
 
     start = date(2026, 1, 1)
-    loss_bars = _breakout_bars("LOSS", start, extra_days=2)
-    loss_bars[-1] = DailyBar(loss_bars[-1].symbol, loss_bars[-1].date, Decimal("8"), Decimal("9"), Decimal("7"), Decimal("8"), 100)
+    loss_bars = [
+        DailyBar("LOSS", start + timedelta(days=i), Decimal("100"), Decimal("100.10"), Decimal("99.90"), Decimal("100"), 1000)
+        for i in range(20)
+    ]
+    loss_bars.append(
+        DailyBar("LOSS", start + timedelta(days=20), Decimal("100"), Decimal("105"), Decimal("99"), Decimal("104"), 2000)
+    )
+    loss_bars.append(
+        DailyBar("LOSS", start + timedelta(days=21), Decimal("104"), Decimal("104.20"), Decimal("103.80"), Decimal("104"), 100)
+    )
+    loss_bars.append(
+        DailyBar("LOSS", start + timedelta(days=22), Decimal("1"), Decimal("2"), Decimal("0.50"), Decimal("1"), 100)
+    )
     next_bars = _breakout_bars("NEXT", start, extra_days=2)
 
     class ScannerWithScheduledSignals(MomentumScanner):
@@ -738,7 +1070,9 @@ def test_portfolio_replay_releases_cash_on_exit_and_uses_prior_equity_for_kill_s
     result = _runner(inputs, scanner=ScannerWithScheduledSignals()).replay(inputs)
 
     assert result.trades[0].exit_reason == "stop"
-    assert result.portfolio.cash == Decimal("95737.875")
+    assert result.trades[0].qty == 70  # risk_capital=350, stop_distance=5.00 -> floor(350/5)=70
+    assert result.trades[0].exit_price == Decimal("1")  # min(open=1, stop=99) since breakout_low=99 wins
+    assert result.portfolio.cash == Decimal("92786.3250")
     assert result.gates.counts == {"kill-switch": 1}
     assert result.skipped_entries[0].symbol == "NEXT"
 
@@ -750,8 +1084,8 @@ def test_portfolio_cash_and_equity_use_configured_entry_slippage() -> None:
 
     result = _runner(inputs, slippage_bps=Decimal("100"), tax_rate=Decimal("0")).replay(inputs)
 
-    assert result.portfolio.cash == Decimal("85607.500")
-    assert result.portfolio.equity == Decimal("99715.000")
+    assert result.portfolio.cash == Decimal("97489.9480")
+    assert result.portfolio.equity == Decimal("99950.2960")
 
 
 def test_open_position_without_daily_bar_carries_last_valuation_with_warning() -> None:
@@ -774,7 +1108,7 @@ def test_open_position_without_daily_bar_carries_last_valuation_with_warning() -
 
     result = _runner(inputs, scanner=GapSignalScanner()).replay(inputs)
 
-    assert result.portfolio.equity == Decimal("99985.75000")
+    assert result.portfolio.equity == Decimal("99997.514800")
     assert "missing-bar-carried-forward" in result.warnings
 
 
@@ -785,7 +1119,8 @@ def test_entry_gap_is_rejected_when_actual_next_open_cost_exceeds_cash() -> None
     bars[-1] = DailyBar("GAP", entry_day, Decimal("12"), Decimal("12.10"), Decimal("11.90"), Decimal("12"), 100)
     inputs = FixtureInputs(Universe("v1", ("GAP",)), tuple(bars))
 
-    result = _runner(inputs, buying_power=Decimal("15000")).replay(inputs)
+    # gapped entry=12.00, qty=175 -> notional=2100; buying_power set below that.
+    result = _runner(inputs, buying_power=Decimal("2000")).replay(inputs)
 
     assert result.trades == ()
     assert result.gates.counts == {"insufficient-buying-power": 1}
@@ -808,8 +1143,8 @@ def test_repeated_accepted_signal_does_not_overwrite_open_position_or_cash() -> 
     inputs = FixtureInputs(Universe("v1", ("REPEAT",)), tuple(bars))
     result = _runner(inputs, scanner=RepeatedSignalScanner()).replay(inputs)
 
-    assert [(trade.entry_date, trade.qty) for trade in result.trades] == [(start + timedelta(days=21), 1250)]
-    assert result.portfolio.cash == Decimal("85742.87500")
+    assert [(trade.entry_date, trade.qty) for trade in result.trades] == [(start + timedelta(days=21), 218)]
+    assert result.portfolio.cash == Decimal("97513.557400")
     assert result.gates.counts == {"already-submitted": 1}
     assert result.skipped_entries[-1].reason == "already-submitted"
 
@@ -936,13 +1271,13 @@ def test_forced_close_settles_before_pending_entry_uses_cash_equity_and_buying_p
     ).replay(inputs)
 
     assert [(trade.symbol, trade.exit_reason, trade.qty) for trade in result.trades] == [
-        ("HOLD", "context-position-forced-closed", 187),
-        ("NEXT", "open-at-end", 175),
+        ("HOLD", "context-position-forced-closed", 32),
+        ("NEXT", "open-at-end", 31),
     ]
     assert result.skipped_entries == ()
     assert result.gates.counts == {}
-    assert result.portfolio.cash == Decimal("12948.90")
-    assert result.portfolio.equity == Decimal("14943.90")
+    assert result.portfolio.cash == Decimal("14637.00")
+    assert result.portfolio.equity == Decimal("14990.40")
 
 
 def test_unsafe_position_without_same_day_bar_aborts_as_market_context_incomplete() -> None:

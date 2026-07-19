@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
+from statistics import median
 
 from invest.domain.backtest_metrics import (
     DEFAULT_SLIPPAGE_BPS,
@@ -34,6 +35,7 @@ from invest.domain.exit_policy import (
     on_bar,
     policy_provenance,
 )
+from invest.domain.indicators import momentum_return, trailing_high
 from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
@@ -60,6 +62,12 @@ NOMINAL_EQUITY = Decimal("100000")
 POINT_IN_TIME_CONTEXT_VALIDATED = "point-in-time-market-context-validated"
 MISSING_NEXT_SESSION_AFTER_EXIT_SIGNAL = "missing-next-session-after-exit-signal"
 DEFAULT_EXIT_POLICY = ExitPolicyConfig(kind="ten-day-low", channel_window=10)
+RANK_MOMENTUM_FAR = 252
+RANK_MOMENTUM_NEAR = 21
+RANK_PROXIMITY_WINDOW = 252
+RANK_LIQUIDITY_WINDOW = 20
+COOLDOWN_SESSIONS = 10
+COOLDOWN_SKIP_REASON = "cooldown-active"
 
 
 class ReplayWindowInvalidError(ValueError):
@@ -156,7 +164,7 @@ class BacktestRun:
         pending: dict[date, list[ScanDecision]] = defaultdict(list)
         for decision in decisions:
             symbol_bars = by_symbol[decision.symbol]
-            signal_index = next(index for index, bar in enumerate(symbol_bars) if bar.date == decision.decision_date)
+            signal_index = self._signal_index(symbol_bars, decision)
             if signal_index + 1 < len(symbol_bars):
                 pending[symbol_bars[signal_index + 1].date].append(decision)
 
@@ -170,13 +178,20 @@ class BacktestRun:
         daily_equity: list[tuple[date, Decimal]] = []
         missing_bar_carried_forward = False
         exit_warnings: list[str] = []
+        cooldown_release: dict[str, int] = {}
 
-        for current_date in sorted(bars_by_date):
+        for session_index, current_date in enumerate(sorted(bars_by_date)):
             todays_bars = bars_by_date[current_date]
+            day_start = len(trades)
             self._process_unsafe_positions(current_date, positions, todays_bars, trades, context_outcomes)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
             self._process_exits(positions, todays_bars, trades, by_symbol)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
+            # Any close (trailing exit, hard stop, time stop, or forced close) recorded
+            # today starts a COOLDOWN_SESSIONS-session cooldown for that symbol.
+            for trade in trades[day_start:]:
+                if trade.exit_reason != "open-at-end":
+                    cooldown_release[trade.symbol] = session_index + COOLDOWN_SESSIONS + 1
 
             missing_bar_carried_forward |= any(symbol not in todays_bars for symbol in positions)
             marked_equity = cash + self._mark_positions(positions, todays_bars)
@@ -191,7 +206,7 @@ class BacktestRun:
                 account_blocked=False,
             )
             halt_reason = evaluate_halt_gates(snapshot)
-            for decision in sorted(pending[current_date], key=lambda item: item.symbol):
+            for decision in sorted(pending[current_date], key=lambda item: self._fill_rank_key(item, by_symbol)):
                 if decision.symbol in positions:
                     gate_counts[GateReason.ALREADY_SUBMITTED.value] += 1
                     skipped_entries.append(
@@ -203,6 +218,12 @@ class BacktestRun:
                         )
                     )
                     continue
+                if session_index < cooldown_release.get(decision.symbol, -1):
+                    gate_counts[COOLDOWN_SKIP_REASON] += 1
+                    skipped_entries.append(
+                        SkippedEntry(decision.symbol, decision.decision_date, current_date, COOLDOWN_SKIP_REASON)
+                    )
+                    continue
                 status = self._market_context.status(decision.symbol, current_date)
                 if not status.is_safe:
                     context_outcomes.append(
@@ -211,13 +232,14 @@ class BacktestRun:
                     continue
                 entry_bar = todays_bars[decision.symbol]
                 symbol_bars = by_symbol[decision.symbol]
-                signal_index = next(index for index, bar in enumerate(symbol_bars) if bar.date == decision.decision_date)
+                signal_index = self._signal_index(symbol_bars, decision)
                 intent, sizing_reason = compute_intent(
                     decision.symbol,
                     decision.decision_date,
                     marked_equity,
                     symbol_bars[:signal_index],
-                    symbol_bars[signal_index].close,
+                    entry_bar.open,
+                    symbol_bars[signal_index].low,
                 )
                 adjusted_intent = (
                     None if intent is None else replace(intent, entry=entry_fill(entry_bar.open, self._slippage_bps))
@@ -257,6 +279,9 @@ class BacktestRun:
                 closed = self._exit_for_bar(position, entry_bar, history_through)
                 if closed is not None:
                     trades.append(closed)
+                    # Same-day round trip: this close happens AFTER the day's cooldown
+                    # snapshot (top of the loop) already ran, so it must be recorded here.
+                    cooldown_release[closed.symbol] = session_index + COOLDOWN_SESSIONS + 1
                     cash += exit_proceeds(
                         position.entry_price,
                         closed.exit_price,
@@ -321,6 +346,28 @@ class BacktestRun:
             warnings=base_warnings + tuple(extra_warnings),
             exit_policy=policy_provenance(self._exit_policy),
         )
+
+    @staticmethod
+    def _signal_index(symbol_bars: list[DailyBar], decision: ScanDecision) -> int:
+        return next(index for index, bar in enumerate(symbol_bars) if bar.date == decision.decision_date)
+
+    def _fill_rank_key(
+        self, decision: ScanDecision, by_symbol: dict[str, list[DailyBar]]
+    ) -> tuple[Decimal, Decimal, Decimal, str]:
+        """Same-day pending fill order: momentum rank (desc), 52-week-high proximity
+        (desc), liquidity (desc), symbol (asc) -- SPEC §2.4. Short-history candidates
+        (benchmark's ~21-bar window) fall back to momentum=proximity=0, so liquidity
+        then symbol decide their order (see design's Benchmark-Strategy Interaction)."""
+        symbol_bars = by_symbol[decision.symbol]
+        signal_index = self._signal_index(symbol_bars, decision)
+        window = symbol_bars[: signal_index + 1]
+        if len(window) > RANK_MOMENTUM_FAR:
+            momentum = momentum_return(window, far=RANK_MOMENTUM_FAR, near=RANK_MOMENTUM_NEAR)
+            proximity = window[-1].close / trailing_high(window[:-1], RANK_PROXIMITY_WINDOW)
+        else:
+            momentum = proximity = Decimal(0)
+        liquidity = median(bar.close * bar.volume for bar in window[-RANK_LIQUIDITY_WINDOW:])
+        return (-momentum, -proximity, -liquidity, decision.symbol)
 
     def _partition_bars(self, bars: tuple[DailyBar, ...]) -> _ReplayPartition:
         ordered = tuple(sorted(bars, key=lambda bar: (bar.date, bar.symbol)))

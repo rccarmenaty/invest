@@ -28,14 +28,17 @@ def _history(day_count: int, close: Decimal, true_range: Decimal) -> list[DailyB
 
 
 def test_compute_intent_sizes_a_valid_bracket() -> None:
-    history = _history(14, close=Decimal("100"), true_range=Decimal("2"))
+    # ATR(20)=2 (uniform history) -> ATR leg = 100.50 - 2*2 = 96.50.
+    # breakout_low=99 is above the ATR leg, so the ATR leg wins the min().
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))
 
     intent, reason = compute_intent(
         symbol="ACME",
         decision_date=date(2026, 1, 15),
         equity=Decimal("100000"),
         history=history,
-        last_close=Decimal("100.50"),
+        entry_price=Decimal("100.50"),
+        breakout_low=Decimal("99"),
     )
 
     assert reason is None
@@ -43,51 +46,161 @@ def test_compute_intent_sizes_a_valid_bracket() -> None:
     assert intent.symbol == "ACME"
     assert intent.decision_date == date(2026, 1, 15)
     assert intent.entry == Decimal("100.50")
-    assert intent.stop == Decimal("98.50")
+    assert intent.stop == Decimal("96.50")
     assert intent.take_profit == Decimal("104.50")
-    assert intent.qty == 500
+    # risk_capital = 100000*0.0035 = 350; stop_distance = 4.00 -> floor(350/4) = 87.
+    assert intent.qty == 87
 
 
 def test_compute_intent_floors_qty_on_non_integer_ratio() -> None:
-    history = _history(14, close=Decimal("100"), true_range=Decimal("3"))
+    # ATR(20)=2 -> ATR leg = 100 - 4 = 96. breakout_low=94 is below it, so it wins.
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))
 
     intent, reason = compute_intent(
         symbol="ACME",
         decision_date=date(2026, 1, 15),
         equity=Decimal("100000"),
         history=history,
-        last_close=Decimal("100"),
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("94"),
     )
 
     assert reason is None
     assert intent is not None
-    # risk_capital=1000, stop_distance=3 -> 333.33 floors to 333, not 334.
-    assert intent.qty == 333
+    assert intent.stop == Decimal("94")
+    # risk_capital=350, stop_distance=6 -> 58.33 floors to 58, not 59.
+    assert intent.qty == 58
 
 
 def test_compute_intent_skips_with_sizing_invalid_at_zero_qty() -> None:
-    history = _history(14, close=Decimal("100"), true_range=Decimal("20"))
+    # ATR(20)=2 -> ATR leg = 100 - 4 = 96; breakout_low=99 above it, ATR leg wins,
+    # stop_distance=4. risk_capital = 1000*0.0035 = 3.5 -> floor(3.5/4) == 0.
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))
 
     intent, reason = compute_intent(
         symbol="ACME",
         decision_date=date(2026, 1, 15),
         equity=Decimal("1000"),
         history=history,
-        last_close=Decimal("100"),
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("99"),
     )
 
-    # risk_capital=10, stop_distance=20 -> floor(10/20) == 0.
     assert intent is None
     assert reason is GateReason.SIZING_INVALID
 
 
 def test_compute_intent_skips_with_sizing_invalid_when_atr_makes_stop_distance_zero() -> None:
+    # ATR(20)=0 (flat history) and breakout_low == entry -> both stop candidates equal entry.
     intent, reason = compute_intent(
         symbol="ACME",
         decision_date=date(2026, 1, 15),
         equity=Decimal("100000"),
-        history=_history(14, close=Decimal("100"), true_range=Decimal("0")),
-        last_close=Decimal("100"),
+        history=_history(20, close=Decimal("100"), true_range=Decimal("0")),
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("100"),
+    )
+
+    assert intent is None
+    assert reason is GateReason.SIZING_INVALID
+
+
+def test_compute_intent_structural_stop_picks_the_lower_of_the_two_candidates() -> None:
+    """Scenario: Structural stop picks the lower of the two candidates.
+
+    GIVEN a breakout-day low and an entry-2*ATR(20) value where the breakout-day low
+    is lower, THEN the stop MUST equal the breakout-day low, and take-profit MUST
+    still be entry + 2*ATR(20), independent of which stop candidate wins.
+    """
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))  # ATR(20)=2
+
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("100000"),
+        history=history,
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("90"),  # far below the ATR leg (100 - 4 = 96)
+    )
+
+    assert reason is None
+    assert intent is not None
+    assert intent.stop == Decimal("90")
+    assert intent.take_profit == Decimal("104")
+
+
+def test_compute_intent_atr_leg_wins_when_breakout_low_is_the_higher_candidate() -> None:
+    """Companion to the structural-stop scenario: when the ATR leg is lower than the
+    breakout-day low, the ATR leg wins the min() -- and take-profit is unchanged."""
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))  # ATR(20)=2
+
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("100000"),
+        history=history,
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("99"),  # above the ATR leg (100 - 4 = 96)
+    )
+
+    assert reason is None
+    assert intent is not None
+    assert intent.stop == Decimal("96")
+    assert intent.take_profit == Decimal("104")
+
+
+def test_compute_intent_gap_up_entry_resizes_from_the_actual_fill_price() -> None:
+    """Scenario: Gap-up entry re-sizes from the actual fill price.
+
+    A candidate whose fill-day open gaps above the level used at scan time must have
+    entry, stop, and qty all computed from the actual fill-day open passed in.
+    """
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))  # ATR(20)=2
+
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("100000"),
+        history=history,
+        entry_price=Decimal("105"),  # gapped up from the 100 level used to build `history`
+        breakout_low=Decimal("99"),
+    )
+
+    assert reason is None
+    assert intent is not None
+    assert intent.entry == Decimal("105")
+    # ATR leg = 105 - 4 = 101, above breakout_low=99 -> breakout_low wins the min().
+    assert intent.stop == Decimal("99")
+    # stop_distance = 6 -> qty reflects the gapped-up entry's own distance, not scan-time.
+    assert intent.qty == 58
+
+
+def test_compute_intent_degenerate_stop_distance_skips_the_intent() -> None:
+    """Scenario: Degenerate stop distance skips the intent (stop >= entry)."""
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("100000"),
+        history=_history(20, close=Decimal("100"), true_range=Decimal("0")),
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("101"),  # above entry -> stop clamps to entry via ATR leg (0)
+    )
+
+    assert intent is None
+    assert reason is GateReason.SIZING_INVALID
+
+
+def test_compute_intent_zero_or_negative_quantity_skips_the_intent() -> None:
+    """Scenario: Zero or negative quantity skips the intent."""
+    history = _history(20, close=Decimal("100"), true_range=Decimal("2"))  # ATR(20)=2
+
+    intent, reason = compute_intent(
+        symbol="ACME",
+        decision_date=date(2026, 1, 15),
+        equity=Decimal("1000"),  # risk_capital = 3.5
+        history=history,
+        entry_price=Decimal("100"),
+        breakout_low=Decimal("99"),  # ATR leg wins, stop_distance=4 -> floor(3.5/4)==0
     )
 
     assert intent is None

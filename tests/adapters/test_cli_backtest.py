@@ -80,7 +80,9 @@ def test_backtest_report_has_exact_top_level_snake_case_metric_keys(capsys) -> N
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
     assert {"hit_rate", "expectancy", "max_drawdown", "trade_count", "net_pnl"} <= payload.keys()
-    assert payload["trade_count"] == 1
+    # 0.35%-risk/ATR20 sizing produces much smaller positions than the old 1%/ATR14
+    # model, so all 3 candidates now fit under the 25% max-equity-deployed cap.
+    assert payload["trade_count"] == 3
 
 
 def test_backtest_missing_fixture_prints_exactly_one_record_and_exits_two(tmp_path, capsys) -> None:
@@ -268,7 +270,9 @@ def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> No
     captured = capsys.readouterr()
     assert result == 0
     payload = json.loads(captured.out)
-    assert payload["trade_count"] == 1
+    # 0.35%-risk/ATR20 sizing produces much smaller positions than the old 1%/ATR14
+    # model, so all 3 candidates now fit under the 25% max-equity-deployed cap.
+    assert payload["trade_count"] == 3
 
 
 def test_backtest_explicit_sharadar_source_fetches_the_requested_range(monkeypatch, capsys) -> None:
@@ -304,7 +308,9 @@ def test_backtest_explicit_sharadar_source_fetches_the_requested_range(monkeypat
     )
 
     assert result == 0
-    assert json.loads(capsys.readouterr().out)["trade_count"] == 1
+    # 0.35%-risk/ATR20 sizing produces much smaller positions than the old 1%/ATR14
+    # model, so all 3 candidates now fit under the 25% max-equity-deployed cap.
+    assert json.loads(capsys.readouterr().out)["trade_count"] == 3
     assert fetch_calls == [(loaded_inputs.universe.symbols, date(2024, 1, 2), date(2024, 1, 24))]
 
 
@@ -597,10 +603,14 @@ def test_backtest_report_exposes_portfolio_contract_and_all_limitations(
         "execution_realism",
     }
     assert payload["context_outcomes"] == []
+    # 0.35%-risk/ATR20 sizing lets all 3 candidates fit under the 25% deployed cap
+    # (vs. 1 under the old 1%/ATR14 model), so one of the 3 now holds through a
+    # missing-bar day, surfacing the conditional "missing-bar-carried-forward" warning.
     assert set(payload["warnings"]) == {
         "portfolio-gates-simulated",
         "point-in-time-market-context-validated",
         "broker-execution-realism-out-of-scope",
+        "missing-bar-carried-forward",
     }
 
 

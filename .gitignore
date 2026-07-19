@@ -9,3 +9,9 @@ openspec/changes/*/reviews/
 openspec/changes/archive/*/reviews/
 fixtures/snapshots/sharadar/
 *.sqlite
+
+# Large local backtest data pulls (regenerable via generate-context; never committed)
+fixtures/real-continuous/bars/
+fixtures/real-smoke/
+fixtures/real-smoke-replay/
+fixtures/real-years/
