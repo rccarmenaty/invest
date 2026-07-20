@@ -1,0 +1,96 @@
+{
+  "experiment": "r2-2-pead-f0",
+  "line": "pead-revenue-confirmed",
+  "status": "complete",
+  "protocol": {
+    "signal_family": "revenue_confirmed_gaap_earnings_surprise",
+    "eps_field": "diluted_gaap_eps",
+    "revenue_field": "gaap_revenue",
+    "min_prior_seasonal_changes": 8,
+    "min_annual_test_folds": 10,
+    "capital_go": false,
+    "analyst_sue_fallback": false,
+    "future_primary_horizon_sessions": 60,
+    "future_entry": "next_open",
+    "future_primary_min_adv": 10000000.0,
+    "future_accept_cost_bps": 5.0,
+    "future_year_share_max": 0.25,
+    "experiment_id": "r2-2-pead-f0",
+    "line": "pead-revenue-confirmed"
+  },
+  "known_time_policy": "unknown",
+  "exact_known_time_proven": null,
+  "coverage": {
+    "included": 0,
+    "rejected": 0,
+    "source_label": "no_sf1_or_sec_original_tape"
+  },
+  "gates": {
+    "gates": [
+      {
+        "id": "D0",
+        "passed": true,
+        "severity": "hard",
+        "reason": "protocol freeze and trial ledger present"
+      },
+      {
+        "id": "D1",
+        "passed": false,
+        "severity": "hard",
+        "reason": "original EPS reconstructability not measured \u2014 fail closed"
+      },
+      {
+        "id": "D2",
+        "passed": false,
+        "severity": "hard",
+        "reason": "original revenue reconstructability not measured \u2014 fail closed"
+      },
+      {
+        "id": "D3",
+        "passed": false,
+        "severity": "hard",
+        "reason": "known-time policy consistency not measured \u2014 fail closed"
+      },
+      {
+        "id": "D4",
+        "passed": false,
+        "severity": "hard",
+        "reason": "integrity not measured (lookahead, current_id_leakage, silent_unit_change, amendment_rewrite) \u2014 fail closed"
+      },
+      {
+        "id": "D5",
+        "passed": false,
+        "severity": "hard",
+        "reason": "mapping/terminals not measured \u2014 fail closed"
+      },
+      {
+        "id": "D6",
+        "passed": false,
+        "severity": "hard",
+        "reason": "fold floors not measured \u2014 fail closed"
+      },
+      {
+        "id": "D7",
+        "passed": false,
+        "severity": "hard",
+        "reason": "stratified reconcile not measured \u2014 fail closed"
+      }
+    ],
+    "all_hard_gates_passed": false,
+    "f2_tape_eligible": false,
+    "capital_go": false,
+    "verdict": "kill_line"
+  },
+  "capital_go": false,
+  "pass_meaning": "f2_tape_eligible_only",
+  "residual_claim": "hard_frozen",
+  "returns_measured": false,
+  "e1_status": "not_started",
+  "f2_tape_eligible": false,
+  "source_probe": {
+    "nasdaq_api_key_present": false,
+    "local_sf1_cache": null,
+    "sf1_adapter_present": false,
+    "live_audit_capable": false
+  }
+}
