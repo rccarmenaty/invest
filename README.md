@@ -32,6 +32,28 @@ Core defaults: `--price-floor 10`, `--dollar-volume-floor 10000000`,
 Failure: exit 2, one sorted JSON reason on stdout. Generate first, then replay
 with `invest-backtest --market-context …`. Tests mock transport (no live calls).
 
+## Phase 2 portfolio structure (research)
+
+Primary path: §2.5 naïve scanner + fixed-horizon exit + slot-capped seeded
+admission + 5 bps/side. Same binary as day-0 backtests — compose flags only:
+
+```sh
+uv run invest-backtest \
+  --universe path/to/universe.json \
+  --bars path/to/bars.json \
+  --market-context path/to/market-context.json \
+  --split-date YYYY-MM-DD \
+  --strategy benchmark \
+  --exit-policy fixed-horizon \
+  --max-concurrent-positions 20 \
+  --admission-seed 42 \
+  --slippage-bps 5
+```
+
+Report provenance freezes `strategy`, `scanner`, `exit_policy`, `admission`
+(kind/cap/seed), and `costs`. Omit `--admission-seed` to keep ranked fill (day-0
+default). Core (`--strategy core`) remains available for regression only.
+
 ## Verify
 
 ```sh

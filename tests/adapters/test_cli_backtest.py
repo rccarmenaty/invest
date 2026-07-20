@@ -1025,3 +1025,99 @@ def test_backtest_parser_accepts_exit_policy_choices() -> None:
         "atr-3-high-water",
         "fixed-horizon",
     }
+
+
+def test_phase2_composition_wires_benchmark_fixed_horizon_slots_seed_and_costs(
+    capsys,
+) -> None:
+    """Phase 2 primary path: §2.5 naïve + fixed-horizon + seeded slots + 5 bps."""
+    result = cli.backtest_main(
+        _backtest_args(
+            "--split-date",
+            "2024-01-23",
+            "--format",
+            "json",
+            "--strategy",
+            "benchmark",
+            "--exit-policy",
+            "fixed-horizon",
+            "--max-concurrent-positions",
+            "20",
+            "--admission-seed",
+            "42",
+            "--slippage-bps",
+            "5",
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["strategy"] == "benchmark"
+    assert payload["scanner"] == "momentum-naive-§2.5"
+    assert payload["exit_policy"]["kind"] == "fixed-horizon"
+    assert payload["exit_policy"]["horizon_sessions"] == 60
+    assert payload["admission"]["kind"] == "seeded-random"
+    assert payload["admission"]["max_concurrent_positions"] == 20
+    assert payload["admission"]["seed"] == 42
+    assert payload["costs"]["slippage_bps"] == "5"
+    assert "tax_rate" in payload["costs"]
+    assert payload["trade_count"] >= 1
+    assert all(
+        trade["exit_reason"] in {"open-at-end", "fixed-horizon", "forced-close"}
+        for trade in payload["trades"]
+    )
+
+
+def test_backtest_default_report_records_strategy_costs_and_ranked_admission(
+    capsys,
+) -> None:
+    result = cli.backtest_main(_backtest_args("--split-date", "2024-01-23", "--format", "json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["strategy"] == "benchmark"
+    assert payload["scanner"] == "momentum-naive-§2.5"
+    assert payload["admission"]["kind"] == "ranked"
+    assert payload["admission"]["max_concurrent_positions"] == 5
+    assert "seed" not in payload["admission"]
+    assert payload["costs"]["slippage_bps"] == "5"
+    assert list(payload["costs"].keys()) == sorted(payload["costs"].keys())
+
+
+def test_backtest_rejects_non_positive_max_concurrent_positions(capsys) -> None:
+    result = cli.backtest_main(
+        _backtest_args(
+            "--split-date",
+            "2024-01-23",
+            "--format",
+            "json",
+            "--max-concurrent-positions",
+            "0",
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out) == {"reason": "max-concurrent-positions-invalid"}
+    assert captured.err == ""
+
+
+def test_backtest_parser_exposes_phase2_admission_flags_and_documented_composition() -> None:
+    options = {action.dest: action for action in cli._backtest_parser()._actions}
+    assert "max_concurrent_positions" in options
+    assert options["max_concurrent_positions"].default == 5
+    assert "admission_seed" in options
+    assert options["admission_seed"].default is None
+    assert cli.PHASE2_MAX_CONCURRENT_POSITIONS == 20
+    assert cli.PHASE2_BACKTEST_COMMAND.startswith("invest-backtest ")
+    assert "--universe" in cli.PHASE2_BACKTEST_COMMAND
+    assert "--strategy benchmark" in cli.PHASE2_BACKTEST_COMMAND
+    assert "--exit-policy fixed-horizon" in cli.PHASE2_BACKTEST_COMMAND
+    assert "--max-concurrent-positions 20" in cli.PHASE2_BACKTEST_COMMAND
+    assert "--admission-seed" in cli.PHASE2_BACKTEST_COMMAND
+    assert "--slippage-bps 5" in cli.PHASE2_BACKTEST_COMMAND
+    help_text = cli._backtest_parser().format_help()
+    assert "Phase 2 composition" in help_text
+    assert "--exit-policy fixed-horizon" in help_text
+    assert "--max-concurrent-positions 20" in help_text
