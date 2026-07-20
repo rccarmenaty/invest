@@ -44,6 +44,7 @@ from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
     MarketContext,
+    MarketContextIncompleteError,
 )
 from invest.domain.models import (
     AccountSnapshot,
@@ -339,14 +340,16 @@ class BacktestRun:
         for session_index, current_date in enumerate(sorted(bars_by_date)):
             todays_bars = bars_by_date[current_date]
             day_start = len(trades)
-            # Context is authoritative for entry eligibility, but the current
-            # model has no independently verified terminal-position state.
-            # Existing positions therefore remain under ordinary exit policy
-            # through transient blockers and eligibility changes.
+            # Forced closes first: unsafe market-context days liquidate at bar low
+            # before ordinary exit policy (and before same-day pending entries use cash).
+            self._process_unsafe_positions(
+                current_date, positions, todays_bars, trades, context_outcomes
+            )
+            cash = self._settle_closed_positions(current_date, positions, trades, cash)
             self._process_exits(positions, todays_bars, trades, by_symbol)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
-            # Any ordinary close (trailing exit, hard stop, or time stop) recorded
-            # today starts a COOLDOWN_SESSIONS-session cooldown for that symbol.
+            # Any close (trailing exit, hard stop, time stop, fixed-horizon, or forced
+            # close) recorded today starts a COOLDOWN_SESSIONS-session cooldown.
             for trade in trades[day_start:]:
                 if trade.exit_reason != "open-at-end":
                     cooldown_release[trade.symbol] = session_index + COOLDOWN_SESSIONS + 1
@@ -619,6 +622,39 @@ class BacktestRun:
             fixture_version=universe.fixture_version,
             symbols=self._market_context.eligible_symbols(universe.symbols, as_of),
         )
+
+    def _process_unsafe_positions(
+        self,
+        current_date: date,
+        positions: dict[str, _OpenPosition],
+        bars: dict[str, DailyBar],
+        trades: list[SimulatedTrade],
+        context_outcomes: list[ContextOutcome],
+    ) -> None:
+        """Force-close open positions on unsafe context days at same-day bar low."""
+        for symbol, position in sorted(positions.items()):
+            status = self._market_context.status(symbol, current_date)
+            if status.is_safe:
+                continue
+            bar = bars.get(symbol)
+            if bar is None:
+                raise MarketContextIncompleteError(
+                    f"unsafe position missing same-day bar for {symbol} on {current_date.isoformat()}"
+                )
+            trades.append(
+                SimulatedTrade(
+                    symbol=position.symbol,
+                    entry_date=position.entry_date,
+                    exit_date=current_date,
+                    entry_price=position.entry_price,  # raw open; never pre-slipped
+                    exit_price=bar.low,
+                    qty=position.qty,
+                    exit_reason=ContextOutcomeType.POSITION_FORCED_CLOSED.value,
+                )
+            )
+            context_outcomes.append(
+                ContextOutcome.from_status(status, ContextOutcomeType.POSITION_FORCED_CLOSED)
+            )
 
     def _settle_closed_positions(
         self,

@@ -164,3 +164,48 @@ streaming loader (`fixtures_json.py`, uncommitted at 74d6ac7+dirty) replaced
 this with incremental JSON decode + a compact forward-only bitmap for duplicate
 detection: smoke test 8,869,021 bars / 6,477 symbols in 59.3s, peak RSS
 **4.87GB** (was ~10–12GB). Runs must stay sequential on this machine.
+
+## phase2-structure.json (Phase 2 — fixed-horizon portfolio structure)
+
+Driver: `research_phase2.py`. Composed Phase 2 config (#61):
+
+- Scanner: §2.5 naïve (`MomentumScanner` / `--strategy benchmark`) — **not** Core/ID ranking
+- Exit: fixed-horizon 60 sessions → next open; no price stop / no take-profit
+- Admission: max concurrent 20, seeded random (`seed=42`)
+- Costs primary: **pre-tax after 5 bps/side**; tax 0.15 secondary only
+
+**Sequential only on 16GB hosts** — do not parallel with other multi-GB bar loads
+(same discipline as Gate 1a / Step 3). Unit CI never runs this command.
+
+```
+uv run python fixtures/real-continuous/reports/research_phase2.py
+```
+
+Output: `phase2-structure.json` (+ `phase2-run.log`). Pure helpers:
+`src/invest/application/phase2_report.py` (unit-tested).
+
+### Go / no-go vs PRD #58 gates (2026-07-20)
+
+| Gate | Result |
+| --- | --- |
+| After-cost exp > 0 on majority of WF folds (entry-year 2019–2025) | **PASS** — 6/7 folds (only 2022 negative) |
+| FC-segregated (ex-forced-close) still majority-positive | **PASS** |
+| No single calendar year > ~25% of total after-cost profit | **FAIL** — 2020 = **85.7%** of profit |
+| Ranking not the accept path | **PASS** (seeded random admission only) |
+
+**Verdict: NO-GO** — structure shows positive after-cost mean/median expectancy on
+the full continuous sample, but profit concentration violates the year-share gate.
+Do **not** promote ranking / Quiet Drift / Form-4 as a rescue of this structure
+claim; publish the negative concentration result.
+
+| Book | n | Mean exp | Median exp | Net P&L (pre-tax, 5 bps) |
+| --- | ---: | ---: | ---: | ---: |
+| Full | 200 | +56.12 | +18.76 | +11,223 |
+| Non-FC | 96 | +204.09 | +184.40 | +19,593 |
+| FC only | 104 | −80.47 | −24.16 | −8,369 |
+
+Exit mix: fixed-horizon 91, context-position-forced-closed 104, open-at-end 5.
+
+Note: continuous measurement requires market-context **forced closes** for unsafe
+days (restored for Phase 2 / PRD #58 FC segregation). Without FC, long-hold
+positions on delisted names fail-closed at replay end (R4) with no P&L claim.
