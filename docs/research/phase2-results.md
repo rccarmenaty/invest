@@ -66,6 +66,7 @@ Crash / concentration notes: 2022 is the only negative fold; 2020 dominates tota
 2. **Edge is not FC-dependent** — the non-FC book is *stronger* than the full book; forced closes *subtract* expectancy here (opposite of Step 1's FC-as-false-edge pattern on the old stop/trail book).
 3. **Promotion still blocked** by the year-share gate: ~86% of after-cost profit sits in 2020. That fails the predeclared concentration rule and keeps 2021-style regime risk front and center.
 4. **Do not add ranking to rescue** this result (PRD R1/R5). Next research budget should treat Phase 2 as a published negative on *accept-for-promotion*, not as a green light for Quiet Drift / Form-4 spend.
+5. **Residual follow-up (Phase 2b):** concentration autopsy under K2/S2 — see `docs/research/phase2-concentration-autopsy.md`. Verdict: **residual_hope die**; pause-default.
 
 ## How to re-run (sequential)
 

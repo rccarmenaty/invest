@@ -7,6 +7,7 @@ Pure analysis over SimulatedTrade logs. Primary metric is pre-tax after-cost
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Mapping, Sequence
 
@@ -347,4 +348,247 @@ def build_phase2_report(
             "max_single_year_profit_share": str(max_year_share),
             "ranking_not_accept_path": True,
         },
+    }
+
+
+# --- Phase 2b concentration autopsy (K2 / S2) ---------------------------------
+
+
+@dataclass(frozen=True)
+class K2ResidualHopeResult:
+    residual_hope: str  # "die" | "survive" — never promotion
+    leave_year: int
+    leave_year_mean_expectancy: Decimal
+    full_book_mean_expectancy: Decimal
+    half_full_book_mean: Decimal
+    leave_year_mean_positive: bool
+    half_mean_ok: bool
+    majority_folds_positive: bool
+    positive_fold_count: int
+    evaluated_fold_count: int
+    mean_spy_excess: Decimal | None
+    spy_excess_ok: bool
+    reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "residual_hope": self.residual_hope,
+            "leave_year": self.leave_year,
+            "leave_year_mean_expectancy": str(self.leave_year_mean_expectancy),
+            "full_book_mean_expectancy": str(self.full_book_mean_expectancy),
+            "half_full_book_mean": str(self.half_full_book_mean),
+            "leave_year_mean_positive": self.leave_year_mean_positive,
+            "half_mean_ok": self.half_mean_ok,
+            "majority_folds_positive": self.majority_folds_positive,
+            "positive_fold_count": self.positive_fold_count,
+            "evaluated_fold_count": self.evaluated_fold_count,
+            "mean_spy_excess": (
+                str(self.mean_spy_excess) if self.mean_spy_excess is not None else None
+            ),
+            "spy_excess_ok": self.spy_excess_ok,
+            "reasons": list(self.reasons),
+        }
+
+
+def trades_excluding_entry_year(
+    trades: Sequence[SimulatedTrade], year: int
+) -> list[SimulatedTrade]:
+    return [t for t in trades if t.entry_date.year != year]
+
+
+def simulated_trades_from_records(
+    records: Sequence[Mapping[str, object]],
+) -> list[SimulatedTrade]:
+    """Rebuild SimulatedTrade list from phase2-structure.json trade dicts."""
+    out: list[SimulatedTrade] = []
+    for row in records:
+        out.append(
+            SimulatedTrade(
+                symbol=str(row["symbol"]),
+                entry_date=date.fromisoformat(str(row["entry_date"])),
+                exit_date=date.fromisoformat(str(row["exit_date"])),
+                entry_price=Decimal(str(row["entry_price"])),
+                exit_price=Decimal(str(row["exit_price"])),
+                qty=int(row["qty"]),  # type: ignore[arg-type]
+                exit_reason=str(row["exit_reason"]),
+            )
+        )
+    return out
+
+
+def trade_notional(trade: SimulatedTrade) -> Decimal:
+    """Raw entry notional (qty × entry bar price) for S2 matched exposure."""
+    return trade.entry_price * Decimal(trade.qty)
+
+
+def matched_spy_pnl(
+    trade: SimulatedTrade,
+    spy_opens: Mapping[date, Decimal],
+) -> Decimal:
+    """SPY open→open return over entry→exit fill dates × trade notional.
+
+    Raises KeyError if either session open is missing from the sidecar.
+    """
+    entry_open = spy_opens[trade.entry_date]
+    exit_open = spy_opens[trade.exit_date]
+    if entry_open <= 0:
+        raise ValueError(f"non-positive SPY open on {trade.entry_date}")
+    spy_return = exit_open / entry_open - Decimal("1")
+    return trade_notional(trade) * spy_return
+
+
+def mean_spy_excess(
+    trades: Sequence[SimulatedTrade],
+    spy_opens: Mapping[date, Decimal],
+    *,
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+    tax_rate: Decimal = PRIMARY_TAX_RATE,
+) -> Decimal | None:
+    """Mean (trade after-cost P&L − matched SPY P&L). None if no trades."""
+    if not trades:
+        return None
+    excesses: list[Decimal] = []
+    for trade in trades:
+        net = apply_costs(trade, slippage_bps, tax_rate)
+        excesses.append(net - matched_spy_pnl(trade, spy_opens))
+    return sum(excesses, Decimal("0")) / Decimal(len(excesses))
+
+
+def evaluate_k2_residual_hope(
+    trades: Sequence[SimulatedTrade],
+    *,
+    leave_year: int,
+    full_book_mean_expectancy: Decimal,
+    fold_years: Sequence[int],
+    spy_opens: Mapping[date, Decimal],
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+    tax_rate: Decimal = PRIMARY_TAX_RATE,
+) -> K2ResidualHopeResult:
+    """K2 economic residual bar. Survival is never promotion."""
+    leave = trades_excluding_entry_year(trades, leave_year)
+    leave_book = summarize_book(leave, slippage_bps=slippage_bps, tax_rate=tax_rate)
+    leave_mean = leave_book.mean_expectancy
+    half = full_book_mean_expectancy / Decimal("2")
+
+    remaining_years = tuple(y for y in fold_years if y != leave_year)
+    folds = walk_forward_folds(
+        leave, years=remaining_years, slippage_bps=slippage_bps, tax_rate=tax_rate
+    )
+    majority_ok, positive_n, evaluated_n = _majority_folds_positive(folds)
+
+    spy_mean = mean_spy_excess(
+        leave, spy_opens, slippage_bps=slippage_bps, tax_rate=tax_rate
+    )
+    mean_positive = leave_mean > 0
+    half_ok = leave_mean > half
+    spy_ok = spy_mean is not None and spy_mean > 0
+
+    reasons: list[str] = []
+    if not mean_positive:
+        reasons.append(f"leave-{leave_year} mean after-cost expectancy ≤ 0 ({leave_mean})")
+    if not half_ok:
+        reasons.append(
+            f"leave-{leave_year} mean {leave_mean} ≤ half full-book mean {half}"
+        )
+    if not majority_ok:
+        reasons.append(
+            f"remaining folds fail majority mean exp>0 ({positive_n}/{evaluated_n})"
+        )
+    if not spy_ok:
+        reasons.append(
+            f"S2 mean trade−SPY excess ≤ 0 ({spy_mean})"
+        )
+
+    survive = mean_positive and half_ok and majority_ok and spy_ok
+    if survive:
+        reasons = [
+            "leave-year mean>0; above half full-book mean; "
+            "majority remaining folds>0; S2 mean excess>0 — still promotion-blocked"
+        ]
+
+    return K2ResidualHopeResult(
+        residual_hope="survive" if survive else "die",
+        leave_year=leave_year,
+        leave_year_mean_expectancy=leave_mean,
+        full_book_mean_expectancy=full_book_mean_expectancy,
+        half_full_book_mean=half,
+        leave_year_mean_positive=mean_positive,
+        half_mean_ok=half_ok,
+        majority_folds_positive=majority_ok,
+        positive_fold_count=positive_n,
+        evaluated_fold_count=evaluated_n,
+        mean_spy_excess=spy_mean,
+        spy_excess_ok=spy_ok,
+        reasons=tuple(reasons),
+    )
+
+
+def build_phase2_concentration_autopsy_report(
+    *,
+    trades: Sequence[SimulatedTrade],
+    leave_year: int,
+    full_book_mean_expectancy: Decimal,
+    fold_years: Sequence[int],
+    spy_opens: Mapping[date, Decimal],
+    provenance: Mapping[str, object],
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
+    tax_rate: Decimal = PRIMARY_TAX_RATE,
+) -> dict:
+    """JSON-serializable Phase 2b autopsy. residual_hope is die|survive only."""
+    leave = trades_excluding_entry_year(trades, leave_year)
+    remaining_years = tuple(y for y in fold_years if y != leave_year)
+    leave_book = summarize_book(leave, slippage_bps=slippage_bps, tax_rate=tax_rate)
+    folds = walk_forward_folds(
+        leave, years=remaining_years, slippage_bps=slippage_bps, tax_rate=tax_rate
+    )
+    k2 = evaluate_k2_residual_hope(
+        trades,
+        leave_year=leave_year,
+        full_book_mean_expectancy=full_book_mean_expectancy,
+        fold_years=fold_years,
+        spy_opens=spy_opens,
+        slippage_bps=slippage_bps,
+        tax_rate=tax_rate,
+    )
+    alpha = non_fc_trades(leave)
+    forced = fc_trades(leave)
+
+    return {
+        "experiment": "phase2-concentration-autopsy",
+        "primary_metric": "pre-tax after 5 bps/side",
+        "note": (
+            "Promotion remains blocked under Phase 2 year concentration. "
+            "residual_hope is die|survive only — never GO. Pause-default after report."
+        ),
+        "leave_year": leave_year,
+        "residual_hope": k2.residual_hope,
+        "k2": k2.to_dict(),
+        "leave_year_book": leave_book.to_dict(),
+        "walk_forward_folds_remaining": {
+            year: book.to_dict() for year, book in folds.items()
+        },
+        "fc_segregated": {
+            "fc_exit_reason": FC_EXIT_REASON,
+            "leave_year_all": leave_book.to_dict(),
+            "non_fc": summarize_book(
+                alpha, slippage_bps=slippage_bps, tax_rate=tax_rate
+            ).to_dict(),
+            "fc_only": summarize_book(
+                forced, slippage_bps=slippage_bps, tax_rate=tax_rate
+            ).to_dict(),
+        },
+        "s2_trade_window_spy": {
+            "proxy": "SPY",
+            "window": "entry_fill_open_to_exit_fill_open",
+            "notional": "qty * entry_price (raw)",
+            "book": "leave_year closed trades including FC",
+            "mean_spy_excess": (
+                str(k2.mean_spy_excess) if k2.mean_spy_excess is not None else None
+            ),
+            "spy_excess_ok": k2.spy_excess_ok,
+            "trade_count": len(leave),
+        },
+        "pause_default": True,
+        "promotion_blocked": True,
+        "provenance": dict(provenance),
     }

@@ -209,3 +209,29 @@ Exit mix: fixed-horizon 91, context-position-forced-closed 104, open-at-end 5.
 Note: continuous measurement requires market-context **forced closes** for unsafe
 days (restored for Phase 2 / PRD #58 FC segregation). Without FC, long-hold
 positions on delisted names fail-closed at replay end (R4) with no P&L claim.
+
+## phase2-concentration-autopsy.json (Phase 2b — residual K2)
+
+Driver: `research_phase2_autopsy.py`. **Post-process only** of
+`phase2-structure.json` + SPY open sidecar (no multi-GB re-backtest).
+
+Plan: `docs/research/phase2-concentration-autopsy-plan.md` · issue #64.
+
+```
+uv run python fixtures/real-continuous/reports/research_phase2_autopsy.py
+```
+
+Uses committed `spy-opens-sidecar.json` when complete; otherwise refreshes SPY
+daily opens via Yahoo chart API. Pure helpers in `phase2_report.py` (unit-tested).
+
+### K2 residual hope (2026-07-20)
+
+| Leg | Result |
+| --- | --- |
+| Leave-2020 mean after-cost exp > 0 | **PASS** (~+9.44 on n=170) |
+| Leave mean > ½ published full-book mean (~+28.06) | **FAIL** |
+| Majority remaining folds mean > 0 | **PASS** (5/6) |
+| S2 mean (trade − trade-window SPY) > 0 | **FAIL** (~−102) |
+
+**residual_hope: die** — still promotion-blocked; pause-default. Do not auto-start
+Form-4 / ranking / DAMB. Results: `docs/research/phase2-concentration-autopsy.md`.

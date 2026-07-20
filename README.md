@@ -54,6 +54,10 @@ Report provenance freezes `strategy`, `scanner`, `exit_policy`, `admission`
 (kind/cap/seed), and `costs`. Omit `--admission-seed` to keep ranked fill (day-0
 default). Core (`--strategy core`) remains available for regression only.
 
+Phase 2 continuous measurement and Phase 2b concentration autopsy are research
+drivers under `fixtures/real-continuous/reports/` (not CI). See
+`docs/research/phase2-results.md` and `docs/research/phase2-concentration-autopsy.md`.
+
 ## Verify
 
 ```sh

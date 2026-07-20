@@ -1,0 +1,210 @@
+{
+ "experiment": "phase2-concentration-autopsy",
+ "fc_segregated": {
+  "fc_exit_reason": "context-position-forced-closed",
+  "fc_only": {
+   "hit_rate": "0.4597701149425287356321839080",
+   "mean_expectancy": "-74.16917281847507773161931397",
+   "median_expectancy": "-22.253626882515759610536194",
+   "net_pnl": "-6452.718035207331762650880315",
+   "trade_count": 87
+  },
+  "leave_year_all": {
+   "hit_rate": "0.5058823529411764705882352941",
+   "mean_expectancy": "9.436660111300162151408642665",
+   "median_expectancy": "8.0715773993725239419095395",
+   "net_pnl": "1604.232218921027565739469253",
+   "trade_count": 170
+  },
+  "non_fc": {
+   "hit_rate": "0.5542168674698795180722891566",
+   "mean_expectancy": "97.07168980877541359506445263",
+   "median_expectancy": "63.006975",
+   "net_pnl": "8056.950254128359328390349568",
+   "trade_count": 83
+  }
+ },
+ "k2": {
+  "evaluated_fold_count": 6,
+  "full_book_mean_expectancy": "56.1160824265044444156249482",
+  "half_full_book_mean": "28.0580412132522222078124741",
+  "half_mean_ok": false,
+  "leave_year": 2020,
+  "leave_year_mean_expectancy": "9.436660111300162151408642665",
+  "leave_year_mean_positive": true,
+  "majority_folds_positive": true,
+  "mean_spy_excess": "-101.9837094141070704441280401",
+  "positive_fold_count": 5,
+  "reasons": [
+   "leave-2020 mean 9.436660111300162151408642665 \u2264 half full-book mean 28.0580412132522222078124741",
+   "S2 mean trade\u2212SPY excess \u2264 0 (-101.9837094141070704441280401)"
+  ],
+  "residual_hope": "die",
+  "spy_excess_ok": false
+ },
+ "leave_year": 2020,
+ "leave_year_book": {
+  "hit_rate": "0.5058823529411764705882352941",
+  "mean_expectancy": "9.436660111300162151408642665",
+  "median_expectancy": "8.0715773993725239419095395",
+  "net_pnl": "1604.232218921027565739469253",
+  "trade_count": 170
+ },
+ "note": "Promotion remains blocked under Phase 2 year concentration. residual_hope is die|survive only \u2014 never GO. Pause-default after report.",
+ "pause_default": true,
+ "primary_metric": "pre-tax after 5 bps/side",
+ "promotion_blocked": true,
+ "provenance": {
+  "costs": {
+   "slippage_bps": "5",
+   "tax_rate": "0"
+  },
+  "issue": 64,
+  "leave_year": 2020,
+  "parent_artifact": "fixtures/real-continuous/reports/phase2-structure.json",
+  "parent_experiment": "phase2-fixed-horizon-structure",
+  "parent_go_no_go": {
+   "decision": "NO-GO",
+   "evaluated_fold_count": 7,
+   "fc_segregated_holds": true,
+   "majority_folds_positive": true,
+   "max_year_profit_share": "0.8570612781975559572946241475",
+   "passed": false,
+   "peak_profit_year": 2020,
+   "positive_fold_count": 6,
+   "reasons": [
+    "year concentration: 2020 contributes 0.8570612781975559572946241475 (> 0.25 cap)"
+   ],
+   "year_concentration_ok": false
+  },
+  "parent_provenance": {
+   "admission": {
+    "kind": "seeded-random",
+    "max_concurrent_positions": 20,
+    "seed": 42
+   },
+   "admission_seed": 42,
+   "costs": {
+    "slippage_bps": "5",
+    "tax_rate_primary": "0",
+    "tax_rate_secondary": "0.15"
+   },
+   "equity": {
+    "ending_equity": "101943.0502820604456145864283",
+    "max_drawdown": "17532.53870249379025742384538",
+    "starting_equity": "100000",
+    "total_return": "0.019430502820604456145864283"
+   },
+   "exit_policy": {
+    "atr_mult": "3",
+    "channel_window": 10,
+    "half_r": "0.5",
+    "horizon_sessions": 60,
+    "kind": "fixed-horizon",
+    "time_stop_sessions": 20
+   },
+   "fixture_span": {
+    "end": "2025-12-31",
+    "start": "2019-01-02"
+   },
+   "gates_telemetry": {
+    "counts": {
+     "already-submitted": 26,
+     "cooldown-active": 7,
+     "max-equity-deployed": 3669,
+     "slot-not-admitted": 158
+    },
+    "label": "portfolio-gates-simulated"
+   },
+   "max_concurrent_positions": 20,
+   "ranking_accept_path": false,
+   "scanner": "momentum-naive-\u00a72.5",
+   "split_date": "2023-01-03",
+   "strategy": "benchmark",
+   "walk_forward_years": [
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+   ],
+   "warnings": [
+    "portfolio-gates-simulated",
+    "point-in-time-market-context-validated",
+    "broker-execution-realism-out-of-scope"
+   ]
+  },
+  "plan": "docs/research/phase2-concentration-autopsy-plan.md",
+  "published_full_book_mean_expectancy": "56.1160824265044444156249482",
+  "ranking_accept_path": false,
+  "spy": {
+   "proxy": "SPY",
+   "session_count": 1756,
+   "sidecar_path": "fixtures/real-continuous/reports/spy-opens-sidecar.json",
+   "source": "yahoo-chart-v8-refresh",
+   "span": {
+    "end": "2025-12-31",
+    "start": "2019-01-08"
+   }
+  }
+ },
+ "residual_hope": "die",
+ "s2_trade_window_spy": {
+  "book": "leave_year closed trades including FC",
+  "mean_spy_excess": "-101.9837094141070704441280401",
+  "notional": "qty * entry_price (raw)",
+  "proxy": "SPY",
+  "spy_excess_ok": false,
+  "trade_count": 170,
+  "window": "entry_fill_open_to_exit_fill_open"
+ },
+ "status": "complete",
+ "trade_count_full": 200,
+ "trade_count_leave_year": 170,
+ "walk_forward_folds_remaining": {
+  "2019": {
+   "hit_rate": "0.6176470588235294117647058824",
+   "mean_expectancy": "137.5253716223790230121291882",
+   "median_expectancy": "104.569354911821924165536832",
+   "net_pnl": "4675.862635160886782412392398",
+   "trade_count": 34
+  },
+  "2021": {
+   "hit_rate": "0.52",
+   "mean_expectancy": "62.66673876991201730608252176",
+   "median_expectancy": "34.547689438527458400184325",
+   "net_pnl": "1566.668469247800432652063044",
+   "trade_count": 25
+  },
+  "2022": {
+   "hit_rate": "0.2727272727272727272727272727",
+   "mean_expectancy": "-290.7535215535265194060916892",
+   "median_expectancy": "-103.931627837893989801322561",
+   "net_pnl": "-9594.866211266375140401025745",
+   "trade_count": 33
+  },
+  "2023": {
+   "hit_rate": "0.4545454545454545454545454545",
+   "mean_expectancy": "62.73701897037128731177948809",
+   "median_expectancy": "-14.907845980744722661839425",
+   "net_pnl": "1380.214417348168320859148738",
+   "trade_count": 22
+  },
+  "2024": {
+   "hit_rate": "0.6428571428571428571428571429",
+   "mean_expectancy": "110.7230415059132156484872358",
+   "median_expectancy": "273.4607824134398595374757175",
+   "net_pnl": "3100.245162165570038157642602",
+   "trade_count": 28
+  },
+  "2025": {
+   "hit_rate": "0.5357142857142857142857142857",
+   "mean_expectancy": "17.00384808089204043068743629",
+   "median_expectancy": "9.209789676875832000295011",
+   "net_pnl": "476.107746264977132059248216",
+   "trade_count": 28
+  }
+ }
+}
