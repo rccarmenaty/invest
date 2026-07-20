@@ -55,9 +55,25 @@ Published full-book mean (denominator): **56.1160824265044444156249482**
 - Mean excess (trade after-cost − matched SPY): **-101.9837094141070704441280401**
 - n trades: 170
 
-## Pause-default
+## Freeze (post residual_hope die)
 
-Next research budget defaults to **pause** on the price-event portfolio residual line. Form-4 PIT audit or a new concentration-policy PRD requires an explicit re-open. No ranking / Quiet Drift / DAMB package auto-start.
+Settled 2026-07-20 (grill-with-docs after Phase 2b). Language remains **promotion block**, not program kill.
+
+| Rule | Decision |
+| --- | --- |
+| Budget | **Pause-default** honored — no more residual structure spend on this line |
+| Intensity | **Hard freeze** — no research-adjacent work on this claim |
+| Exit | **Event-only re-open** — explicit new PRD + grill, or written re-open with named hypothesis. No calendar agenda |
+| Scope | **Narrow freeze** — naïve event → fixed-horizon → slot-lottery **portfolio residual** only |
+| Record | Results docs + `CONTEXT.md` only (no freeze ADR / meta-issue) |
+
+**In bounds during freeze:** non-claim engineering (e.g. Sharadar provider hygiene) that does not create an accept path or re-litigate Phase 2.
+
+**Out of bounds until explicit re-open:** structure tweaks / second residual autopsy; ranking or selection alpha on this book; Quiet Drift / DAMB packaging as next step from this result; Form-4 or any pivot without a fresh re-open; rewriting the ~25% year-share gate to green-light the same book.
+
+Form-4 (or any other signal family) is a **different** line if re-opened — not Phase 2 continued. Gate 1a remains historical diagnostic, not go-live.
+
+PRD #58 closed as measured and settled (NO-GO + residual die + pause).
 
 ## How to re-run
 
