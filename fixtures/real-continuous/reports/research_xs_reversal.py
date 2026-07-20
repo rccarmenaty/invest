@@ -33,6 +33,7 @@ from invest.application.xs_reversal import (
     NameFormationRow,
     annual_fold_signs,
     build_r21_artifact,
+    close_to_close_returns,
     cost_net_spread,
     count_positive_folds,
     cross_section_log_adv_ranks,
@@ -67,19 +68,6 @@ def log(msg: str) -> None:
     print(line, file=sys.stderr, flush=True)
     with LOG_PATH.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
-
-
-def _daily_returns(closes: list[float], end_index: int, lookback: int) -> list[float] | None:
-    start = end_index - lookback
-    if start < 1:
-        return None
-    out: list[float] = []
-    for i in range(start, end_index + 1):
-        prev = closes[i - 1]
-        if prev <= 0:
-            return None
-        out.append(closes[i] / prev - 1.0)
-    return out if len(out) == lookback else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             if fwd is None:
                 continue
-            asset_path = _daily_returns(s["closes"], end_index=idx - 1, lookback=BETA_LOOKBACK)
+            asset_path = close_to_close_returns(
+                s["closes"], end_index=idx - 1, lookback=BETA_LOOKBACK
+            )
             if asset_path is None:
                 continue
             # Align market returns for same dates on this symbol's calendar.

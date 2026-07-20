@@ -598,6 +598,24 @@ def trailing_median_dollar_volume(
     return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
+def close_to_close_returns(
+    closes: Sequence[float],
+    *,
+    end_index: int,
+    lookback: int,
+) -> list[float] | None:
+    """``lookback`` close-to-close returns ending at ``end_index`` (inclusive)."""
+    if lookback < 1 or end_index < lookback or end_index >= len(closes):
+        return None
+    out: list[float] = []
+    for i in range(end_index - lookback + 1, end_index + 1):
+        prev = closes[i - 1]
+        if prev <= 0:
+            return None
+        out.append(closes[i] / prev - 1.0)
+    return out
+
+
 def simple_beta(
     asset_returns: Sequence[float],
     market_returns: Sequence[float],

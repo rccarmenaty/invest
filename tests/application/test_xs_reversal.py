@@ -371,6 +371,20 @@ def test_xs_gate_result_to_dict() -> None:
     }
 
 
+def test_close_to_close_returns_exact_lookback_length() -> None:
+    from invest.application.xs_reversal import close_to_close_returns
+
+    # indices 0..5: five steps from 100 → geometric path
+    closes = [100.0, 110.0, 121.0, 133.1, 146.41, 161.051]
+    rets = close_to_close_returns(closes, end_index=5, lookback=5)
+    assert rets is not None
+    assert len(rets) == 5
+    assert rets[0] == pytest.approx(0.10)
+    # Off-by-one trap: lookback+1 window must not be required
+    assert close_to_close_returns(closes, end_index=5, lookback=6) is None
+    assert close_to_close_returns(closes, end_index=4, lookback=5) is None
+
+
 def test_trailing_median_dollar_volume_and_simple_beta() -> None:
     from invest.application.xs_reversal import (
         simple_beta,
