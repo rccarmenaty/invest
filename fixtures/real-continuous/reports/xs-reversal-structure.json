@@ -1,0 +1,141 @@
+{
+  "experiment": "r2-1-xs-reversal-lp",
+  "line": "xs-reversal-lp",
+  "status": "complete",
+  "protocol": {
+    "formation_sessions": 5,
+    "hold_sessions": 5,
+    "skip_sessions": 1,
+    "deciles": 10,
+    "primary_min_price": 5.0,
+    "primary_min_adv": 10000000.0,
+    "diagnostic_min_adv": 1000000.0,
+    "g1_min_t": 3.0,
+    "g5_min_t": 2.0,
+    "year_share_max": 0.25,
+    "month_share_max": 0.2,
+    "accept_cost_bps": 10.0,
+    "g4_max_abs_rho": 0.3,
+    "g0_max_placebo_abs_t": 2.0,
+    "target_vol": 0.2,
+    "scale_clip_lo": 0.5,
+    "scale_clip_hi": 1.5
+  },
+  "n_formations": 404,
+  "spread": {
+    "n": 404,
+    "mean": 0.0018567897043592363,
+    "median": 0.0012041148641387636,
+    "hit_rate_gt0": 0.5222772277227723,
+    "clustered_t": 1.4349857424874444
+  },
+  "folds": {
+    "2018": 0.004280279634352243,
+    "2019": 0.00025415303779813096,
+    "2020": 0.006645491279184738,
+    "2021": -0.0009620717231182511,
+    "2022": 0.0008235304535839751,
+    "2023": 0.002720687478538319,
+    "2024": 0.0005343031979236148,
+    "2025": 0.0010088135345982276
+  },
+  "concentration": {
+    "max_year_share": 0.44016983740223325,
+    "max_month_share": 0.1045493766968305
+  },
+  "market": {
+    "abs_rho": 0.07240965620649024,
+    "alpha": 0.0016728995253907195
+  },
+  "costs": {
+    "mean_spread_net_5bps": 0.0008567897043592362,
+    "mean_spread_net_10bps": -0.00014321029564076377,
+    "mean_spread_net_25bps": -0.003143210295640764,
+    "buffering_modeled": false,
+    "net_5bps": 0.0008567897043592362,
+    "net_10bps": -0.00014321029564076377,
+    "net_25bps": -0.003143210295640764
+  },
+  "gates": {
+    "gates": [
+      {
+        "id": "G0-placebo",
+        "passed": true,
+        "severity": "hard",
+        "reason": "placebo |t|=0.04942577307514359 < 2.0"
+      },
+      {
+        "id": "G0-synthetic",
+        "passed": false,
+        "severity": "hard",
+        "reason": "synthetic-action migration not measured \u2014 fail closed"
+      },
+      {
+        "id": "G1",
+        "passed": false,
+        "severity": "hard",
+        "reason": "gross B-T clustered_t<3.0 (t=1.4349857424874444)"
+      },
+      {
+        "id": "G2",
+        "passed": true,
+        "severity": "hard",
+        "reason": "median spread>0 (median=0.0012041148641387636)"
+      },
+      {
+        "id": "G3",
+        "passed": false,
+        "severity": "hard",
+        "reason": "folds=7/8 majority=True; year_share=0.44016983740223325 (max 0.25); month_share=0.1045493766968305 (max 0.2)"
+      },
+      {
+        "id": "G4",
+        "passed": false,
+        "severity": "hard",
+        "reason": "|rho|=0.07240965620649024 ok=True; alpha=0.0016728995253907195 ci_excludes_0=False"
+      },
+      {
+        "id": "G5",
+        "passed": false,
+        "severity": "hard",
+        "reason": "unscaled t=1.4349857424874444<2.0"
+      },
+      {
+        "id": "G6",
+        "passed": false,
+        "severity": "escalate",
+        "reason": "tail / Jan-2021 short-leg not measured \u2014 fail closed (no silent GO)"
+      },
+      {
+        "id": "G7",
+        "passed": false,
+        "severity": "hard",
+        "reason": "buffering/turnover not modeled \u2014 mean-spread net only (mean_net_10bps=-0.00014321029564076377; mean_net_5bps_primary=0.0008567897043592362)"
+      },
+      {
+        "id": "G8",
+        "passed": false,
+        "severity": "hard",
+        "reason": "deflated Sharpe=-0.03006744862493975 not >0"
+      }
+    ],
+    "all_hard_gates_passed": false,
+    "implementability_eligible": false,
+    "capital_go": false,
+    "verdict": "kill_line"
+  },
+  "capital_go": false,
+  "pass_meaning": "implementability_eligible_only",
+  "residual_claim": "hard_frozen",
+  "g0_placebo": {
+    "method": "within_formation_signal_shuffle",
+    "n_placebo_spreads": 404,
+    "shuffled_clustered_t": -0.04942577307514359,
+    "note": "Synthetic-action migration and Jan-2021 tail stress are not measured on this path and fail closed. G7 buffering/turnover not modeled."
+  },
+  "measurement_gaps": {
+    "g0_synthetic": "not_measured_fail_closed",
+    "g6_tail": "not_measured_fail_closed",
+    "g7_buffering": "not_modeled_fail_closed"
+  }
+}
