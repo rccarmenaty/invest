@@ -84,13 +84,16 @@ def evaluate_gates(
     open_position_count: int,
     deployed_value: Decimal,
     available_buying_power: Decimal | None = None,
+    max_concurrent_positions: int = MAX_CONCURRENT_POSITIONS,
 ) -> GateReason | None:
     """Per-candidate predicate chain; first failure wins.
 
     `open_position_count`/`deployed_value` are a running projection seeded from the
     snapshot and incremented per accepted candidate within a run, so intra-run caps hold.
+    `max_concurrent_positions` defaults to the live day-0 cap; backtests may raise it
+    (Phase 2 portfolio structure uses a predeclared higher slot cap).
     """
-    if open_position_count >= MAX_CONCURRENT_POSITIONS:
+    if open_position_count >= max_concurrent_positions:
         return GateReason.MAX_CONCURRENT_POSITIONS
     if intent is None or sizing_reason is not None:
         return sizing_reason if sizing_reason is not None else GateReason.SIZING_INVALID

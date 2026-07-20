@@ -429,6 +429,7 @@ def _backtest_report(result, metrics, segments) -> dict:
         "warnings": list(result.warnings),
         "disclaimers": disclaimers,
         "exit_policy": dict(result.exit_policy),
+        "admission": dict(result.admission),
     }
 
 

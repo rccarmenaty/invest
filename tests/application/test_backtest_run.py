@@ -2046,3 +2046,150 @@ def test_fixed_horizon_provenance_recorded_on_replay() -> None:
     assert result.exit_policy["kind"] == KIND_FIXED_HORIZON
     assert result.exit_policy["horizon_sessions"] == 60
     assert list(result.exit_policy.keys()) == sorted(result.exit_policy.keys())
+
+
+def _multi_symbol_same_day_breakouts(symbols: tuple[str, ...], start: date) -> FixtureInputs:
+    """Identical breakout shape on every symbol so capital admits many concurrent fills."""
+    bars: list[DailyBar] = []
+    for symbol in symbols:
+        bars.extend(_breakout_bars(symbol, start, extra_days=2))
+    return FixtureInputs(Universe("v1", symbols), tuple(bars))
+
+
+def test_seeded_slot_admission_under_cap_admits_all_eligible() -> None:
+    """When candidates <= free slots, all same-day signals fill (subject to cash/risk)."""
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=5,
+        admission_seed=11,
+    ).replay(inputs)
+
+    filled = {trade.symbol for trade in result.trades}
+    assert filled == set(symbols)
+    assert result.admission["kind"] == "seeded-random"
+    assert result.admission["max_concurrent_positions"] == 5
+    assert result.admission["seed"] == 11
+
+
+def test_seeded_slot_admission_over_cap_limits_entries_to_free_slots() -> None:
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1", "D1", "E1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=2,
+        admission_seed=7,
+    ).replay(inputs)
+
+    filled = {trade.symbol for trade in result.trades}
+    assert len(filled) == 2
+    assert filled <= set(symbols)
+    skipped_lottery = [
+        entry for entry in result.skipped_entries if entry.reason == "slot-not-admitted"
+    ]
+    assert len(skipped_lottery) == 3
+
+
+def test_seeded_slot_admission_same_seed_is_deterministic() -> None:
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1", "D1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+    kwargs = dict(max_concurrent_positions=2, admission_seed=99)
+
+    first = {t.symbol for t in _runner(inputs, **kwargs).replay(inputs).trades}
+    second = {t.symbol for t in _runner(inputs, **kwargs).replay(inputs).trades}
+
+    assert first == second
+    assert len(first) == 2
+
+
+def test_seeded_slot_admission_different_seed_can_change_set() -> None:
+    start = date(2026, 1, 1)
+    symbols = tuple(f"S{i}" for i in range(8))
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    sets = {
+        frozenset(
+            t.symbol
+            for t in _runner(inputs, max_concurrent_positions=2, admission_seed=seed)
+            .replay(inputs)
+            .trades
+        )
+        for seed in range(30)
+    }
+
+    assert len(sets) > 1
+
+
+def test_seeded_slot_admission_does_not_prefer_higher_momentum() -> None:
+    """Phase 2 path must not use Core ranking: oversubscribed day is seed-driven only."""
+    from invest.application.admission import select_seeded_slot_admissions
+
+    start = date(2026, 1, 1)
+    near_level = Decimal("110")
+    far_days = 231
+
+    def _bars(symbol: str, far_close: Decimal) -> list[DailyBar]:
+        far_bars = [
+            DailyBar(
+                symbol,
+                start + timedelta(days=i),
+                far_close,
+                far_close + Decimal("0.40"),
+                far_close - Decimal("0.40"),
+                far_close,
+                100,
+            )
+            for i in range(far_days)
+        ]
+        return far_bars + _tight_stop_bars(
+            symbol, start + timedelta(days=far_days), pre_days=21, near_level=near_level
+        )
+
+    # BRAVO has much higher momentum; ranked path would prefer it. Seeded path must
+    # match pure select_seeded_slot_admissions, not momentum order.
+    alpha_bars = _bars("ALPHA", far_close=Decimal("109"))
+    bravo_bars = _bars("BRAVO", far_close=Decimal("80"))
+    charlie_bars = _bars("CHARLIE", far_close=Decimal("100"))
+    inputs = FixtureInputs(
+        Universe("v1", ("ALPHA", "BRAVO", "CHARLIE")),
+        tuple(alpha_bars + bravo_bars + charlie_bars),
+    )
+    seed = 3
+    # Breakout on far_days+pre_days; next-open fill is the following calendar day.
+    fill_day = start + timedelta(days=far_days + 21 + 1)
+    expected = set(
+        select_seeded_slot_admissions(
+            ("ALPHA", "BRAVO", "CHARLIE"),
+            free_slots=1,
+            seed=seed,
+            day=fill_day,
+        )
+    )
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=1,
+        admission_seed=seed,
+        equity=Decimal("1_000_000"),
+    ).replay(inputs)
+
+    entry_symbols = {trade.symbol for trade in result.trades}
+    assert entry_symbols == expected
+
+
+def test_default_admission_provenance_is_ranked() -> None:
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("RANKED", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("RANKED",)), tuple(bars))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert result.admission["kind"] == "ranked"
+    assert result.admission["max_concurrent_positions"] == 5
+    assert "seed" not in result.admission

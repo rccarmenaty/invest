@@ -60,7 +60,18 @@ from invest.domain.models import (
     daily_bar_is_valid,
 )
 from invest.domain.scanner import MomentumScanner
-from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
+from invest.domain.sizing import (
+    MAX_CONCURRENT_POSITIONS,
+    GateReason,
+    compute_intent,
+    evaluate_gates,
+    evaluate_halt_gates,
+)
+from invest.application.admission import (
+    SLOT_NOT_ADMITTED_REASON,
+    admission_provenance,
+    select_seeded_slot_admissions,
+)
 from invest.application.ports import ScannerPort
 
 NOMINAL_EQUITY = Decimal("100000")
@@ -124,6 +135,8 @@ class BacktestRun:
         tax_rate: Decimal = DEFAULT_TAX_RATE,
         exit_policy: ExitPolicyConfig | None = None,
         progress_callback: Callable[[BacktestProgress], None] | None = None,
+        max_concurrent_positions: int = MAX_CONCURRENT_POSITIONS,
+        admission_seed: int | None = None,
     ) -> None:
         self._market_context = market_context
         self._scanner = scanner or MomentumScanner()
@@ -134,6 +147,10 @@ class BacktestRun:
         self._tax_rate = tax_rate
         self._exit_policy = exit_policy if exit_policy is not None else DEFAULT_EXIT_POLICY
         self._progress_callback = progress_callback
+        if max_concurrent_positions < 1:
+            raise ValueError("max_concurrent_positions must be >= 1")
+        self._max_concurrent_positions = max_concurrent_positions
+        self._admission_seed = admission_seed
 
     def scan_decisions(
         self,
@@ -347,7 +364,22 @@ class BacktestRun:
                 account_blocked=False,
             )
             halt_reason = evaluate_halt_gates(snapshot)
-            for decision in sorted(pending[current_date], key=lambda item: self._fill_rank_key(item, by_symbol)):
+            day_pending = list(pending[current_date])
+            ordered_decisions = self._order_day_entries(day_pending, by_symbol, current_date, len(positions))
+            if self._admission_seed is not None:
+                admitted = {decision.symbol for decision in ordered_decisions}
+                for decision in day_pending:
+                    if decision.symbol not in admitted:
+                        gate_counts[SLOT_NOT_ADMITTED_REASON] += 1
+                        skipped_entries.append(
+                            SkippedEntry(
+                                decision.symbol,
+                                decision.decision_date,
+                                current_date,
+                                SLOT_NOT_ADMITTED_REASON,
+                            )
+                        )
+            for decision in ordered_decisions:
                 if decision.symbol in positions:
                     gate_counts[GateReason.ALREADY_SUBMITTED.value] += 1
                     skipped_entries.append(
@@ -392,6 +424,7 @@ class BacktestRun:
                     len(positions),
                     deployed,
                     cash if self._buying_power is None else min(cash, self._buying_power),
+                    max_concurrent_positions=self._max_concurrent_positions,
                 )
                 if reason is not None:
                     gate_counts[reason.value] += 1
@@ -496,6 +529,38 @@ class BacktestRun:
             ),
             warnings=base_warnings + tuple(extra_warnings),
             exit_policy=policy_provenance(self._exit_policy),
+            admission=dict(
+                admission_provenance(
+                    max_concurrent_positions=self._max_concurrent_positions,
+                    admission_seed=self._admission_seed,
+                )
+            ),
+        )
+
+    def _order_day_entries(
+        self,
+        day_pending: list[ScanDecision],
+        by_symbol: dict[str, list[DailyBar]],
+        current_date: date,
+        open_position_count: int,
+    ) -> list[ScanDecision]:
+        """Order same-day pending fills: ranked (SPEC §2.4) or seeded-random slots."""
+        if not day_pending:
+            return []
+        if self._admission_seed is None:
+            return sorted(day_pending, key=lambda item: self._fill_rank_key(item, by_symbol))
+        free_slots = max(0, self._max_concurrent_positions - open_position_count)
+        admitted_symbols = set(
+            select_seeded_slot_admissions(
+                [decision.symbol for decision in day_pending],
+                free_slots,
+                seed=self._admission_seed,
+                day=current_date,
+            )
+        )
+        return sorted(
+            (decision for decision in day_pending if decision.symbol in admitted_symbols),
+            key=lambda item: item.symbol,
         )
 
     @staticmethod
