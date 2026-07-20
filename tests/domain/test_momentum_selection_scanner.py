@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from invest.domain.models import DailyBar, Universe
+from invest.domain.models import DailyBar, IndexedBarHistories, Universe
 from invest.domain.momentum_selection_scanner import HISTORY_DAYS, MomentumSelectionScanner
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
@@ -102,6 +102,23 @@ def test_ceil_fifteen_percent_cutoff_retains_at_least_one_in_a_small_pool() -> N
     assert by_symbol["AAA"].reason is None
     assert by_symbol["BBB"].reason is RejectionReason.NOT_TOP_MOMENTUM_RANK
     assert by_symbol["CCC"].reason is RejectionReason.NOT_TOP_MOMENTUM_RANK
+
+
+def test_indexed_scan_matches_flat_scan_for_required_history() -> None:
+    start = date(2026, 1, 1)
+    universe = Universe("v1", ("AAA", "BBB", "CCC"))
+    histories = {
+        "AAA": _uptrend_history("AAA", start, Decimal("10")),
+        "BBB": _uptrend_history("BBB", start, Decimal("9")),
+        "CCC": _uptrend_history("CCC", start, Decimal("1")),
+    }
+    scanner = MomentumSelectionScanner()
+
+    indexed = scanner.scan_indexed(universe, histories)
+    flat = scanner.scan(universe, tuple(bar for bars in histories.values() for bar in bars))
+
+    assert scanner.replay_history_bars == HISTORY_DAYS
+    assert indexed == flat
 
 
 def test_ceil_fifteen_percent_cutoff_retains_exactly_k_in_a_larger_pool() -> None:
@@ -222,6 +239,70 @@ def test_raises_for_bars_outside_universe() -> None:
 
     assert error.value.reason is RejectionReason.UNSUPPORTED_INPUT
     assert error.value.symbols == ("UNKNOWN",)
+
+
+def test_indexed_scanner_raises_for_sticky_metadata_outside_universe() -> None:
+    universe = Universe("v1", ("KNOWN",))
+    histories = IndexedBarHistories(
+        by_symbol={"KNOWN": _uptrend_history("KNOWN", date(2026, 1, 1), Decimal("1"))},
+        invalid_bar_symbols=frozenset(("UNKNOWN",)),
+    )
+
+    with pytest.raises(UnsupportedInputError) as error:
+        MomentumSelectionScanner().scan_indexed(universe, histories)
+
+    assert error.value.symbols == ("UNKNOWN",)
+
+
+@pytest.mark.parametrize("corruption", ["zero-volume", "invalid-ohlc"])
+def test_indexed_sticky_rejection_matches_cumulative_after_bad_bar_ages_out(
+    corruption: str,
+) -> None:
+    start = date(2026, 1, 1)
+    bars = list(_uptrend_history("ACME", start, Decimal("1"), count=256))
+    first = bars[0]
+    if corruption == "zero-volume":
+        bars[0] = DailyBar(
+            first.symbol,
+            first.date,
+            first.open,
+            first.high,
+            first.low,
+            first.close,
+            0,
+        )
+    else:
+        bars[0] = DailyBar(
+            first.symbol,
+            first.date,
+            first.open,
+            first.low,
+            first.high,
+            first.close,
+            first.volume,
+        )
+    universe = Universe("v1", ("ACME",))
+    scanner = MomentumSelectionScanner()
+
+    for count in range(scanner.replay_history_bars, len(bars) + 1):
+        cumulative = tuple(bars[:count])
+        histories = IndexedBarHistories(
+            by_symbol={"ACME": cumulative[-scanner.replay_history_bars :]},
+            zero_volume_symbols=(
+                frozenset(("ACME",))
+                if corruption == "zero-volume"
+                else frozenset()
+            ),
+            invalid_bar_symbols=(
+                frozenset(("ACME",))
+                if corruption == "invalid-ohlc"
+                else frozenset()
+            ),
+        )
+
+        assert scanner.scan_indexed(universe, histories) == scanner.scan(
+            universe, cumulative
+        )
 
 
 def test_single_run_rejects_candidates_at_different_layers() -> None:

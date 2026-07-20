@@ -1,11 +1,13 @@
 """Day-by-day replay harness: proves scanner/sizing edge without look-ahead.
 
-Design (openspec/changes/backtest-replay/design.md): the harness holds the full
-sorted bar history and, for each trading day `d`, slices a window of bars dated
-`<= d` before calling the UNCHANGED `MomentumScanner.scan()`. Bars dated after
-`d` are physically absent from that call, so no future data can influence day
-`d`'s decision -- look-ahead is prevented structurally by the window, not by
-any scanner change. See `tests/application/test_backtest_run.py`'s killer test.
+Design (openspec/changes/backtest-replay/design.md): the harness orders bars by
+date and ingests each bar once into chronological per-symbol histories. The two
+production scanners explicitly declare their required bounded history and scan
+those indexed histories plus sticky validation facts from older discarded bars;
+unknown/custom scanners retain the original cumulative window fallback. Bars
+dated after replay day `d` are physically absent from both paths, so no future
+data can influence day `d`'s decision. See
+`tests/application/test_backtest_run.py`'s killer test.
 
 Portfolio construction (`evaluate_gates`, concurrency/equity caps) is
 deliberately NOT simulated here (reconcile item 4): every accepted signal is
@@ -13,11 +15,12 @@ sized independently at a fixed nominal equity to isolate scanner+sizing edge,
 not portfolio construction.
 """
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from statistics import median
+from typing import Callable, Mapping, Sequence, cast
 
 from invest.domain.backtest_metrics import (
     DEFAULT_SLIPPAGE_BPS,
@@ -40,7 +43,6 @@ from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
     MarketContext,
-    MarketContextIncompleteError,
 )
 from invest.domain.models import (
     AccountSnapshot,
@@ -48,11 +50,13 @@ from invest.domain.models import (
     DailyBar,
     FixtureInputs,
     GateTelemetry,
+    IndexedBarHistories,
     PortfolioSummary,
     ScanDecision,
     SimulatedTrade,
     SkippedEntry,
     Universe,
+    daily_bar_is_valid,
 )
 from invest.domain.scanner import MomentumScanner
 from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
@@ -77,6 +81,16 @@ class ReplayWindowInvalidError(ValueError):
 
 
 @dataclass(frozen=True)
+class BacktestProgress:
+    phase: str
+    processed_replay_days: int
+    total_replay_days: int
+    accepted_decisions: int
+    percent: int
+    ingested_bars: int
+
+
+@dataclass(frozen=True)
 class _ReplayPartition:
     all_bars: tuple[DailyBar, ...]
     warmup_bars: tuple[DailyBar, ...]
@@ -91,6 +105,7 @@ class _OpenPosition:
     entry_price: Decimal
     qty: int
     entry_fill: Decimal
+    take_profit: Decimal
     marked_value: Decimal
     policy: ExitPolicyState
 
@@ -107,6 +122,7 @@ class BacktestRun:
         slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
         tax_rate: Decimal = DEFAULT_TAX_RATE,
         exit_policy: ExitPolicyConfig | None = None,
+        progress_callback: Callable[[BacktestProgress], None] | None = None,
     ) -> None:
         self._market_context = market_context
         self._scanner = scanner or MomentumScanner()
@@ -116,15 +132,21 @@ class BacktestRun:
         self._slippage_bps = slippage_bps
         self._tax_rate = tax_rate
         self._exit_policy = exit_policy if exit_policy is not None else DEFAULT_EXIT_POLICY
+        self._progress_callback = progress_callback
 
-    def scan_decisions(self, inputs: FixtureInputs) -> list[ScanDecision]:
+    def scan_decisions(
+        self,
+        inputs: FixtureInputs,
+        *,
+        start: date | None = None,
+    ) -> list[ScanDecision]:
         """Replay day-by-day, collecting every ACCEPTED decision recorded on its own day.
 
         A decision is only collected when `decision.decision_date == d`: since the
         scanner's candidate bar is always `window[-1]`, this fires exactly once per
         symbol per day, the day its bar first enters the window.
         """
-        partition = self._partition_bars(inputs.bars)
+        partition = self._partition_bars(inputs.bars, start=start)
         return self._scan_decisions(inputs.universe, partition)
 
     def _scan_decisions(
@@ -132,8 +154,60 @@ class BacktestRun:
         universe: Universe,
         partition: _ReplayPartition,
     ) -> list[ScanDecision]:
+        indexed = self._indexed_replay_scanner()
+        if indexed is not None:
+            history_limit, scan_indexed = indexed
+            histories: dict[str, deque[DailyBar]] = defaultdict(
+                lambda: deque(maxlen=history_limit)
+            )
+            next_bar = 0
+            zero_volume_symbols: set[str] = set()
+            invalid_bar_symbols: set[str] = set()
+            collected: list[ScanDecision] = []
+            for day_number, d in enumerate(partition.replay_dates, start=1):
+                while (
+                    next_bar < len(partition.all_bars)
+                    and partition.all_bars[next_bar].date <= d
+                ):
+                    bar = partition.all_bars[next_bar]
+                    histories[bar.symbol].append(bar)
+                    if bar.volume == 0:
+                        zero_volume_symbols.add(bar.symbol)
+                    if not daily_bar_is_valid(bar):
+                        invalid_bar_symbols.add(bar.symbol)
+                    next_bar += 1
+                replay_universe = self._filtered_universe(universe, d)
+                snapshots = IndexedBarHistories(
+                    by_symbol={
+                        symbol: tuple(histories.get(symbol, ()))
+                        for symbol in replay_universe.symbols
+                    },
+                    zero_volume_symbols=frozenset(
+                        zero_volume_symbols.intersection(replay_universe.symbols)
+                    ),
+                    invalid_bar_symbols=frozenset(
+                        invalid_bar_symbols.intersection(replay_universe.symbols)
+                    ),
+                )
+                for decision in scan_indexed(replay_universe, snapshots):
+                    if decision.accepted and decision.decision_date == d:
+                        collected.append(decision)
+                self._report_scan_progress(
+                    day_number=day_number,
+                    total_days=len(partition.replay_dates),
+                    accepted_decisions=len(collected),
+                    ingested_bars=next_bar,
+                )
+            return collected
+
         collected: list[ScanDecision] = []
-        for d in partition.replay_dates:
+        ingested_bars = 0
+        for day_number, d in enumerate(partition.replay_dates, start=1):
+            while (
+                ingested_bars < len(partition.all_bars)
+                and partition.all_bars[ingested_bars].date <= d
+            ):
+                ingested_bars += 1
             replay_universe = self._filtered_universe(universe, d)
             eligible_symbols = set(replay_universe.symbols)
             window = tuple(
@@ -144,10 +218,74 @@ class BacktestRun:
             for decision in self._scanner.scan(replay_universe, window):
                 if decision.accepted and decision.decision_date == d:
                     collected.append(decision)
+            self._report_scan_progress(
+                day_number=day_number,
+                total_days=len(partition.replay_dates),
+                accepted_decisions=len(collected),
+                ingested_bars=ingested_bars,
+            )
         return collected
 
-    def replay(self, inputs: FixtureInputs, *, split_date: date | None = None) -> BacktestResult:
-        partition = self._partition_bars(inputs.bars)
+    def _report_scan_progress(
+        self,
+        *,
+        day_number: int,
+        total_days: int,
+        accepted_decisions: int,
+        ingested_bars: int,
+    ) -> None:
+        if self._progress_callback is None:
+            return
+        self._progress_callback(
+            BacktestProgress(
+                phase="scan",
+                processed_replay_days=day_number,
+                total_replay_days=total_days,
+                accepted_decisions=accepted_decisions,
+                percent=(day_number * 100) // total_days,
+                ingested_bars=ingested_bars,
+            )
+        )
+
+    def _indexed_replay_scanner(
+        self,
+    ) -> tuple[
+        int,
+        Callable[
+            [Universe, Mapping[str, Sequence[DailyBar]]],
+            list[ScanDecision],
+        ],
+    ] | None:
+        """Return an explicitly opted-in indexed scanner capability.
+
+        The capability must be declared on the concrete class. Scanner
+        subclasses therefore keep the correctness-preserving cumulative
+        fallback unless they explicitly confirm that bounded replay history is
+        sufficient for their own implementation.
+        """
+        declarations = vars(type(self._scanner))
+        history_limit = declarations.get("replay_history_bars")
+        if type(history_limit) is not int or history_limit <= 0:
+            return None
+        if "scan_indexed" not in declarations:
+            return None
+        scan_indexed = getattr(self._scanner, "scan_indexed")
+        return history_limit, cast(
+            Callable[
+                [Universe, Mapping[str, Sequence[DailyBar]]],
+                list[ScanDecision],
+            ],
+            scan_indexed,
+        )
+
+    def replay(
+        self,
+        inputs: FixtureInputs,
+        *,
+        split_date: date | None = None,
+        start: date | None = None,
+    ) -> BacktestResult:
+        partition = self._partition_bars(inputs.bars, start=start)
         if split_date is not None and split_date not in partition.replay_dates:
             raise ReplayWindowInvalidError(
                 f"split date {split_date.isoformat()} is not an observed replay date"
@@ -183,11 +321,13 @@ class BacktestRun:
         for session_index, current_date in enumerate(sorted(bars_by_date)):
             todays_bars = bars_by_date[current_date]
             day_start = len(trades)
-            self._process_unsafe_positions(current_date, positions, todays_bars, trades, context_outcomes)
-            cash = self._settle_closed_positions(current_date, positions, trades, cash)
+            # Context is authoritative for entry eligibility, but the current
+            # model has no independently verified terminal-position state.
+            # Existing positions therefore remain under ordinary exit policy
+            # through transient blockers and eligibility changes.
             self._process_exits(positions, todays_bars, trades, by_symbol)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
-            # Any close (trailing exit, hard stop, time stop, or forced close) recorded
+            # Any ordinary close (trailing exit, hard stop, or time stop) recorded
             # today starts a COOLDOWN_SESSIONS-session cooldown for that symbol.
             for trade in trades[day_start:]:
                 if trade.exit_reason != "open-at-end":
@@ -263,13 +403,13 @@ class BacktestRun:
                 slipped_entry = entry_fill(raw_entry, self._slippage_bps)
                 entry_cost = intent.qty * slipped_entry
                 cash -= entry_cost
-                # Backtest ignores OrderIntent.take_profit for exits; hard stop uses intent.stop.
                 position = _OpenPosition(
                     symbol=decision.symbol,
                     entry_date=current_date,
                     entry_price=raw_entry,
                     qty=intent.qty,
                     entry_fill=slipped_entry,
+                    take_profit=intent.take_profit,
                     marked_value=entry_cost,
                     policy=initial_state(initial_stop=intent.stop, entry_price=raw_entry),
                 )
@@ -293,6 +433,16 @@ class BacktestRun:
             marked_equity = cash + self._mark_positions(positions, todays_bars)
             daily_equity.append((current_date, marked_equity))
             previous_equity = marked_equity
+
+        replay_end = partition.replay_dates[-1]
+        for position in positions.values():
+            last_bar = by_symbol[position.symbol][-1]
+            if last_bar.date < replay_end:
+                raise ReplayWindowInvalidError(
+                    f"open position {position.symbol} last trustworthy bar "
+                    f"{last_bar.date.isoformat()} predates replay end "
+                    f"{replay_end.isoformat()}"
+                )
 
         for position in sorted(positions.values(), key=lambda item: item.symbol):
             last_bar = by_symbol[position.symbol][-1]
@@ -369,13 +519,19 @@ class BacktestRun:
         liquidity = median(bar.close * bar.volume for bar in window[-RANK_LIQUIDITY_WINDOW:])
         return (-momentum, -proximity, -liquidity, decision.symbol)
 
-    def _partition_bars(self, bars: tuple[DailyBar, ...]) -> _ReplayPartition:
+    def _partition_bars(
+        self,
+        bars: tuple[DailyBar, ...],
+        *,
+        start: date | None = None,
+    ) -> _ReplayPartition:
         ordered = tuple(sorted(bars, key=lambda bar: (bar.date, bar.symbol)))
         span = self._market_context.generation_span
+        replay_start = span.start if start is None else max(span.start, start)
         warmup: list[DailyBar] = []
         replay: list[DailyBar] = []
         for bar in ordered:
-            if bar.date < span.start:
+            if bar.date < replay_start:
                 warmup.append(bar)
             elif bar.date <= span.end:
                 replay.append(bar)
@@ -397,38 +553,6 @@ class BacktestRun:
             fixture_version=universe.fixture_version,
             symbols=self._market_context.eligible_symbols(universe.symbols, as_of),
         )
-
-    def _process_unsafe_positions(
-        self,
-        current_date: date,
-        positions: dict[str, _OpenPosition],
-        bars: dict[str, DailyBar],
-        trades: list[SimulatedTrade],
-        context_outcomes: list[ContextOutcome],
-    ) -> None:
-        for symbol, position in sorted(positions.items()):
-            status = self._market_context.status(symbol, current_date)
-            if status.is_safe:
-                continue
-            bar = bars.get(symbol)
-            if bar is None:
-                raise MarketContextIncompleteError(
-                    f"unsafe position missing same-day bar for {symbol} on {current_date.isoformat()}"
-                )
-            trades.append(
-                SimulatedTrade(
-                    symbol=position.symbol,
-                    entry_date=position.entry_date,
-                    exit_date=current_date,
-                    entry_price=position.entry_price,  # raw open; never pre-slipped
-                    exit_price=bar.low,
-                    qty=position.qty,
-                    exit_reason=ContextOutcomeType.POSITION_FORCED_CLOSED.value,
-                )
-            )
-            context_outcomes.append(
-                ContextOutcome.from_status(status, ContextOutcomeType.POSITION_FORCED_CLOSED)
-            )
 
     def _settle_closed_positions(
         self,
@@ -487,6 +611,16 @@ class BacktestRun:
     ) -> SimulatedTrade | None:
         new_state, decision = on_bar(position.policy, bar, history_through_bar, self._exit_policy)
         position.policy = new_state
+        if decision is None and bar.high >= position.take_profit:
+            return SimulatedTrade(
+                symbol=position.symbol,
+                entry_date=position.entry_date,
+                exit_date=bar.date,
+                entry_price=position.entry_price,
+                exit_price=position.take_profit,
+                qty=position.qty,
+                exit_reason="take-profit",
+            )
         if decision is None:
             return None
         return SimulatedTrade(

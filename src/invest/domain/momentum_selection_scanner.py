@@ -12,9 +12,10 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from math import ceil
+from typing import Mapping, Sequence
 
 from invest.domain.indicators import momentum_return, simple_moving_average, sma_is_rising, trailing_high
-from invest.domain.models import DailyBar, ScanDecision, Universe
+from invest.domain.models import DailyBar, ScanDecision, Universe, daily_bar_is_valid
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 HISTORY_DAYS = 253
@@ -30,21 +31,40 @@ BREAKOUT_WINDOW_DAYS = 20
 
 
 class MomentumSelectionScanner:
+    replay_history_bars = HISTORY_DAYS
+
     def scan(self, universe: Universe, bars: tuple[DailyBar, ...]) -> list[ScanDecision]:
         grouped = self._group_by_symbol(universe, bars)
+        return self.scan_indexed(universe, grouped)
+
+    def scan_indexed(
+        self,
+        universe: Universe,
+        histories: Mapping[str, Sequence[DailyBar]],
+    ) -> list[ScanDecision]:
+        """Scan chronological per-symbol histories supplied by replay indexing."""
+        zero_volume_symbols = getattr(histories, "zero_volume_symbols", frozenset())
+        invalid_bar_symbols = getattr(histories, "invalid_bar_symbols", frozenset())
+        unsupported = (
+            set(histories) | set(zero_volume_symbols) | set(invalid_bar_symbols)
+        ).difference(universe.symbols)
+        if unsupported:
+            raise UnsupportedInputError(tuple(sorted(unsupported)))
 
         decisions: dict[str, ScanDecision] = {}
         eligible: dict[str, list[DailyBar]] = {}
         for symbol in universe.symbols:
-            symbol_bars = grouped.get(symbol, [])
+            symbol_bars = list(histories.get(symbol, ()))
             if len(symbol_bars) < HISTORY_DAYS:
                 decision_date = symbol_bars[-1].date if symbol_bars else date.min
                 decisions[symbol] = ScanDecision(symbol, decision_date, False, RejectionReason.INSUFFICIENT_HISTORY)
                 continue
-            if any(bar.volume == 0 for bar in symbol_bars):
+            if symbol in zero_volume_symbols or any(bar.volume == 0 for bar in symbol_bars):
                 decisions[symbol] = ScanDecision(symbol, symbol_bars[-1].date, False, RejectionReason.MISSING_DATA)
                 continue
-            if any(not self._valid_bar(bar) for bar in symbol_bars):
+            if symbol in invalid_bar_symbols or any(
+                not self._valid_bar(bar) for bar in symbol_bars
+            ):
                 decisions[symbol] = ScanDecision(
                     symbol,
                     symbol_bars[-1].date,
@@ -86,17 +106,8 @@ class MomentumSelectionScanner:
 
     @staticmethod
     def _valid_bar(bar: DailyBar) -> bool:
-        """Mirrors `MomentumScanner._valid_bar` without importing from or
-        modifying the sibling scanner (same convention as `_group_by_symbol`)."""
-        return (
-            bar.open > 0
-            and bar.high > 0
-            and bar.low > 0
-            and bar.close > 0
-            and bar.volume >= 0
-            and bar.low <= bar.open <= bar.high
-            and bar.low <= bar.close <= bar.high
-        )
+        """Use the validation invariant shared by both production scanners."""
+        return daily_bar_is_valid(bar)
 
     @staticmethod
     def _evaluate_candidate(symbol: str, symbol_bars: list[DailyBar]) -> ScanDecision:

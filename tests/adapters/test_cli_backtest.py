@@ -39,6 +39,8 @@ def _backtest_args(*extra: str) -> list[str]:
         str(BARS),
         "--market-context",
         str(MARKET_CONTEXT),
+        "--end",
+        "2024-01-23",
         *extra,
     ]
 
@@ -72,6 +74,100 @@ def test_backtest_bars_run_prints_one_report_with_metrics_and_disclaimers_and_to
     )
     assert "survivorship" not in payload["disclaimers"]
     assert "static_universe_oos" not in payload["disclaimers"]
+
+
+def test_backtest_progress_is_structured_stderr_and_keeps_stdout_json_clean(
+    capsys, monkeypatch
+) -> None:
+    ticks = iter(float(value) for value in range(1000))
+    monkeypatch.setattr(cli, "monotonic", lambda: next(ticks))
+
+    result = cli.backtest_main(
+        _backtest_args("--split-date", "2024-01-23", "--format", "json", "--progress")
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    progress = [json.loads(line) for line in captured.err.splitlines()]
+    assert result == 0
+    assert captured.out.count("\n") == 1
+    assert "trade_count" in report
+    assert progress
+    assert [event["processed_replay_days"] for event in progress] == sorted(
+        event["processed_replay_days"] for event in progress
+    )
+    assert [event["accepted_decisions"] for event in progress] == sorted(
+        event["accepted_decisions"] for event in progress
+    )
+    assert progress[-1]["event"] == "backtest-progress"
+    assert progress[-1]["phase"] == "scan"
+    assert progress[-1]["processed_replay_days"] == progress[-1]["total_replay_days"]
+    assert progress[-1]["percent"] == 100
+    assert progress[-1]["ingested_bars"] > 0
+    assert progress[-1]["elapsed_seconds"] >= 0
+    assert progress[-1]["eta_seconds"] == 0
+
+
+def test_backtest_fixture_passes_date_window_to_streaming_reader(capsys, monkeypatch) -> None:
+    reader_type = cli.JsonFixtureReader
+    calls: list[tuple[date | None, date | None, int]] = []
+
+    class RecordingReader:
+        def load(self, universe_path, bars_path, *, start=None, end=None, warmup_bars=0):
+            calls.append((start, end, warmup_bars))
+            return reader_type().load(
+                universe_path,
+                bars_path,
+                start=start,
+                end=end,
+                warmup_bars=warmup_bars,
+            )
+
+    monkeypatch.setattr(cli, "JsonFixtureReader", RecordingReader)
+
+    result = cli.backtest_main(
+        _backtest_args(
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-01-23",
+            "--split-date",
+            "2024-01-23",
+        )
+    )
+
+    assert result == 0
+    assert calls == [(date(2024, 1, 2), date(2024, 1, 23), 20)]
+    assert json.loads(capsys.readouterr().out)["trade_count"] == 3
+
+
+def test_core_fixture_requests_252_pre_start_warmup_bars(capsys, monkeypatch) -> None:
+    reader_type = cli.JsonFixtureReader
+    requested_warmup: list[int] = []
+
+    class RecordingReader:
+        def load(self, universe_path, bars_path, **kwargs):
+            requested_warmup.append(kwargs["warmup_bars"])
+            return reader_type().load(universe_path, bars_path, **kwargs)
+
+    monkeypatch.setattr(cli, "JsonFixtureReader", RecordingReader)
+
+    result = cli.backtest_main(
+        _backtest_args(
+            "--strategy",
+            "core",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-01-24",
+            "--split-date",
+            "2024-01-23",
+        )
+    )
+
+    assert result == 0
+    assert requested_warmup == [252]
+    json.loads(capsys.readouterr().out)
 
 
 def test_backtest_report_has_exact_top_level_snake_case_metric_keys(capsys) -> None:
@@ -239,7 +335,7 @@ def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> No
     from invest.adapters.fixtures_json import JsonFixtureReader
     from invest.domain.models import FixtureInputs, Universe
 
-    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS)
+    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS, end=date(2024, 1, 23))
 
     class FetchRangeReader:
         def __init__(self, **kwargs) -> None:
@@ -278,7 +374,7 @@ def test_backtest_live_range_success_uses_fetch_range(monkeypatch, capsys) -> No
 def test_backtest_explicit_sharadar_source_fetches_the_requested_range(monkeypatch, capsys) -> None:
     from invest.adapters.fixtures_json import JsonFixtureReader
 
-    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS)
+    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS, end=date(2024, 1, 23))
     fetch_calls: list[tuple[tuple[str, ...], date, date]] = []
 
     class FakeSharadarReader:
@@ -332,7 +428,7 @@ def test_backtest_default_alpaca_source_is_byte_identical_to_explicit_alpaca(
 ) -> None:
     from invest.adapters.fixtures_json import JsonFixtureReader
 
-    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS)
+    loaded_inputs = JsonFixtureReader().load(UNIVERSE, BARS, end=date(2024, 1, 23))
 
     class FakeAlpacaReader:
         def fetch_range(self, universe, start: date, end: date):
@@ -451,6 +547,8 @@ def test_backtest_accepts_exact_observed_in_span_split_date(tmp_path, capsys) ->
             str(BARS),
             "--market-context",
             str(context),
+            "--end",
+            "2024-01-23",
             "--split-date",
             "2024-01-23",
         ]
@@ -603,14 +701,11 @@ def test_backtest_report_exposes_portfolio_contract_and_all_limitations(
         "execution_realism",
     }
     assert payload["context_outcomes"] == []
-    # 0.35%-risk/ATR20 sizing lets all 3 candidates fit under the 25% deployed cap
-    # (vs. 1 under the old 1%/ATR14 model), so one of the 3 now holds through a
-    # missing-bar day, surfacing the conditional "missing-bar-carried-forward" warning.
+    # The bounded CLI fixture ends on the last common trustworthy session.
     assert set(payload["warnings"]) == {
         "portfolio-gates-simulated",
         "point-in-time-market-context-validated",
         "broker-execution-realism-out-of-scope",
-        "missing-bar-carried-forward",
     }
 
 
@@ -639,6 +734,8 @@ def test_backtest_report_serializes_non_empty_context_outcomes(tmp_path, capsys)
             str(BARS),
             "--market-context",
             str(market_context),
+            "--end",
+            "2024-01-23",
             "--split-date",
             "2024-01-23",
             "--format",

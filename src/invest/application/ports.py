@@ -14,7 +14,15 @@ class FixtureReader(Protocol):
 class ScannerPort(Protocol):
     """Seam shared by `MomentumScanner` (benchmark) and `MomentumSelectionScanner`
     (core): either strategy runs through the identical, unmodified `BacktestRun`
-    replay harness."""
+    replay harness.
+
+    Scanners may additionally opt into bounded indexed replay by declaring
+    ``replay_history_bars`` and ``scan_indexed`` on their concrete class. The
+    indexed mapping may carry sticky facts about validation failures older than
+    its bounded sequences. The base port remains intentionally unbounded so
+    third-party scanners preserve correctness without making an undeclared
+    history assumption.
+    """
 
     def scan(self, universe: Universe, bars: tuple[DailyBar, ...]) -> list[ScanDecision]: ...
 

@@ -1,9 +1,10 @@
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+from typing import Mapping, Sequence
 
 from invest.domain.indicators import average_true_range
-from invest.domain.models import DailyBar, ScanDecision, Universe
+from invest.domain.models import DailyBar, ScanDecision, Universe, daily_bar_is_valid
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
 HISTORY_DAYS = 20
@@ -13,24 +14,54 @@ MAX_MOVING_AVERAGE_MULTIPLIER = Decimal("1.15")
 
 
 class MomentumScanner:
+    replay_history_bars = HISTORY_DAYS + 1
+
     def scan(self, universe: Universe, bars: tuple[DailyBar, ...]) -> list[ScanDecision]:
         grouped: dict[str, list[DailyBar]] = defaultdict(list)
         for bar in sorted(bars, key=lambda item: (item.symbol, item.date)):
             grouped[bar.symbol].append(bar)
 
-        unsupported = set(grouped).difference(universe.symbols)
+        return self.scan_indexed(universe, grouped)
+
+    def scan_indexed(
+        self,
+        universe: Universe,
+        histories: Mapping[str, Sequence[DailyBar]],
+    ) -> list[ScanDecision]:
+        """Scan chronological per-symbol histories supplied by replay indexing."""
+        zero_volume_symbols = getattr(histories, "zero_volume_symbols", frozenset())
+        invalid_bar_symbols = getattr(histories, "invalid_bar_symbols", frozenset())
+        unsupported = (
+            set(histories) | set(zero_volume_symbols) | set(invalid_bar_symbols)
+        ).difference(universe.symbols)
         if unsupported:
             raise UnsupportedInputError(tuple(sorted(unsupported)))
-        decisions = [self._scan_symbol(symbol, grouped.get(symbol, [])) for symbol in universe.symbols]
+
+        decisions = [
+            self._scan_symbol(
+                symbol,
+                list(histories.get(symbol, ())),
+                missing_data_seen=symbol in zero_volume_symbols,
+                invalid_bar_seen=symbol in invalid_bar_symbols,
+            )
+            for symbol in universe.symbols
+        ]
         return sorted(decisions, key=lambda item: (item.decision_date, item.symbol))
 
-    def _scan_symbol(self, symbol: str, bars: list[DailyBar]) -> ScanDecision:
+    def _scan_symbol(
+        self,
+        symbol: str,
+        bars: list[DailyBar],
+        *,
+        missing_data_seen: bool = False,
+        invalid_bar_seen: bool = False,
+    ) -> ScanDecision:
         decision_date = bars[-1].date if bars else date.min
         if len(bars) < HISTORY_DAYS + 1:
             return ScanDecision(symbol, decision_date, False, RejectionReason.INSUFFICIENT_HISTORY)
-        if any(bar.volume == 0 for bar in bars):
+        if missing_data_seen or any(bar.volume == 0 for bar in bars):
             return ScanDecision(symbol, decision_date, False, RejectionReason.MISSING_DATA)
-        if any(not self._valid_bar(bar) for bar in bars):
+        if invalid_bar_seen or any(not self._valid_bar(bar) for bar in bars):
             return ScanDecision(
                 symbol,
                 decision_date,
@@ -58,12 +89,4 @@ class MomentumScanner:
 
     @staticmethod
     def _valid_bar(bar: DailyBar) -> bool:
-        return (
-            bar.open > 0
-            and bar.high > 0
-            and bar.low > 0
-            and bar.close > 0
-            and bar.volume >= 0
-            and bar.low <= bar.open <= bar.high
-            and bar.low <= bar.close <= bar.high
-        )
+        return daily_bar_is_valid(bar)

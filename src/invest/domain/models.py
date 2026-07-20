@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Iterator, Mapping, Sequence
 
 if TYPE_CHECKING:
     from invest.domain.backtest_metrics import Metrics
@@ -24,6 +24,36 @@ class DailyBar:
     low: Decimal
     close: Decimal
     volume: Decimal
+
+
+def daily_bar_is_valid(bar: DailyBar) -> bool:
+    return (
+        bar.open > 0
+        and bar.high > 0
+        and bar.low > 0
+        and bar.close > 0
+        and bar.volume >= 0
+        and bar.low <= bar.open <= bar.high
+        and bar.low <= bar.close <= bar.high
+    )
+
+
+@dataclass(frozen=True)
+class IndexedBarHistories(Mapping[str, Sequence[DailyBar]]):
+    """Bounded replay windows plus sticky facts from discarded history."""
+
+    by_symbol: Mapping[str, Sequence[DailyBar]]
+    zero_volume_symbols: frozenset[str] = frozenset()
+    invalid_bar_symbols: frozenset[str] = frozenset()
+
+    def __getitem__(self, symbol: str) -> Sequence[DailyBar]:
+        return self.by_symbol[symbol]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.by_symbol)
+
+    def __len__(self) -> int:
+        return len(self.by_symbol)
 
 
 @dataclass(frozen=True)
