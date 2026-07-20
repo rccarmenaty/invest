@@ -1,5 +1,7 @@
 """R2-1 xs-reversal-lp: pure CS reverse helpers and frozen gates G0–G8."""
 
+import math
+import random
 from datetime import date
 
 import pytest
@@ -7,10 +9,13 @@ import pytest
 from invest.application.event_study_excess import summarize
 from invest.application.xs_reversal import (
     PROTOCOL,
+    NameFormationRow,
     XsGateResult,
     assign_decile,
+    assign_deciles,
     bottom_minus_top_spread,
     cost_net_spread,
+    cross_section_log_adv_ranks,
     evaluate_g0_placebo,
     evaluate_g0_synthetic_migration,
     evaluate_g1,
@@ -30,8 +35,33 @@ from invest.application.xs_reversal import (
     max_period_share,
     open_to_open_return,
     residualize_cross_section,
+    residualized_decile_spread,
+    signal_shuffle_placebo_spread,
     year_month_profit_shares,
 )
+
+
+def _all_pass_kwargs(stats, **overrides):
+    base = dict(
+        g0_placebo_t_abs=0.5,
+        g0_deciles_changed=False,
+        spread_stats=stats,
+        positive_annual_folds=6,
+        total_annual_folds=7,
+        max_year_share=0.15,
+        max_month_share=0.10,
+        abs_rho=0.1,
+        alpha=0.01,
+        alpha_ci_excludes_zero=True,
+        unscaled_clustered_t=2.5,
+        tail_within_limits=True,
+        net_at_10bps=0.01,
+        net_at_5bps_primary_tier=0.02,
+        deflated_sharpe=0.2,
+        buffering_modeled=True,
+    )
+    base.update(overrides)
+    return base
 
 
 def test_protocol_freezes_primary_knobs() -> None:
@@ -105,9 +135,16 @@ def test_assign_decile_lowest_is_one_highest_is_ten() -> None:
     # lowest score → decile 1; highest → 10
     assert assign_decile(0, scores) == 1
     assert assign_decile(19, scores) == 10
-    mids = [assign_decile(s, scores) for s in scores]
+    mids = assign_deciles(scores)
     assert min(mids) == 1 and max(mids) == 10
     assert len(set(mids)) == 10
+
+
+def test_assign_deciles_one_pass_matches_per_score() -> None:
+    scores = [3.0, 1.0, 4.0, 2.0, 0.0, 9.0, 8.0, 7.0, 6.0, 5.0]
+    bulk = assign_deciles(scores)
+    for i, s in enumerate(scores):
+        assert bulk[i] == assign_decile(s, scores)
 
 
 def test_bottom_minus_top_spread_is_mean_d1_minus_mean_d10() -> None:
@@ -137,6 +174,12 @@ def test_g0_synthetic_migration_fails_when_deciles_change() -> None:
     bad = evaluate_g0_synthetic_migration(deciles_changed=True)
     assert ok.passed is True
     assert bad.passed is False
+
+
+def test_g0_synthetic_unmeasured_fails_closed() -> None:
+    r = evaluate_g0_synthetic_migration(deciles_changed=None)
+    assert r.passed is False
+    assert "not measured" in r.reason
 
 
 def test_g1_requires_positive_mean_and_t_at_least_3() -> None:
@@ -208,10 +251,28 @@ def test_g6_tail_escalates_not_silent_go() -> None:
     assert esc.severity == "escalate"
 
 
-def test_g7_cost_survival() -> None:
-    assert evaluate_g7(net_at_10bps=0.01, net_at_5bps_primary_tier=0.02).passed is True
-    assert evaluate_g7(net_at_10bps=-0.001, net_at_5bps_primary_tier=0.02).passed is False
-    assert evaluate_g7(net_at_10bps=0.01, net_at_5bps_primary_tier=-0.001).passed is False
+def test_g6_unmeasured_fails_closed() -> None:
+    r = evaluate_g6(within_limits=None)
+    assert r.passed is False
+    assert r.severity == "escalate"
+    assert "not measured" in r.reason
+
+
+def test_g7_cost_survival_requires_buffering_modeled() -> None:
+    # Without buffering model: hard fail even if mean nets look positive
+    bare = evaluate_g7(net_at_10bps=0.01, net_at_5bps_primary_tier=0.02)
+    assert bare.passed is False
+    assert "buffering" in bare.reason
+
+    assert evaluate_g7(
+        net_at_10bps=0.01, net_at_5bps_primary_tier=0.02, buffering_modeled=True
+    ).passed is True
+    assert evaluate_g7(
+        net_at_10bps=-0.001, net_at_5bps_primary_tier=0.02, buffering_modeled=True
+    ).passed is False
+    assert evaluate_g7(
+        net_at_10bps=0.01, net_at_5bps_primary_tier=-0.001, buffering_modeled=True
+    ).passed is False
 
 
 def test_g8_deflated_sharpe() -> None:
@@ -257,23 +318,7 @@ def test_max_period_share_and_year_month_helpers() -> None:
 
 def test_evaluate_r21_gates_all_pass_is_implementability_eligible_not_capital() -> None:
     stats = summarize([0.05] * 40, [f"d{i}" for i in range(40)])
-    report = evaluate_r21_gates(
-        g0_placebo_t_abs=0.5,
-        g0_deciles_changed=False,
-        spread_stats=stats,
-        positive_annual_folds=6,
-        total_annual_folds=7,
-        max_year_share=0.15,
-        max_month_share=0.10,
-        abs_rho=0.1,
-        alpha=0.01,
-        alpha_ci_excludes_zero=True,
-        unscaled_clustered_t=2.5,
-        tail_within_limits=True,
-        net_at_10bps=0.01,
-        net_at_5bps_primary_tier=0.02,
-        deflated_sharpe=0.2,
-    )
+    report = evaluate_r21_gates(**_all_pass_kwargs(stats))
     assert report.all_hard_gates_passed is True
     assert report.implementability_eligible is True
     assert report.capital_go is False
@@ -283,27 +328,37 @@ def test_evaluate_r21_gates_all_pass_is_implementability_eligible_not_capital() 
 def test_evaluate_r21_gates_g2_fail_kills_line() -> None:
     # median negative
     stats = summarize([-1.0, -1.0, 10.0], ["a", "b", "c"])
-    report = evaluate_r21_gates(
-        g0_placebo_t_abs=0.5,
-        g0_deciles_changed=False,
-        spread_stats=stats,
-        positive_annual_folds=6,
-        total_annual_folds=7,
-        max_year_share=0.15,
-        max_month_share=0.10,
-        abs_rho=0.1,
-        alpha=0.01,
-        alpha_ci_excludes_zero=True,
-        unscaled_clustered_t=2.5,
-        tail_within_limits=True,
-        net_at_10bps=0.01,
-        net_at_5bps_primary_tier=0.02,
-        deflated_sharpe=0.2,
-    )
+    report = evaluate_r21_gates(**_all_pass_kwargs(stats))
     assert report.all_hard_gates_passed is False
     assert report.implementability_eligible is False
     assert report.verdict == "kill_line"
     assert any(g.id == "G2" and not g.passed for g in report.gates)
+
+
+def test_evaluate_r21_gates_unmeasured_g0_g6_kill_implementability() -> None:
+    stats = summarize([0.05] * 40, [f"d{i}" for i in range(40)])
+    report = evaluate_r21_gates(
+        **_all_pass_kwargs(
+            stats,
+            g0_deciles_changed=None,
+            tail_within_limits=None,
+            buffering_modeled=False,
+        )
+    )
+    assert report.implementability_eligible is False
+    assert report.capital_go is False
+    by_id = {g.id: g for g in report.gates}
+    assert by_id["G0-synthetic"].passed is False
+    assert by_id["G6"].passed is False
+    assert by_id["G7"].passed is False
+
+
+def test_evaluate_r21_gates_uses_g6_id_not_tuple_index() -> None:
+    """Eligibility looks up G6 by id so reordering gates cannot silently drop it."""
+    stats = summarize([0.05] * 40, [f"d{i}" for i in range(40)])
+    report = evaluate_r21_gates(**_all_pass_kwargs(stats, tail_within_limits=False))
+    assert report.implementability_eligible is False
+    assert any(g.id == "G6" and not g.passed for g in report.gates)
 
 
 def test_xs_gate_result_to_dict() -> None:
@@ -332,9 +387,18 @@ def test_trailing_median_dollar_volume_and_simple_beta() -> None:
     assert simple_beta(asset, market) == pytest.approx(1.0)
 
 
-def test_residualized_decile_spread_long_losers_short_winners() -> None:
-    from invest.application.xs_reversal import NameFormationRow, residualized_decile_spread
+def test_cross_section_log_adv_ranks_orders_by_log() -> None:
+    # 1e6, e*1e6, e^2*1e6 → ranks 0, 0.5, 1.0 on log scale
+    a0 = 1_000_000.0
+    a1 = math.e * a0
+    a2 = math.e * a1
+    ranks = cross_section_log_adv_ranks([a0, a1, a2])
+    assert ranks[0] == pytest.approx(0.0)
+    assert ranks[1] == pytest.approx(0.5)
+    assert ranks[2] == pytest.approx(1.0)
 
+
+def test_residualized_decile_spread_long_losers_short_winners() -> None:
     # 10 names: formation residual ranks with forward returns inverse to formation
     rows = [
         NameFormationRow(
@@ -350,6 +414,34 @@ def test_residualized_decile_spread_long_losers_short_winners() -> None:
     assert spread is not None
     # D1 = lowest formation (i=0) forward 0.09; D10 = i=9 forward 0.0
     assert spread == pytest.approx(0.09 - 0.0)
+
+
+def test_signal_shuffle_placebo_destroys_injected_reverse() -> None:
+    """Real residual reverse → positive spread; signal shuffle collapses it.
+
+    Not an identity of the real series (the old post-hoc date shuffle of finished
+    spreads with 1-obs/cluster was).
+    """
+    rows = [
+        NameFormationRow(
+            symbol=f"S{i}",
+            formation_return=float(i),
+            beta=0.0,
+            log_adv_rank=0.0,
+            forward_return=float(9 - i) * 0.01,
+        )
+        for i in range(10)
+    ]
+    real, _, _ = residualized_decile_spread(rows)
+    assert real is not None and real > 0.05
+
+    rng = random.Random(0)
+    placebos = [signal_shuffle_placebo_spread(rows, rng=rng) for _ in range(40)]
+    placebos_f = [p for p in placebos if p is not None]
+    assert placebos_f
+    mean_p = sum(placebos_f) / len(placebos_f)
+    # Shuffled signal should not systematically recover the engineered reverse.
+    assert abs(mean_p) < real * 0.5
 
 
 def test_summarize_spread_series_and_folds() -> None:
@@ -373,23 +465,7 @@ def test_build_r21_artifact_is_json_friendly() -> None:
     from invest.application.xs_reversal import build_r21_artifact, evaluate_r21_gates
 
     stats = summarize([0.05] * 40, [f"d{i}" for i in range(40)])
-    report = evaluate_r21_gates(
-        g0_placebo_t_abs=0.5,
-        g0_deciles_changed=False,
-        spread_stats=stats,
-        positive_annual_folds=6,
-        total_annual_folds=7,
-        max_year_share=0.15,
-        max_month_share=0.10,
-        abs_rho=0.1,
-        alpha=0.01,
-        alpha_ci_excludes_zero=True,
-        unscaled_clustered_t=2.5,
-        tail_within_limits=True,
-        net_at_10bps=0.01,
-        net_at_5bps_primary_tier=0.02,
-        deflated_sharpe=0.2,
-    )
+    report = evaluate_r21_gates(**_all_pass_kwargs(stats))
     art = build_r21_artifact(
         spread_stats=stats,
         gate_report=report,
@@ -402,11 +478,14 @@ def test_build_r21_artifact_is_json_friendly() -> None:
         net_at_10bps=0.01,
         net_at_25bps=-0.01,
         n_formations=40,
+        buffering_modeled=False,
     )
     assert art["experiment"] == "r2-1-xs-reversal-lp"
     assert art["capital_go"] is False
     assert art["residual_claim"] == "hard_frozen"
     assert "gates" in art
+    assert art["costs"]["buffering_modeled"] is False
+    assert "mean_spread_net_10bps" in art["costs"]
 
 
 def test_pearson_and_alpha_and_deflated_sharpe() -> None:

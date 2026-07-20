@@ -8,6 +8,11 @@ Outputs:
   docs/research/xs-reversal-results.md (when --write-docs)
 
 Parent PRD: #65
+
+Honesty notes (post code-review fix pass):
+  - G0-synthetic and G6 are fail-closed when not measured on this path.
+  - G7 requires buffering/turnover modeling; mean-spread nets are diagnostic only.
+  - G0 placebo uses within-formation signal shuffle, not post-hoc spread shuffle.
 """
 
 from __future__ import annotations
@@ -18,7 +23,6 @@ import math
 import random
 import sys
 import time
-from bisect import bisect_left
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -31,6 +35,7 @@ from invest.application.xs_reversal import (
     build_r21_artifact,
     cost_net_spread,
     count_positive_folds,
+    cross_section_log_adv_ranks,
     deflated_sharpe_proxy,
     evaluate_r21_gates,
     execution_entry_index,
@@ -41,6 +46,7 @@ from invest.application.xs_reversal import (
     open_to_open_return,
     pearson_corr,
     residualized_decile_spread,
+    signal_shuffle_placebo_spread,
     simple_beta,
     summarize_spread_series,
     trailing_median_dollar_volume,
@@ -111,11 +117,13 @@ def main(argv: list[str] | None = None) -> int:
         opens = [float(b.open) for b in bars]
         closes = [float(b.close) for b in bars]
         volumes = [float(b.volume) for b in bars]
+        # Precompute date→index once (do not rebuild per calendar day).
         series[sym] = {
             "dates": dates,
             "opens": opens,
             "closes": closes,
             "volumes": volumes,
+            "date_to_i": {d: i for i, d in enumerate(dates)},
         }
         session_set.update(dates)
 
@@ -126,41 +134,37 @@ def main(argv: list[str] | None = None) -> int:
         log(f"DEBUG max-formations={args.max_formations}")
     log(f"formation weeks: {len(formations)}; symbols: {len(series)}")
 
-    # Equal-weight market close-to-close returns by session (all symbols with bar).
-    closes_on_date: dict[date, list[float]] = defaultdict(list)
-    for s in series.values():
-        for d, c in zip(s["dates"], s["closes"], strict=True):
-            if c > 0:
-                closes_on_date[d].append(c)
-    # Market level index from equal-weight daily mean return chain is heavy;
-    # use cross-sectional mean of daily simple returns among names present both days.
+    # Equal-weight market: mean of symbol simple returns between consecutive calendar days.
     mkt_ret: dict[date, float] = {}
     for i in range(1, len(calendar)):
         d0, d1 = calendar[i - 1], calendar[i]
         rets: list[float] = []
         for s in series.values():
-            di = {dt: j for j, dt in enumerate(s["dates"])}
-            if d0 in di and d1 in di:
-                c0 = s["closes"][di[d0]]
-                c1 = s["closes"][di[d1]]
-                if c0 > 0:
-                    rets.append(c1 / c0 - 1.0)
+            di = s["date_to_i"]
+            i0 = di.get(d0)
+            i1 = di.get(d1)
+            if i0 is None or i1 is None:
+                continue
+            c0 = s["closes"][i0]
+            c1 = s["closes"][i1]
+            if c0 > 0:
+                rets.append(c1 / c0 - 1.0)
         if rets:
             mkt_ret[d1] = sum(rets) / len(rets)
 
     spreads: list[float] = []
     form_dates: list[date] = []
     mkt_form: list[float] = []
+    formation_rows: list[list[NameFormationRow]] = []
 
     for fi, form_date in enumerate(formations):
         if fi % 25 == 0:
             log(f"formation {fi}/{len(formations)} {form_date}")
-        rows: list[NameFormationRow] = []
         raw_rows: list[tuple[str, float, float, float, float]] = []
         for sym, s in series.items():
-            dates = s["dates"]
-            idx = bisect_left(dates, form_date)
-            if idx >= len(dates) or dates[idx] != form_date:
+            di = s["date_to_i"]
+            idx = di.get(form_date)
+            if idx is None:
                 continue
             px = s["closes"][idx]
             adv = trailing_median_dollar_volume(
@@ -180,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
             asset_path = _daily_returns(s["closes"], end_index=idx - 1, lookback=BETA_LOOKBACK)
             if asset_path is None:
                 continue
-            # Align market returns for same dates
+            # Align market returns for same dates on this symbol's calendar.
+            dates = s["dates"]
             mkt_path: list[float] = []
             ok_m = True
             for k in range(BETA_LOOKBACK):
@@ -198,10 +203,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if len(raw_rows) < PROTOCOL.deciles:
             continue
-        # log ADV rank within cross-section (0..1)
-        advs = sorted(r[3] for r in raw_rows)
-        for sym, form_ret, beta, adv, fwd in raw_rows:
-            rank = advs.index(adv) / max(len(advs) - 1, 1)
+        # Rank of log(ADV) within cross-section (protocol residualization covariate).
+        advs = [r[3] for r in raw_rows]
+        log_ranks = cross_section_log_adv_ranks(advs)
+        rows: list[NameFormationRow] = []
+        for (sym, form_ret, beta, _adv, fwd), rank in zip(raw_rows, log_ranks, strict=True):
             rows.append(
                 NameFormationRow(
                     symbol=sym,
@@ -217,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         spreads.append(spread)
         form_dates.append(form_date)
         mkt_form.append(mkt_ret.get(form_date, 0.0))
+        formation_rows.append(rows)
 
     log(f"completed formations with spread: {len(spreads)}")
     if len(spreads) < 3:
@@ -238,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     ym = year_month_profit_shares(list(zip(form_dates, spreads, strict=True)))
     rho = pearson_corr(spreads, mkt_form)
     alpha, alpha_ok = ols_alpha_vs_market(spreads, mkt_form)
+    # Diagnostic mean-spread nets only — NOT G7 accept-path buffering cost.
     net5 = cost_net_spread(stats.mean, bps_per_side=5.0)
     net10 = cost_net_spread(stats.mean, bps_per_side=10.0)
     net25 = cost_net_spread(stats.mean, bps_per_side=25.0)
@@ -248,16 +256,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     dsr = deflated_sharpe_proxy(sharpe=sharpe, n_obs=len(spreads), n_trials=8)
 
-    # G0 placebo: shuffle formation dates within sample and re-summarize
+    # G0 placebo: within each formation, shuffle signals vs fixed forwards.
     rng = random.Random(42)
-    shuffled = list(spreads)
-    rng.shuffle(shuffled)
-    placebo_stats = summarize_spread_series(shuffled, form_dates)
-    placebo_t = abs(placebo_stats.clustered_t) if math.isfinite(placebo_stats.clustered_t) else 0.0
+    placebo_spreads: list[float] = []
+    placebo_dates: list[date] = []
+    for rows, d in zip(formation_rows, form_dates, strict=True):
+        ps = signal_shuffle_placebo_spread(rows, rng=rng)
+        if ps is not None:
+            placebo_spreads.append(ps)
+            placebo_dates.append(d)
+    if len(placebo_spreads) >= 2:
+        placebo_stats = summarize_spread_series(placebo_spreads, placebo_dates)
+        placebo_t = (
+            abs(placebo_stats.clustered_t)
+            if math.isfinite(placebo_stats.clustered_t)
+            else float("inf")
+        )
+    else:
+        placebo_stats = None
+        placebo_t = float("inf")  # fail closed if placebo cannot be formed
 
+    # Unmeasured on this path → fail closed (no silent pass).
     gate_report = evaluate_r21_gates(
         g0_placebo_t_abs=placebo_t,
-        g0_deciles_changed=False,  # synthetic injection is unit-tested; tape assumed adjusted
+        g0_deciles_changed=None,
         spread_stats=stats,
         positive_annual_folds=pos,
         total_annual_folds=tot,
@@ -269,10 +291,11 @@ def main(argv: list[str] | None = None) -> int:
         unscaled_clustered_t=(
             stats.clustered_t if math.isfinite(stats.clustered_t) else float("inf")
         ),
-        tail_within_limits=True,  # detailed Jan-2021 stress left for follow-up
+        tail_within_limits=None,
         net_at_10bps=net10,
         net_at_5bps_primary_tier=net5,
         deflated_sharpe=dsr if math.isfinite(dsr) else -1.0,
+        buffering_modeled=False,
     )
 
     artifact = build_r21_artifact(
@@ -287,11 +310,23 @@ def main(argv: list[str] | None = None) -> int:
         net_at_10bps=net10,
         net_at_25bps=net25,
         n_formations=len(spreads),
+        buffering_modeled=False,
     )
-    # Annotate G0 placebo details
     artifact["g0_placebo"] = {
-        "shuffled_clustered_t": placebo_stats.clustered_t,
-        "note": "date-shuffle of spread series; synthetic-action migration covered in unit tests",
+        "method": "within_formation_signal_shuffle",
+        "n_placebo_spreads": len(placebo_spreads),
+        "shuffled_clustered_t": (
+            placebo_stats.clustered_t if placebo_stats is not None else None
+        ),
+        "note": (
+            "Synthetic-action migration and Jan-2021 tail stress are not measured "
+            "on this path and fail closed. G7 buffering/turnover not modeled."
+        ),
+    }
+    artifact["measurement_gaps"] = {
+        "g0_synthetic": "not_measured_fail_closed",
+        "g6_tail": "not_measured_fail_closed",
+        "g7_buffering": "not_modeled_fail_closed",
     }
     OUT_PATH.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
     log(f"wrote {OUT_PATH}")
@@ -306,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _write_docs(artifact: dict) -> None:
     g = artifact["gates"]
+    costs = artifact["costs"]
     lines = [
         "# R2-1 results — xs-reversal-lp (short-horizon CS reverse)",
         "",
@@ -334,11 +370,12 @@ def _write_docs(artifact: dict) -> None:
             f"| {artifact['spread']['clustered_t']} |"
         ),
         "",
-        "## Costs (mean spread net of bps/side)",
+        "## Costs (mean-spread diagnostic — buffering not modeled)",
         "",
-        f"- 5 bps: {artifact['costs']['net_5bps']}",
-        f"- 10 bps: {artifact['costs']['net_10bps']}",
-        f"- 25 bps: {artifact['costs']['net_25bps']}",
+        f"- mean-spread 5 bps: {costs.get('mean_spread_net_5bps', costs.get('net_5bps'))}",
+        f"- mean-spread 10 bps: {costs.get('mean_spread_net_10bps', costs.get('net_10bps'))}",
+        f"- mean-spread 25 bps: {costs.get('mean_spread_net_25bps', costs.get('net_25bps'))}",
+        f"- buffering_modeled: `{costs.get('buffering_modeled', False)}`",
         "",
         "## Concentration",
         "",
@@ -353,6 +390,11 @@ def _write_docs(artifact: dict) -> None:
         lines.append(
             f"- **{gate['id']}** [{gate['severity']}] **{mark}** — {gate['reason']}"
         )
+    gaps = artifact.get("measurement_gaps", {})
+    if gaps:
+        lines.extend(["", "## Measurement gaps (fail closed)", ""])
+        for k, v in gaps.items():
+            lines.append(f"- `{k}`: {v}")
     lines.extend(
         [
             "",
