@@ -1020,4 +1020,8 @@ def test_backtest_exit_policy_default_and_explicit_ten_day_low_are_byte_identica
 def test_backtest_parser_accepts_exit_policy_choices() -> None:
     options = {action.dest: action for action in cli._backtest_parser()._actions}
     assert "exit_policy" in options
-    assert set(options["exit_policy"].choices) == {"ten-day-low", "atr-3-high-water"}
+    assert set(options["exit_policy"].choices) == {
+        "ten-day-low",
+        "atr-3-high-water",
+        "fixed-horizon",
+    }

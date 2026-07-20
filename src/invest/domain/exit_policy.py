@@ -16,10 +16,12 @@ from invest.domain.models import DailyBar
 
 KIND_TEN_DAY_LOW = "ten-day-low"
 KIND_ATR_3_HIGH_WATER = "atr-3-high-water"
+KIND_FIXED_HORIZON = "fixed-horizon"
 REASON_STOP = "stop"
 REASON_TRAILING_CHANNEL = "trailing-channel"
 REASON_ATR_TRAIL = "atr-trail"
 REASON_TIME_STOP = "time-stop"
+REASON_FIXED_HORIZON = "fixed-horizon"
 PRIOR_HIGH_WINDOW = 20
 
 
@@ -30,6 +32,7 @@ class ExitPolicyConfig:
     time_stop_sessions: int = 20
     half_r: Decimal = Decimal("0.5")
     atr_mult: Decimal = Decimal("3")
+    horizon_sessions: int = 60
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ def policy_provenance(config: ExitPolicyConfig) -> dict[str, str | int]:
         "atr_mult": str(config.atr_mult),
         "channel_window": config.channel_window,
         "half_r": str(config.half_r),
+        "horizon_sessions": config.horizon_sessions,
         "kind": config.kind,
         "time_stop_sessions": config.time_stop_sessions,
     }
@@ -79,7 +83,14 @@ def resolve_exit_policy(kind: str) -> ExitPolicyConfig:
         return ExitPolicyConfig(kind=KIND_ATR_3_HIGH_WATER)
     if kind == KIND_TEN_DAY_LOW:
         return ExitPolicyConfig(kind=KIND_TEN_DAY_LOW)
+    if kind == KIND_FIXED_HORIZON:
+        return ExitPolicyConfig(kind=KIND_FIXED_HORIZON)
     raise ValueError(f"unknown exit policy kind: {kind}")
+
+
+def allows_price_path_exits(config: ExitPolicyConfig) -> bool:
+    """False for fixed-horizon: no hard stop in policy and no take-profit in replay."""
+    return config.kind != KIND_FIXED_HORIZON
 
 
 def on_bar(
@@ -90,16 +101,36 @@ def on_bar(
 ) -> tuple[ExitPolicyState, ExitDecision | None]:
     """Hard-stop same-bar decision, pending next-open fill, or state/pending update.
 
-    Priority: (1) hard stop (2) pending fill (3) update + evaluate.
+    Priority: (1) hard stop (skipped for fixed-horizon) (2) pending fill (3) update + evaluate.
     Trail/ATR pending outranks time-stop when both would apply on the evaluate step.
+    Fixed-horizon: no stop/trail/TP; after horizon_sessions, pending fixed-horizon → next open.
     """
-    if bar.low <= state.initial_stop:
+    if config.kind != KIND_FIXED_HORIZON and bar.low <= state.initial_stop:
         return state, ExitDecision(reason=REASON_STOP, fill_price=min(bar.open, state.initial_stop))
 
     if state.pending_exit_reason is not None:
         return state, ExitDecision(reason=state.pending_exit_reason, fill_price=bar.open)
 
     sessions_held = state.sessions_held + 1
+
+    if config.kind == KIND_FIXED_HORIZON:
+        pending = (
+            REASON_FIXED_HORIZON if sessions_held >= config.horizon_sessions else None
+        )
+        return (
+            ExitPolicyState(
+                initial_stop=state.initial_stop,
+                effective_floor=state.effective_floor,
+                entry_price=state.entry_price,
+                pending_exit_reason=pending,
+                sessions_held=sessions_held,
+                reached_half_r=state.reached_half_r,
+                printed_new_prior20_high=state.printed_new_prior20_high,
+                high_water=state.high_water,
+            ),
+            None,
+        )
+
     risk = state.entry_price - state.initial_stop
     half_r_level = state.entry_price + config.half_r * risk
     reached_half_r = state.reached_half_r or (bar.high >= half_r_level)
@@ -133,7 +164,7 @@ def on_bar(
     else:
         return state, None
 
-    pending: str | None = trail_pending
+    pending = trail_pending
     if pending is None and (
         sessions_held >= config.time_stop_sessions
         and not reached_half_r

@@ -469,3 +469,118 @@ def test_pending_atr_trail_fills_at_next_open() -> None:
     _, decision = on_bar(state, bar, [bar], config)
 
     assert decision == ExitDecision(reason="atr-trail", fill_price=Decimal("10.55"))
+
+
+def test_resolve_exit_policy_accepts_fixed_horizon() -> None:
+    from invest.domain.exit_policy import (
+        KIND_FIXED_HORIZON,
+        resolve_exit_policy,
+    )
+
+    config = resolve_exit_policy(KIND_FIXED_HORIZON)
+    assert config.kind == KIND_FIXED_HORIZON
+    assert config.horizon_sessions == 60
+
+
+def test_fixed_horizon_does_not_hard_stop_on_low_through_stop() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_FIXED_HORIZON, initial_state, on_bar
+
+    start = date(2026, 1, 1)
+    bar = _bar(start, high="12", low="7", close="8", open_="11")
+    state = initial_state(initial_stop=Decimal("8.00"), entry_price=Decimal("11.00"))
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=60)
+
+    new_state, decision = on_bar(state, bar, [bar], config)
+
+    assert decision is None
+    assert new_state.sessions_held == 1
+    assert new_state.pending_exit_reason is None
+
+
+def test_fixed_horizon_no_trailing_channel_on_close_below_prior_low() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_FIXED_HORIZON, initial_state, on_bar
+
+    start = date(2026, 1, 1)
+    history = _flat_history(start, 10, low="10", high="12", close="11")
+    signal = _bar(start + timedelta(days=10), high="11", low="9.5", close="9.5", open_="10.5")
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=60)
+    state = initial_state(initial_stop=Decimal("8.00"), entry_price=Decimal("11.00"))
+
+    new_state, decision = on_bar(state, signal, history + [signal], config)
+
+    assert decision is None
+    assert new_state.pending_exit_reason is None
+
+
+def test_fixed_horizon_pending_after_n_sessions_then_fills_next_open() -> None:
+    """Horizon=3: session 3 arms pending; session 4 fills at open."""
+    from invest.domain.exit_policy import (
+        ExitDecision,
+        ExitPolicyConfig,
+        KIND_FIXED_HORIZON,
+        REASON_FIXED_HORIZON,
+        initial_state,
+        on_bar,
+    )
+
+    start = date(2026, 1, 1)
+    entry = Decimal("11.00")
+    stop = Decimal("8.00")
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=3)
+    state = initial_state(initial_stop=stop, entry_price=entry)
+    history: list[DailyBar] = []
+
+    for i in range(3):
+        bar = _bar(
+            start + timedelta(days=i),
+            high="12",
+            low="7",  # would hard-stop under legacy policy
+            close="11",
+            open_="11",
+        )
+        history = history + [bar]
+        state, decision = on_bar(state, bar, history, config)
+        assert decision is None
+
+    assert state.sessions_held == 3
+    assert state.pending_exit_reason == REASON_FIXED_HORIZON
+
+    fill = _bar(start + timedelta(days=3), high="12", low="10", close="11", open_="10.40")
+    history = history + [fill]
+    state, decision = on_bar(state, fill, history, config)
+
+    assert decision == ExitDecision(reason=REASON_FIXED_HORIZON, fill_price=Decimal("10.40"))
+
+
+def test_fixed_horizon_not_pending_before_horizon() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_FIXED_HORIZON, REASON_FIXED_HORIZON
+
+    start = date(2026, 1, 1)
+    holds = [
+        _bar(start + timedelta(days=i), high="12", low="10", close="11", open_="11")
+        for i in range(2)
+    ]
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=3)
+    state, decision = _run_hold(
+        entry=Decimal("11"),
+        stop=Decimal("8"),
+        hold_bars=holds,
+        config=config,
+    )
+    assert decision is None
+    assert state.sessions_held == 2
+    assert state.pending_exit_reason is None
+    assert state.pending_exit_reason != REASON_FIXED_HORIZON
+
+
+def test_fixed_horizon_provenance_includes_horizon_sessions() -> None:
+    from invest.domain.exit_policy import (
+        ExitPolicyConfig,
+        KIND_FIXED_HORIZON,
+        policy_provenance,
+    )
+
+    prov = policy_provenance(ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=60))
+    assert prov["kind"] == KIND_FIXED_HORIZON
+    assert prov["horizon_sessions"] == 60
+    assert list(prov.keys()) == sorted(prov.keys())

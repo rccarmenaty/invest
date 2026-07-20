@@ -41,6 +41,7 @@ from invest.domain.backtest_metrics import (
 )
 from invest.domain.exit_policy import (
     KIND_ATR_3_HIGH_WATER,
+    KIND_FIXED_HORIZON,
     KIND_TEN_DAY_LOW,
     resolve_exit_policy,
 )
@@ -55,7 +56,7 @@ load_dotenv()
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")
 BACKTEST_SOURCES = ("fixture", "alpaca", "sharadar")
-BACKTEST_EXIT_POLICIES = (KIND_TEN_DAY_LOW, KIND_ATR_3_HIGH_WATER)
+BACKTEST_EXIT_POLICIES = (KIND_TEN_DAY_LOW, KIND_ATR_3_HIGH_WATER, KIND_FIXED_HORIZON)
 
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "

@@ -1996,3 +1996,53 @@ def test_replaying_same_range_twice_is_byte_identical_for_atr_policy() -> None:
     second = _runner(inputs, exit_policy=config).replay(inputs)
 
     assert first == second
+
+
+def test_fixed_horizon_exit_path_holds_through_stop_and_tp_then_exits_next_open() -> None:
+    """Phase 2: no hard stop, no take-profit; exit after horizon_sessions at next open."""
+    from invest.domain.exit_policy import (
+        ExitPolicyConfig,
+        KIND_FIXED_HORIZON,
+        REASON_FIXED_HORIZON,
+    )
+
+    start = date(2026, 1, 1)
+    symbol = "FH1"
+    bars = _breakout_bars(symbol, start)
+    # Entry day 21. horizon=3 → pending after 3 held sessions; fill on 4th post-signal day.
+    # Crash through stop on day 21–22; spike through take-profit (13.00) on day 22 — must not exit.
+    for i, (o, h, l, c) in enumerate(
+        (
+            (Decimal("11.40"), Decimal("11.50"), Decimal("7.00"), Decimal("11.40")),  # entry, through stop
+            (Decimal("11.40"), Decimal("14.00"), Decimal("7.00"), Decimal("13.50")),  # TP zone
+            (Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40")),  # 3rd held → pending
+            (Decimal("10.80"), Decimal("11.00"), Decimal("10.50"), Decimal("10.90")),  # fill open
+        )
+    ):
+        bars.append(
+            DailyBar(symbol, start + timedelta(days=21 + i), o, h, l, c, 100)
+        )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=3)
+
+    trades = _runner(inputs, exit_policy=config).replay(inputs).trades
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == REASON_FIXED_HORIZON
+    assert trades[0].exit_price == Decimal("10.80")
+    assert trades[0].exit_date == start + timedelta(days=24)
+
+
+def test_fixed_horizon_provenance_recorded_on_replay() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_FIXED_HORIZON
+
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("FHPROV", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("FHPROV",)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=60)
+
+    result = _runner(inputs, exit_policy=config).replay(inputs)
+
+    assert result.exit_policy["kind"] == KIND_FIXED_HORIZON
+    assert result.exit_policy["horizon_sessions"] == 60
+    assert list(result.exit_policy.keys()) == sorted(result.exit_policy.keys())

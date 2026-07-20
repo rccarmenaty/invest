@@ -34,6 +34,7 @@ from invest.domain.backtest_metrics import (
 from invest.domain.exit_policy import (
     ExitPolicyConfig,
     ExitPolicyState,
+    allows_price_path_exits,
     initial_state,
     on_bar,
     policy_provenance,
@@ -611,7 +612,11 @@ class BacktestRun:
     ) -> SimulatedTrade | None:
         new_state, decision = on_bar(position.policy, bar, history_through_bar, self._exit_policy)
         position.policy = new_state
-        if decision is None and bar.high >= position.take_profit:
+        if (
+            decision is None
+            and allows_price_path_exits(self._exit_policy)
+            and bar.high >= position.take_profit
+        ):
             return SimulatedTrade(
                 symbol=position.symbol,
                 entry_date=position.entry_date,
