@@ -80,3 +80,62 @@ flip → the 1×ATR stop, not the entry, destroys the edge. Proceed to Step 3
 (structural stop min(breakout-day low, entry − 2×ATR(20)), cooldown, ranked
 fill, §2.5 control) and Step 4 (200-DMA regime gate); benchmark hurdle stays
 open (excess-vs-universe only marginally significant).
+
+## Step 3 spec-compliant runs (2026-07-19)
+
+Produced 2026-07-19 on main @ 74d6ac7 + uncommitted WIP streaming loader (see
+incident note below). Three runs, sequential (the 2026-07-19 ~12:19 parallel
+launch exhausted the 16GB machine and left zero-byte reports).
+
+    # §2.5 spike-detector control (naïve MomentumScanner, identical replay)
+    invest-backtest --universe .../bars/universe.json --bars .../bars/bars.json \
+      --market-context .../market-context.json --strategy benchmark --split-date 2023-01-03
+    # core spec-compliant
+    invest-backtest ... --strategy core --split-date 2023-01-03
+    # uncapped spec-compliant
+    python fixtures/real-continuous/reports/uncap_backtest.py  # risk capital 1,000/trade
+
+| Run | Scanner | Trades | Net P&L | Hit | Exp/trade | IS exp | OOS exp |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline (interim, pre-PR#57) | core | 125 | −7,743 | 20.0% | −61.9 | −86.1 | −15.8 |
+| **benchmark-control** (§2.5) | naïve | 396 | −7,099 | 38.1% | −17.9 | −48.7 | **+30.0** |
+| core-speccompliant | core | 502 | −29,198 | 28.9% | −58.2 | −85.7 | −17.9 |
+| uncapped (interim) | core | 4,683 | −840,828 | 20.9% | −179.5 | −281.6 | −68.3 |
+| uncapped-speccompliant | core | 3,451 | −313,323 | 32.8% | −90.8 | −129.0 | −49.9 |
+
+Note: core-speccompliant dollar P&L is NOT comparable to the interim baseline —
+PR #57 dropped risk from 1% to 0.35%, so ~2.85x less capital per trade. Compare
+per-trade expectancy and trade count, not net P&L.
+
+### Findings
+
+1. **Spec-compliant changes improved the signal-edge measurement.** Uncapped
+   hit rate 20.9%→32.8%, per-trade expectancy −179.5→−90.8, OOS −68.3→−49.9.
+   The structural stop + entry+2×ATR(20) TP + 10-session cooldown + ranked fill
+   are materially better than the interim config. Still negative, but bleeding
+   far less per trade.
+
+2. **The §2.5 control beats the core strategy out-of-sample.** The naïve
+   spike-detector scanner (MomentumScanner, `--strategy benchmark`) under
+   identical replay assumptions: OOS expectancy **+30.0**, hit 38.1%, *positive*
+   OOS. The core momentum-selection scanner: OOS −17.9. The core does NOT beat
+   its control — fails the plan's §2.5 acceptance gate ("beats the §2.5
+   control").
+
+3. **The edge problem is the signal/ranking, not the exits.** Consistent with
+   the Step 2 event study (drift positive but path hits −1R before +1R on a coin
+   flip): the spec-compliant structural stop helped materially, but the
+   momentum *selection* adds nothing over a naïve scanner OOS. Step 4's regime
+   gate is conditional on the signal having drift; the control comparison points
+   at the ranking as the missing-value locus.
+
+### Incident note (2026-07-19 ~12:19)
+
+The first attempt launched all three runs in parallel against bars.json (1.3GB,
+8.87M bars). The old `JsonFixtureReader` read the whole file + `json.loads`
+(~9GB dict phase) + pydantic validate → ~10–12GB peak per process; three
+concurrent ≈ 30GB on a 16GB machine → collapse, zero-byte reports. A WIP
+streaming loader (`fixtures_json.py`, uncommitted at 74d6ac7+dirty) replaced
+this with incremental JSON decode + a compact forward-only bitmap for duplicate
+detection: smoke test 8,869,021 bars / 6,477 symbols in 59.3s, peak RSS
+**4.87GB** (was ~10–12GB). Runs must stay sequential on this machine.
