@@ -11,12 +11,24 @@ A published negative on *accept-for-promotion* under frozen gates. Residual rese
 _Avoid_: program kill, structure dead, full reject (unless those terms are chosen explicitly)
 
 **Program kill**:
-End of a research line (e.g. long-hold naïve/Core portfolio). No residual experiments on that line; next budget is pivot or pause only.
-_Avoid_: promotion block, temporary NO-GO
+End of a single research line (e.g. long-hold naïve/Core portfolio, R2-1 xs-reversal, PEAD under a given protocol). No residual experiments on *that* line; does not by itself end all CS alpha research.
+_Avoid_: promotion block, temporary NO-GO, Full-Stop (broader)
+
+**Full-Stop**:
+End of the CS alpha research budget after settled line kills. No new cross-sectional alpha lines (residual rescue, PEAD tape-for-alpha, Form-4 F0, ranking theater) until event-only re-open. Capital default is honest liquid beta; only non-claim engineering continues.
+_Avoid_: pause-default, soft pause, program kill (line-scoped), temporary NO-GO
 
 **NO-GO**:
 Frozen-gate failure that blocks promotion of the tested configuration. Always pair with the failing gate name (e.g. year concentration).
 _Avoid_: “failed” without naming which gate
+
+**Honest liquid beta**:
+Production capital allocation to liquid passive/market exposure without a CS alpha claim. Not a backtested signal product and not residual packaging.
+_Avoid_: TSMOM-as-alpha, paper CS books, capital_go on research lines
+
+**Non-claim engineering**:
+Providers, tooling, fixtures, CI, and docs that do not create an accept path or re-litigate settled research results.
+_Avoid_: curiosity re-runs, threshold retuning, “just one more” gate rescue
 
 ### Experiments
 
@@ -55,17 +67,17 @@ For each closed trade, apply the liquid equity proxy (SPY) open-to-open return o
 _Avoid_: calendar SPY buy-hold as primary kill metric, IWM-by-default
 
 **Pause-default**:
-After a residual experiment settles, the default next budget is research pause on that line. Form-4 audit or a new PRD requires an explicit re-open, not auto-start from a green or red residual report.
-_Avoid_: automatic Form-4, silent ranking reopen
+After a residual experiment settles, the default next budget is research pause on that line. Form-4 audit or a new PRD requires an explicit re-open, not auto-start from a green or red residual report. Superseded for the Round 2 queue by Full-Stop once R2-1 and PEAD F0 both published kill_line.
+_Avoid_: automatic Form-4, silent ranking reopen, Full-Stop (use when the whole CS budget ends)
 
 **Hard freeze**:
-Research-adjacent spend on the frozen claim is forbidden until re-open. Non-claim engineering (providers, tooling) may continue if it does not create an accept path or re-litigate settled structure results.
+Research-adjacent spend on the frozen claim is forbidden until re-open. Non-claim engineering may continue under Full-Stop and under line freezes.
 _Avoid_: soft pause, “curiosity” re-runs as research
 
 **Narrow freeze**:
-Freeze applies only to the settled residual claim (here: naïve event → fixed-horizon → slot-lottery portfolio residual). A different signal family is a new line, not a continuation.
-_Avoid_: program-wide freeze, program kill (unless chosen explicitly)
+Freeze applies only to the settled residual claim (here: naïve event → fixed-horizon → slot-lottery portfolio residual). A different signal family is a new line, not a continuation — except under Full-Stop, when new CS lines are also forbidden without event-only re-open.
+_Avoid_: program-wide freeze as a synonym for residual freeze; Full-Stop (budget-level)
 
 **Event-only re-open**:
-Freeze ends only on an explicit human decision (new PRD + grill, or written re-open with named hypothesis). No calendar review that auto-restarts budget.
-_Avoid_: check-back-Friday, silent agent restart
+Hard freeze, Full-Stop, or a line program kill ends only on an explicit human decision (new PRD + grill, or written re-open with named hypothesis). No calendar review, no auto-start from new data entitlement alone, no silent agent restart.
+_Avoid_: check-back-Friday, silent agent restart, “we have SF1 now”
