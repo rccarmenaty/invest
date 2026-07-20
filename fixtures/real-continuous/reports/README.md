@@ -81,6 +81,31 @@ flip → the 1×ATR stop, not the entry, destroys the edge. Proceed to Step 3
 fill, §2.5 control) and Step 4 (200-DMA regime gate); benchmark hurdle stays
 open (excess-vs-universe only marginally significant).
 
+## gate1a-excess.json (Gate 1a — h60 excess kill test)
+
+Driver: `research_gate1a.py`. Same position-blind Core accepted-signal cohort as
+Step 2, but measures **excess vs same-date eligible-universe mean** at h20
+(regression check), **h60 (primary gate)**, and h120 (survivorship-flagged).
+Also splits by entry year, FC-symbol cohort, and frozen ID / 52w-proximity
+quintiles.
+
+**Gate 1a (predeclared):** h60 excess mean > 0 and date-clustered t ≥ 2.5 →
+PASS; else FAIL (kills Quiet Drift / pure long-hold-as-alpha claims).
+
+**Result (2026-07-20):** **PASS** — h60 excess mean **+1.89%**, clustered **t=5.30**,
+n=11,489. h20 regression matches Step 2 (+0.36%, t=1.78). h120 excess +2.26%
+(t=4.98; full-window only). Medians remain slightly negative (right-tail driven).
+Year split: 2021 −6.74% (t−5.85); 2023–2025 strongly positive. ID q1−q5 mean
+spread only +0.55pp (smooth_better, weak) — Gate 1b not declared passed.
+
+```
+uv run python fixtures/real-continuous/reports/research_gate1a.py
+```
+
+Sequential only on 16GB hosts. Runtime dominated by `scan_decisions` + universe
+baselines. Output: `gate1a-excess.json`. Pure helpers live in
+`src/invest/application/event_study_excess.py` (unit-tested).
+
 ## Step 3 spec-compliant runs (2026-07-19)
 
 Produced 2026-07-19 on main @ 74d6ac7 + uncommitted WIP streaming loader (see
