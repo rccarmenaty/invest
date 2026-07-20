@@ -57,3 +57,15 @@ _Avoid_: calendar SPY buy-hold as primary kill metric, IWM-by-default
 **Pause-default**:
 After a residual experiment settles, the default next budget is research pause on that line. Form-4 audit or a new PRD requires an explicit re-open, not auto-start from a green or red residual report.
 _Avoid_: automatic Form-4, silent ranking reopen
+
+**Hard freeze**:
+Research-adjacent spend on the frozen claim is forbidden until re-open. Non-claim engineering (providers, tooling) may continue if it does not create an accept path or re-litigate settled structure results.
+_Avoid_: soft pause, “curiosity” re-runs as research
+
+**Narrow freeze**:
+Freeze applies only to the settled residual claim (here: naïve event → fixed-horizon → slot-lottery portfolio residual). A different signal family is a new line, not a continuation.
+_Avoid_: program-wide freeze, program kill (unless chosen explicitly)
+
+**Event-only re-open**:
+Freeze ends only on an explicit human decision (new PRD + grill, or written re-open with named hypothesis). No calendar review that auto-restarts budget.
+_Avoid_: check-back-Friday, silent agent restart

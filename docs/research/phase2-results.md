@@ -67,6 +67,7 @@ Crash / concentration notes: 2022 is the only negative fold; 2020 dominates tota
 3. **Promotion still blocked** by the year-share gate: ~86% of after-cost profit sits in 2020. That fails the predeclared concentration rule and keeps 2021-style regime risk front and center.
 4. **Do not add ranking to rescue** this result (PRD R1/R5). Next research budget should treat Phase 2 as a published negative on *accept-for-promotion*, not as a green light for Quiet Drift / Form-4 spend.
 5. **Residual follow-up (Phase 2b):** concentration autopsy under K2/S2 — see `docs/research/phase2-concentration-autopsy.md`. Verdict: **residual_hope die**; pause-default.
+6. **Freeze:** hard, event-only, narrow — full rules in the autopsy doc. No ranking / Quiet Drift / DAMB / Form-4 auto-start; re-open only via new PRD.
 
 ## How to re-run (sequential)
 
