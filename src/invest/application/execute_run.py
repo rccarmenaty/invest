@@ -79,6 +79,7 @@ class ExecuteRun:
                 snapshot.equity,
                 history,
                 bars[-1].close,
+                bars[-1].low,
             )
             intent_event = None
             if intent is not None:

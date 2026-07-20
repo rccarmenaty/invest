@@ -5,8 +5,9 @@ from enum import StrEnum
 from invest.domain.indicators import average_true_range
 from invest.domain.models import AccountSnapshot, DailyBar, OrderIntent
 
-RISK_PER_TRADE = Decimal("0.01")
-STOP_ATR_MULTIPLIER = Decimal("1")
+RISK_PER_TRADE = Decimal("0.0035")
+STOP_ATR_DAYS = 20
+STOP_ATR_MULTIPLIER = Decimal("2")
 TAKE_PROFIT_ATR_MULTIPLIER = Decimal("2")
 WHOLE_CENT_TICK = Decimal("0.01")
 SUB_PENNY_TICK = Decimal("0.0001")
@@ -36,12 +37,13 @@ def compute_intent(
     decision_date: date,
     equity: Decimal,
     history: list[DailyBar],
-    last_close: Decimal,
+    entry_price: Decimal,
+    breakout_low: Decimal,
 ) -> tuple[OrderIntent | None, GateReason | None]:
     risk_capital = equity * RISK_PER_TRADE
-    atr = average_true_range(history)
-    entry = quantize_price(last_close)
-    stop = quantize_price(entry - STOP_ATR_MULTIPLIER * atr)
+    atr = average_true_range(history, period=STOP_ATR_DAYS)
+    entry = quantize_price(entry_price)
+    stop = quantize_price(min(quantize_price(breakout_low), entry - STOP_ATR_MULTIPLIER * atr))
     take_profit = quantize_price(entry + TAKE_PROFIT_ATR_MULTIPLIER * atr)
 
     stop_distance = entry - stop

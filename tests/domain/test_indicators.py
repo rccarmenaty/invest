@@ -62,6 +62,42 @@ def test_average_true_range_slices_to_atr_days_window() -> None:
     assert atr == Decimal("1")
 
 
+def test_average_true_range_default_period_still_14() -> None:
+    """Calling with no `period` arg must keep averaging the last 14 ranges (existing
+    scanner.py/exit_policy.py callers rely on this default staying byte-identical)."""
+    start = date(2026, 1, 1)
+    history = [_bar(start, high="1000", low="0", close="500", open_="500")]
+    history += [
+        _bar(start + timedelta(days=1 + index), high="10", low="9", close="9.5", open_="9.5") for index in range(15)
+    ]
+
+    atr = average_true_range(history)
+
+    assert atr == average_true_range(history, period=14)
+
+
+def test_average_true_range_period_20_uses_wider_window() -> None:
+    """period=20 must average the last 20 ranges instead of the default 14 — the wider
+    window pulls in the outlier bar's contaminated range, changing the result."""
+    start = date(2026, 1, 1)
+    # 21 bars: outlier bar + its contaminated successor + 19 uniform bars.
+    # A 14-window slice drops both outlier-touched bars; a 20-window slice keeps the
+    # successor's contaminated range (its previous_close is the outlier's close=500).
+    history = [_bar(start, high="1000", low="0", close="500", open_="500")]
+    history += [
+        _bar(start + timedelta(days=1 + index), high="10", low="9", close="9.5", open_="9.5") for index in range(20)
+    ]
+
+    atr_20 = average_true_range(history, period=20)
+    atr_14 = average_true_range(history, period=14)
+
+    # window=20 includes the successor bar: true range = max(1, |10-500|, |9-500|) = 491
+    # remaining 19 uniform bars each contribute 1 -> (491 + 19*1) / 20
+    assert atr_20 == (Decimal("491") + Decimal("19")) / 20
+    assert atr_14 == Decimal("1")
+    assert atr_20 != atr_14
+
+
 def test_simple_moving_average_matches_hand_computed_mean_of_last_window() -> None:
     bars = _series(["1", "2", "3", "4", "5"])
 

@@ -1,10 +1,12 @@
 import argparse
 import hashlib
 import json
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
+from time import monotonic
+from typing import Callable, Sequence
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -24,6 +26,7 @@ from invest.adapters.alpaca_broker import AlpacaBroker, BrokerFetchError
 from invest.adapters.journal_memory import MemoryJournal
 from invest.application.backtest_run import (
     BacktestRun,
+    BacktestProgress,
     POINT_IN_TIME_CONTEXT_VALIDATED,
     ReplayWindowInvalidError,
 )
@@ -168,6 +171,11 @@ def _backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strategy", default="benchmark")
     parser.add_argument("--source")
     parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="emit structured backtest progress records to stderr",
+    )
+    parser.add_argument(
         "--exit-policy",
         dest="exit_policy",
         choices=BACKTEST_EXIT_POLICIES,
@@ -192,10 +200,17 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             return _backtest_cost_model_error()
         if args.strategy not in BACKTEST_STRATEGIES:
             return _backtest_strategy_error()
+        scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
         if source == "fixture":
             if args.bars is None:
                 raise MarketDataFetchError("fixture-invalid")
-            inputs = JsonFixtureReader().load(args.universe, args.bars)
+            inputs = JsonFixtureReader().load(
+                args.universe,
+                args.bars,
+                start=args.start,
+                end=args.end,
+                warmup_bars=max(0, scanner.replay_history_bars - 1),
+            )
         else:
             if args.start is None or args.end is None:
                 raise MarketDataFetchError(
@@ -237,7 +252,6 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             split_date = date.fromisoformat(args.split_date)
         except ValueError:
             return _backtest_split_error()
-        scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
         exit_policy = resolve_exit_policy(args.exit_policy)
         result = BacktestRun(
             market_context=market_context,
@@ -245,7 +259,8 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             slippage_bps=args.slippage_bps,
             tax_rate=args.tax_rate,
             exit_policy=exit_policy,
-        ).replay(inputs, split_date=split_date)
+            progress_callback=_backtest_progress_callback() if args.progress else None,
+        ).replay(inputs, split_date=split_date, start=args.start)
         metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
         segments = compute_segment_metrics(
             list(result.trades), split_date, args.slippage_bps, args.tax_rate
@@ -305,6 +320,32 @@ def _valid_cost_model(slippage_bps: Decimal, tax_rate: Decimal) -> bool:
         and Decimal("0") <= slippage_bps <= Decimal("10000")
         and Decimal("0") <= tax_rate <= Decimal("1")
     )
+
+
+def _backtest_progress_callback() -> Callable[[BacktestProgress], None]:
+    started_at = monotonic()
+
+    def report(progress: BacktestProgress) -> None:
+        elapsed = max(0.0, monotonic() - started_at)
+        if progress.processed_replay_days == 0:
+            eta = 0.0
+        else:
+            remaining_days = progress.total_replay_days - progress.processed_replay_days
+            eta = elapsed * remaining_days / progress.processed_replay_days
+        payload = {
+            "event": "backtest-progress",
+            "phase": progress.phase,
+            "processed_replay_days": progress.processed_replay_days,
+            "total_replay_days": progress.total_replay_days,
+            "accepted_decisions": progress.accepted_decisions,
+            "percent": progress.percent,
+            "ingested_bars": progress.ingested_bars,
+            "elapsed_seconds": round(elapsed, 1),
+            "eta_seconds": round(eta, 1),
+        }
+        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+
+    return report
 
 
 def _backtest_report(result, metrics, segments) -> dict:

@@ -101,6 +101,24 @@ def test_execute_run_dry_run_rescans_sizes_and_never_mutates_broker() -> None:
     assert broker.find_calls == broker.submit_calls == 0
 
 
+def test_execute_run_sizes_from_candidate_close_and_breakout_low() -> None:
+    """Confirms the breakout-low context flows through to `compute_intent`: stop must
+    reflect `min(breakout_low, entry-2*ATR20)`, not entry-only sizing. For `_accepted_bars`,
+    entry=11.40 (candidate close), breakout_low=10 (candidate low), ATR(20)=0.80 ->
+    ATR leg=9.80 wins (lower than breakout_low=10) -> stop=9.80, take_profit=13.00."""
+    broker = FakeBroker(_snapshot())
+    run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
+
+    events = run.execute(_inputs("ACME"))
+
+    intent_event = next(event for event in events if event.event_type == "order.intent.v1")
+    assert intent_event.entry_price == "11.40"
+    assert intent_event.stop_price == "9.80"
+    assert intent_event.take_profit_price == "13.00"
+    # risk_capital = 10000*0.0035 = 35; stop_distance = 1.60 -> floor(35/1.60) = 21.
+    assert intent_event.qty == 21
+
+
 def test_execute_run_halt_emits_once_then_skips_every_candidate_and_completes() -> None:
     broker = FakeBroker(_snapshot(equity=Decimal("9700"), last_equity=Decimal("10000")))
     run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
@@ -131,7 +149,10 @@ def test_execute_run_halt_emits_once_with_zero_accepted_candidates() -> None:
 
 
 def test_execute_run_continues_after_candidate_gate_failure_with_running_projection() -> None:
-    broker = FakeBroker(_snapshot())
+    # equity=10000, entry=11.40, stop=9.80 -> qty=21, notional=239.40 (0.35% risk / ATR20
+    # is a much smaller % of equity than the old 1%/ATR14 model). deployed_value is
+    # preset close to the 25% cap (2500) so ACME's running projection pushes BETA over it.
+    broker = FakeBroker(_snapshot(deployed_value=Decimal("2200")))
     run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")
 
     events = run.execute(_inputs("ACME", "BETA"))
@@ -231,8 +252,10 @@ def test_execute_projection_does_not_count_rejected_order_as_open() -> None:
 
 
 def test_execute_projection_depletes_buying_power_after_submission() -> None:
+    # entry=11.40, qty=21 -> notional=239.40; buying_power set just above one notional
+    # so ACME's submission leaves too little remaining buying power for BETA.
     broker = SequenceBroker(
-        _snapshot(buying_power=Decimal("2000"), deployed_value=Decimal("-1000")),
+        _snapshot(buying_power=Decimal("300"), deployed_value=Decimal("-1000")),
         [BrokerAck(broker_order_id="broker-1", status="submitted")],
     )
     run = ExecuteRun(MomentumScanner(), MemoryJournal(), broker, rule_version="momentum-v1")

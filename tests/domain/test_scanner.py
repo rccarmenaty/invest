@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from invest.domain.models import DailyBar, Universe
+from invest.domain.models import DailyBar, IndexedBarHistories, Universe
 from invest.domain.scanner import MomentumScanner
 from invest.domain.rejection import RejectionReason, UnsupportedInputError
 
@@ -42,6 +42,21 @@ def test_scanner_accepts_momentum_candidate_deterministically() -> None:
     ]
 
 
+def test_indexed_scan_matches_flat_scan_for_required_history() -> None:
+    universe = Universe(fixture_version="v1", symbols=("BETA", "ACME"))
+    histories = {
+        symbol: _accepted_history(symbol, date(2026, 1, 1))
+        for symbol in universe.symbols
+    }
+    scanner = MomentumScanner()
+
+    indexed = scanner.scan_indexed(universe, histories)
+    flat = scanner.scan(universe, tuple(bar for bars in histories.values() for bar in bars))
+
+    assert scanner.replay_history_bars == 21
+    assert indexed == flat
+
+
 def test_scanner_rejects_insufficient_history() -> None:
     bars = tuple(_bar("ACME", date(2026, 1, 1) + timedelta(days=index), "10") for index in range(20))
 
@@ -71,6 +86,66 @@ def test_scanner_raises_for_bars_outside_universe() -> None:
 
     assert error.value.reason is RejectionReason.UNSUPPORTED_INPUT
     assert error.value.symbols == ("UNKNOWN",)
+
+
+def test_indexed_scanner_raises_for_sticky_metadata_outside_universe() -> None:
+    universe = Universe("v1", ("ACME",))
+    histories = IndexedBarHistories(
+        by_symbol={"ACME": _accepted_history("ACME", date(2026, 1, 1))},
+        zero_volume_symbols=frozenset(("UNKNOWN",)),
+    )
+
+    with pytest.raises(UnsupportedInputError) as error:
+        MomentumScanner().scan_indexed(universe, histories)
+
+    assert error.value.symbols == ("UNKNOWN",)
+
+
+@pytest.mark.parametrize("corruption", ["zero-volume", "invalid-ohlc"])
+def test_indexed_sticky_rejection_matches_cumulative_after_bad_bar_ages_out(
+    corruption: str,
+) -> None:
+    start = date(2026, 1, 1)
+    bars = [
+        _bar("ACME", start + timedelta(days=offset), "10")
+        for offset in range(22)
+    ]
+    bars.append(_bar("ACME", start + timedelta(days=22), "11.4", volume=250))
+    first = bars[0]
+    if corruption == "zero-volume":
+        bars[0] = _bar("ACME", first.date, "10", volume=0)
+    else:
+        bars[0] = DailyBar(
+            first.symbol,
+            first.date,
+            first.open,
+            first.low,
+            first.high,
+            first.close,
+            first.volume,
+        )
+    universe = Universe("v1", ("ACME",))
+    scanner = MomentumScanner()
+
+    for count in range(scanner.replay_history_bars, len(bars) + 1):
+        cumulative = tuple(bars[:count])
+        histories = IndexedBarHistories(
+            by_symbol={"ACME": cumulative[-scanner.replay_history_bars :]},
+            zero_volume_symbols=(
+                frozenset(("ACME",))
+                if corruption == "zero-volume"
+                else frozenset()
+            ),
+            invalid_bar_symbols=(
+                frozenset(("ACME",))
+                if corruption == "invalid-ohlc"
+                else frozenset()
+            ),
+        )
+
+        assert scanner.scan_indexed(universe, histories) == scanner.scan(
+            universe, cumulative
+        )
 
 
 def test_scanner_rejects_domain_invariant_violation() -> None:
