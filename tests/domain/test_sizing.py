@@ -328,6 +328,32 @@ def test_max_concurrent_positions_boundary_exactly_five_blocks_four_does_not() -
     assert allowed is None
 
 
+def test_evaluate_gates_honors_override_max_concurrent_positions() -> None:
+    """Phase 2 portfolio structure uses a higher predeclared cap (e.g. 20)."""
+    snapshot = _snapshot()
+    intent = _intent()
+
+    allowed_at_five = evaluate_gates(
+        intent,
+        None,
+        snapshot,
+        open_position_count=5,
+        deployed_value=Decimal("0"),
+        max_concurrent_positions=20,
+    )
+    blocked_at_twenty = evaluate_gates(
+        intent,
+        None,
+        snapshot,
+        open_position_count=20,
+        deployed_value=Decimal("0"),
+        max_concurrent_positions=20,
+    )
+
+    assert allowed_at_five is None
+    assert blocked_at_twenty is GateReason.MAX_CONCURRENT_POSITIONS
+
+
 def test_max_equity_deployed_boundary_exactly_twenty_five_percent_blocks_just_under_does_not() -> None:
     snapshot = _snapshot(equity=Decimal("100000"))
     at_boundary = _intent(qty=250, entry=Decimal("100"))  # 25000 == 25% of 100000

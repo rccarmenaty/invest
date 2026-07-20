@@ -34,6 +34,7 @@ from invest.domain.backtest_metrics import (
 from invest.domain.exit_policy import (
     ExitPolicyConfig,
     ExitPolicyState,
+    allows_price_path_exits,
     initial_state,
     on_bar,
     policy_provenance,
@@ -43,6 +44,7 @@ from invest.domain.market_context import (
     ContextOutcome,
     ContextOutcomeType,
     MarketContext,
+    MarketContextIncompleteError,
 )
 from invest.domain.models import (
     AccountSnapshot,
@@ -59,7 +61,18 @@ from invest.domain.models import (
     daily_bar_is_valid,
 )
 from invest.domain.scanner import MomentumScanner
-from invest.domain.sizing import GateReason, compute_intent, evaluate_gates, evaluate_halt_gates
+from invest.domain.sizing import (
+    MAX_CONCURRENT_POSITIONS,
+    GateReason,
+    compute_intent,
+    evaluate_gates,
+    evaluate_halt_gates,
+)
+from invest.application.admission import (
+    SLOT_NOT_ADMITTED_REASON,
+    admission_provenance,
+    select_seeded_slot_admissions,
+)
 from invest.application.ports import ScannerPort
 
 NOMINAL_EQUITY = Decimal("100000")
@@ -123,6 +136,8 @@ class BacktestRun:
         tax_rate: Decimal = DEFAULT_TAX_RATE,
         exit_policy: ExitPolicyConfig | None = None,
         progress_callback: Callable[[BacktestProgress], None] | None = None,
+        max_concurrent_positions: int = MAX_CONCURRENT_POSITIONS,
+        admission_seed: int | None = None,
     ) -> None:
         self._market_context = market_context
         self._scanner = scanner or MomentumScanner()
@@ -133,6 +148,10 @@ class BacktestRun:
         self._tax_rate = tax_rate
         self._exit_policy = exit_policy if exit_policy is not None else DEFAULT_EXIT_POLICY
         self._progress_callback = progress_callback
+        if max_concurrent_positions < 1:
+            raise ValueError("max_concurrent_positions must be >= 1")
+        self._max_concurrent_positions = max_concurrent_positions
+        self._admission_seed = admission_seed
 
     def scan_decisions(
         self,
@@ -321,14 +340,16 @@ class BacktestRun:
         for session_index, current_date in enumerate(sorted(bars_by_date)):
             todays_bars = bars_by_date[current_date]
             day_start = len(trades)
-            # Context is authoritative for entry eligibility, but the current
-            # model has no independently verified terminal-position state.
-            # Existing positions therefore remain under ordinary exit policy
-            # through transient blockers and eligibility changes.
+            # Forced closes first: unsafe market-context days liquidate at bar low
+            # before ordinary exit policy (and before same-day pending entries use cash).
+            self._process_unsafe_positions(
+                current_date, positions, todays_bars, trades, context_outcomes
+            )
+            cash = self._settle_closed_positions(current_date, positions, trades, cash)
             self._process_exits(positions, todays_bars, trades, by_symbol)
             cash = self._settle_closed_positions(current_date, positions, trades, cash)
-            # Any ordinary close (trailing exit, hard stop, or time stop) recorded
-            # today starts a COOLDOWN_SESSIONS-session cooldown for that symbol.
+            # Any close (trailing exit, hard stop, time stop, fixed-horizon, or forced
+            # close) recorded today starts a COOLDOWN_SESSIONS-session cooldown.
             for trade in trades[day_start:]:
                 if trade.exit_reason != "open-at-end":
                     cooldown_release[trade.symbol] = session_index + COOLDOWN_SESSIONS + 1
@@ -346,7 +367,22 @@ class BacktestRun:
                 account_blocked=False,
             )
             halt_reason = evaluate_halt_gates(snapshot)
-            for decision in sorted(pending[current_date], key=lambda item: self._fill_rank_key(item, by_symbol)):
+            day_pending = list(pending[current_date])
+            ordered_decisions = self._order_day_entries(day_pending, by_symbol, current_date, len(positions))
+            if self._admission_seed is not None:
+                admitted = {decision.symbol for decision in ordered_decisions}
+                for decision in day_pending:
+                    if decision.symbol not in admitted:
+                        gate_counts[SLOT_NOT_ADMITTED_REASON] += 1
+                        skipped_entries.append(
+                            SkippedEntry(
+                                decision.symbol,
+                                decision.decision_date,
+                                current_date,
+                                SLOT_NOT_ADMITTED_REASON,
+                            )
+                        )
+            for decision in ordered_decisions:
                 if decision.symbol in positions:
                     gate_counts[GateReason.ALREADY_SUBMITTED.value] += 1
                     skipped_entries.append(
@@ -391,6 +427,7 @@ class BacktestRun:
                     len(positions),
                     deployed,
                     cash if self._buying_power is None else min(cash, self._buying_power),
+                    max_concurrent_positions=self._max_concurrent_positions,
                 )
                 if reason is not None:
                     gate_counts[reason.value] += 1
@@ -495,6 +532,38 @@ class BacktestRun:
             ),
             warnings=base_warnings + tuple(extra_warnings),
             exit_policy=policy_provenance(self._exit_policy),
+            admission=dict(
+                admission_provenance(
+                    max_concurrent_positions=self._max_concurrent_positions,
+                    admission_seed=self._admission_seed,
+                )
+            ),
+        )
+
+    def _order_day_entries(
+        self,
+        day_pending: list[ScanDecision],
+        by_symbol: dict[str, list[DailyBar]],
+        current_date: date,
+        open_position_count: int,
+    ) -> list[ScanDecision]:
+        """Order same-day pending fills: ranked (SPEC §2.4) or seeded-random slots."""
+        if not day_pending:
+            return []
+        if self._admission_seed is None:
+            return sorted(day_pending, key=lambda item: self._fill_rank_key(item, by_symbol))
+        free_slots = max(0, self._max_concurrent_positions - open_position_count)
+        admitted_symbols = set(
+            select_seeded_slot_admissions(
+                [decision.symbol for decision in day_pending],
+                free_slots,
+                seed=self._admission_seed,
+                day=current_date,
+            )
+        )
+        return sorted(
+            (decision for decision in day_pending if decision.symbol in admitted_symbols),
+            key=lambda item: item.symbol,
         )
 
     @staticmethod
@@ -554,6 +623,39 @@ class BacktestRun:
             symbols=self._market_context.eligible_symbols(universe.symbols, as_of),
         )
 
+    def _process_unsafe_positions(
+        self,
+        current_date: date,
+        positions: dict[str, _OpenPosition],
+        bars: dict[str, DailyBar],
+        trades: list[SimulatedTrade],
+        context_outcomes: list[ContextOutcome],
+    ) -> None:
+        """Force-close open positions on unsafe context days at same-day bar low."""
+        for symbol, position in sorted(positions.items()):
+            status = self._market_context.status(symbol, current_date)
+            if status.is_safe:
+                continue
+            bar = bars.get(symbol)
+            if bar is None:
+                raise MarketContextIncompleteError(
+                    f"unsafe position missing same-day bar for {symbol} on {current_date.isoformat()}"
+                )
+            trades.append(
+                SimulatedTrade(
+                    symbol=position.symbol,
+                    entry_date=position.entry_date,
+                    exit_date=current_date,
+                    entry_price=position.entry_price,  # raw open; never pre-slipped
+                    exit_price=bar.low,
+                    qty=position.qty,
+                    exit_reason=ContextOutcomeType.POSITION_FORCED_CLOSED.value,
+                )
+            )
+            context_outcomes.append(
+                ContextOutcome.from_status(status, ContextOutcomeType.POSITION_FORCED_CLOSED)
+            )
+
     def _settle_closed_positions(
         self,
         current_date: date,
@@ -611,7 +713,11 @@ class BacktestRun:
     ) -> SimulatedTrade | None:
         new_state, decision = on_bar(position.policy, bar, history_through_bar, self._exit_policy)
         position.policy = new_state
-        if decision is None and bar.high >= position.take_profit:
+        if (
+            decision is None
+            and allows_price_path_exits(self._exit_policy)
+            and bar.high >= position.take_profit
+        ):
             return SimulatedTrade(
                 symbol=position.symbol,
                 entry_date=position.entry_date,

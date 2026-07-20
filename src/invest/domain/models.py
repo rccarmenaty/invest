@@ -161,3 +161,5 @@ class BacktestResult:
     segments: Mapping[str, "Metrics"]
     warnings: tuple[str, ...]
     exit_policy: Mapping[str, str | int]
+    admission: Mapping[str, str | int]
+

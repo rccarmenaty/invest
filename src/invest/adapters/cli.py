@@ -41,6 +41,7 @@ from invest.domain.backtest_metrics import (
 )
 from invest.domain.exit_policy import (
     KIND_ATR_3_HIGH_WATER,
+    KIND_FIXED_HORIZON,
     KIND_TEN_DAY_LOW,
     resolve_exit_policy,
 )
@@ -49,13 +50,40 @@ from invest.domain.scanner import MomentumScanner
 from invest.domain.momentum_selection_scanner import MomentumSelectionScanner
 from invest.domain.market_context import MarketContextError
 from invest.domain.models import Universe
+from invest.domain.sizing import MAX_CONCURRENT_POSITIONS
 
 load_dotenv()
 
 RULE_VERSION = "momentum-v1"
 BACKTEST_STRATEGIES = ("benchmark", "core")
 BACKTEST_SOURCES = ("fixture", "alpaca", "sharadar")
-BACKTEST_EXIT_POLICIES = (KIND_TEN_DAY_LOW, KIND_ATR_3_HIGH_WATER)
+BACKTEST_EXIT_POLICIES = (KIND_TEN_DAY_LOW, KIND_ATR_3_HIGH_WATER, KIND_FIXED_HORIZON)
+# Phase 2 portfolio-structure default slot cap (live day-0 remains MAX_CONCURRENT_POSITIONS).
+PHASE2_MAX_CONCURRENT_POSITIONS = 20
+# Scanner labels frozen into report provenance (not Core / ID ranking).
+SCANNER_BY_STRATEGY = {
+    "benchmark": "momentum-naive-§2.5",
+    "core": "momentum-selection",
+}
+# Documented Phase 2 composition (#61): one runnable invest-backtest config.
+PHASE2_BACKTEST_COMMAND = (
+    "invest-backtest "
+    "--universe <universe.json> --bars <bars.json> --market-context <context.json> "
+    "--split-date <YYYY-MM-DD> "
+    "--strategy benchmark "
+    "--exit-policy fixed-horizon "
+    f"--max-concurrent-positions {PHASE2_MAX_CONCURRENT_POSITIONS} "
+    "--admission-seed <seed> "
+    "--slippage-bps 5"
+)
+# Flag fragment kept for tests / help that only care about the Phase 2 knobs.
+PHASE2_BACKTEST_FLAGS = (
+    "--strategy benchmark "
+    "--exit-policy fixed-horizon "
+    f"--max-concurrent-positions {PHASE2_MAX_CONCURRENT_POSITIONS} "
+    "--admission-seed <seed> "
+    "--slippage-bps 5"
+)
 
 DAY0_DISCLAIMER = (
     "DAY-0 MECHANICS ONLY: measures current day-0 paper-trading entry mechanics, "
@@ -158,7 +186,10 @@ def execute_main(argv: Sequence[str] | None = None) -> int:
 
 
 def _backtest_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="invest-backtest")
+    parser = argparse.ArgumentParser(
+        prog="invest-backtest",
+        epilog=f"Phase 2 composition: {PHASE2_BACKTEST_COMMAND}",
+    )
     parser.add_argument("--universe", type=Path, required=True)
     parser.add_argument("--bars", type=Path)
     parser.add_argument("--market-context", type=Path)
@@ -181,6 +212,23 @@ def _backtest_parser() -> argparse.ArgumentParser:
         choices=BACKTEST_EXIT_POLICIES,
         default=KIND_TEN_DAY_LOW,
     )
+    parser.add_argument(
+        "--max-concurrent-positions",
+        dest="max_concurrent_positions",
+        type=int,
+        default=MAX_CONCURRENT_POSITIONS,
+        help=(
+            "portfolio slot cap (default day-0 cap; Phase 2 uses "
+            f"{PHASE2_MAX_CONCURRENT_POSITIONS})"
+        ),
+    )
+    parser.add_argument(
+        "--admission-seed",
+        dest="admission_seed",
+        type=int,
+        default=None,
+        help="when set, same-day oversubscribe uses seeded-random slots instead of ranked fill",
+    )
     return parser
 
 
@@ -200,6 +248,8 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             return _backtest_cost_model_error()
         if args.strategy not in BACKTEST_STRATEGIES:
             return _backtest_strategy_error()
+        if args.max_concurrent_positions < 1:
+            return _backtest_max_concurrent_error()
         scanner = MomentumSelectionScanner() if args.strategy == "core" else MomentumScanner()
         if source == "fixture":
             if args.bars is None:
@@ -260,12 +310,22 @@ def backtest_main(argv: Sequence[str] | None = None) -> int:
             tax_rate=args.tax_rate,
             exit_policy=exit_policy,
             progress_callback=_backtest_progress_callback() if args.progress else None,
+            max_concurrent_positions=args.max_concurrent_positions,
+            admission_seed=args.admission_seed,
         ).replay(inputs, split_date=split_date, start=args.start)
         metrics = compute_metrics(list(result.trades), args.slippage_bps, args.tax_rate)
         segments = compute_segment_metrics(
             list(result.trades), split_date, args.slippage_bps, args.tax_rate
         )
-        report = _backtest_report(result, metrics, segments)
+        report = _backtest_report(
+            result,
+            metrics,
+            segments,
+            strategy=args.strategy,
+            scanner=SCANNER_BY_STRATEGY[args.strategy],
+            slippage_bps=args.slippage_bps,
+            tax_rate=args.tax_rate,
+        )
         print(json.dumps(report, sort_keys=True))
         return 0
     except (FixtureValidationError, UnsupportedInputError) as error:
@@ -300,6 +360,11 @@ def _backtest_cost_model_error() -> int:
 
 def _backtest_strategy_error() -> int:
     print(json.dumps({"reason": "strategy-invalid"}, sort_keys=True))
+    return 2
+
+
+def _backtest_max_concurrent_error() -> int:
+    print(json.dumps({"reason": "max-concurrent-positions-invalid"}, sort_keys=True))
     return 2
 
 
@@ -348,7 +413,16 @@ def _backtest_progress_callback() -> Callable[[BacktestProgress], None]:
     return report
 
 
-def _backtest_report(result, metrics, segments) -> dict:
+def _backtest_report(
+    result,
+    metrics,
+    segments,
+    *,
+    strategy: str,
+    scanner: str,
+    slippage_bps: Decimal,
+    tax_rate: Decimal,
+) -> dict:
     disclaimers = {
         "day0": DAY0_DISCLAIMER,
         "cost_model": COST_MODEL_DISCLAIMER,
@@ -361,6 +435,10 @@ def _backtest_report(result, metrics, segments) -> dict:
         disclaimers["survivorship"] = SURVIVORSHIP_DISCLAIMER
         disclaimers["static_universe_oos"] = STATIC_UNIVERSE_OOS_DISCLAIMER
 
+    costs = {
+        "slippage_bps": str(slippage_bps),
+        "tax_rate": str(tax_rate),
+    }
     return {
         "hit_rate": str(metrics.hit_rate),
         "expectancy": str(metrics.expectancy),
@@ -427,7 +505,11 @@ def _backtest_report(result, metrics, segments) -> dict:
         },
         "warnings": list(result.warnings),
         "disclaimers": disclaimers,
+        "strategy": strategy,
+        "scanner": scanner,
+        "costs": {key: costs[key] for key in sorted(costs)},
         "exit_policy": dict(result.exit_policy),
+        "admission": dict(result.admission),
     }
 
 

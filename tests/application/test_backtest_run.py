@@ -968,29 +968,29 @@ def test_hard_stop_beats_pending_time_stop_on_fill_bar() -> None:
     assert trade.exit_price == Decimal("9.80")  # min(open=11.00, stop=9.80)
 
 
-def test_transient_corporate_action_does_not_preempt_pending_time_stop() -> None:
+def test_forced_close_beats_pending_time_stop() -> None:
+    """Unsafe context day force-closes at bar low before ordinary pending exits."""
     start = date(2026, 1, 1)
     symbol = "TSFORCE"
     bars = _breakout_bars(symbol, start)
     bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=20))
-    blocked_day = start + timedelta(days=41)
+    forced_day = start + timedelta(days=41)
     bars.append(
-        DailyBar(symbol, blocked_day, Decimal("11.10"), Decimal("11.30"), Decimal("10.50"), Decimal("11.00"), 100)
+        DailyBar(symbol, forced_day, Decimal("11.10"), Decimal("11.30"), Decimal("10.50"), Decimal("11.00"), 100)
     )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
     context = _context_for_inputs(
         inputs,
         blockers_by_symbol={
-            symbol: (BlockerWindow(blocked_day, blocked_day, reason=ContextReason.CORPORATE_ACTION),)
+            symbol: (BlockerWindow(forced_day, forced_day, reason=ContextReason.CORPORATE_ACTION),)
         },
     )
 
     result = _runner(inputs, market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "time-stop"
-    assert result.trades[0].exit_date == blocked_day
-    assert result.trades[0].exit_price == Decimal("11.10")
-    assert result.context_outcomes == ()
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_day
+    assert result.trades[0].exit_price == Decimal("10.50")
 
 
 def test_half_r_progress_suppresses_time_stop_in_replay() -> None:
@@ -1030,33 +1030,32 @@ def test_half_r_progress_suppresses_time_stop_in_replay() -> None:
     assert trades[0].exit_reason != "time-stop"
 
 
-def test_transient_corporate_action_does_not_preempt_pending_trailing_channel() -> None:
+def test_forced_close_beats_pending_trailing_channel() -> None:
     start = date(2026, 1, 1)
     symbol = "FORCE"
     bars = _breakout_bars(symbol, start)
     bars.extend(_elevated_hold_bars(symbol, start, first_offset=21, count=10))
     signal_day = start + timedelta(days=31)
-    blocked_day = start + timedelta(days=32)
+    forced_day = start + timedelta(days=32)
     bars.append(
         DailyBar(symbol, signal_day, Decimal("11.30"), Decimal("11.40"), Decimal("11.05"), Decimal("11.00"), 100)
     )
     bars.append(
-        DailyBar(symbol, blocked_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.50"), Decimal("10.70"), 100)
+        DailyBar(symbol, forced_day, Decimal("10.80"), Decimal("11.00"), Decimal("10.50"), Decimal("10.70"), 100)
     )
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
     context = _context_for_inputs(
         inputs,
         blockers_by_symbol={
-            symbol: (BlockerWindow(blocked_day, blocked_day, reason=ContextReason.CORPORATE_ACTION),)
+            symbol: (BlockerWindow(forced_day, forced_day, reason=ContextReason.CORPORATE_ACTION),)
         },
     )
 
     result = _runner(inputs, market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "trailing-channel"
-    assert result.trades[0].exit_date == blocked_day
-    assert result.trades[0].exit_price == Decimal("10.80")
-    assert result.context_outcomes == ()
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_day
+    assert result.trades[0].exit_price == Decimal("10.50")
 
 
 def test_mutating_future_bars_does_not_change_day_n_exit() -> None:
@@ -1299,23 +1298,19 @@ def test_cooldown_blocks_reentry_for_ten_sessions_then_allows_at_eleven() -> Non
     ]
 
 
-def test_ordinary_stop_during_transient_block_starts_cooldown() -> None:
-    """A transient context block does not change ordinary stop/cooldown behavior.
-
-    The position closes through its hard stop on session T=day22. A re-signal
-    evaluated within 10 sessions (T+8, day30) remains `cooldown-active`.
-    """
+def test_forced_close_also_starts_cooldown() -> None:
+    """Forced close on session T starts cooldown; re-signal within 10 sessions is blocked."""
     from invest.domain.models import ScanDecision
 
     start = date(2026, 1, 1)
     symbol = "FC"
-    blocked_stop_day = start + timedelta(days=22)
+    forced_close_day = start + timedelta(days=22)
     bars = _cooldown_fixture_bars(symbol, start)
     inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
     context = _context_for_inputs(
         inputs,
         blockers_by_symbol={
-            symbol: (BlockerWindow(blocked_stop_day, blocked_stop_day, reason=ContextReason.CORPORATE_ACTION),)
+            symbol: (BlockerWindow(forced_close_day, forced_close_day, reason=ContextReason.CORPORATE_ACTION),)
         },
     )
     signal_days = {20, 29}  # day20 initial breakout; day29 -> evaluated day30 (T+8)
@@ -1330,10 +1325,12 @@ def test_ordinary_stop_during_transient_block_starts_cooldown() -> None:
 
     result = _runner(inputs, scanner=ScheduledScanner(), market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "stop"
-    assert result.trades[0].exit_date == blocked_stop_day
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == forced_close_day
     cooldown_skips = [entry for entry in result.skipped_entries if entry.reason == "cooldown-active"]
-    assert cooldown_skips == [SkippedEntry(symbol, start + timedelta(days=29), start + timedelta(days=30), "cooldown-active")]
+    assert cooldown_skips == [
+        SkippedEntry(symbol, start + timedelta(days=29), start + timedelta(days=30), "cooldown-active")
+    ]
 
 
 def test_scan_decisions_ignores_cooldown_state() -> None:
@@ -1663,7 +1660,7 @@ def test_pending_entry_fails_closed_when_symbol_becomes_ineligible_on_fill_day()
     assert result.gates.counts == {}
 
 
-def test_open_position_carries_through_corporate_action_and_exits_normally_later() -> None:
+def test_open_position_force_closes_on_corporate_action_day() -> None:
     start = date(2026, 1, 1)
     bars = _breakout_bars("HOLD", start)
     entry_day = start + timedelta(days=21)
@@ -1684,13 +1681,12 @@ def test_open_position_carries_through_corporate_action_and_exits_normally_later
 
     result = _runner(inputs, market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "stop"
-    assert result.trades[0].exit_date == stop_day
-    assert result.trades[0].exit_price == Decimal("9.50")
-    assert result.context_outcomes == ()
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == blocked_day
+    assert result.trades[0].exit_price == Decimal("11.20")
 
 
-def test_open_position_carries_through_temporary_ineligibility_until_bars_resume() -> None:
+def test_open_position_force_closes_on_temporary_ineligibility() -> None:
     start = date(2026, 1, 1)
     symbol = "RESUME"
     entry_day = start + timedelta(days=21)
@@ -1744,12 +1740,12 @@ def test_open_position_carries_through_temporary_ineligibility_until_bars_resume
 
     result = _runner(inputs, market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "stop"
-    assert result.trades[0].exit_date == resumed_day
-    assert result.context_outcomes == ()
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == ineligible_day
+    assert result.trades[0].exit_price == Decimal("11.20")
 
 
-def test_ineligibility_without_terminal_evidence_carries_position_to_end_of_run() -> None:
+def test_ineligibility_with_same_day_bar_force_closes_not_open_at_end() -> None:
     start = date(2026, 1, 1)
     symbol = "NO-TERMINAL-EVIDENCE"
     entry_day = start + timedelta(days=21)
@@ -1781,17 +1777,16 @@ def test_ineligibility_without_terminal_evidence_carries_position_to_end_of_run(
 
     result = _runner(inputs, market_context=context).replay(inputs)
 
-    assert result.trades[0].exit_reason == "open-at-end"
-    assert result.trades[0].exit_date == final_day
-    assert result.context_outcomes == ()
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_date == ineligible_start
 
 
-def test_carried_position_remains_deployed_while_pending_entry_uses_cash_and_equity() -> None:
+def test_forced_close_settles_before_pending_entry_uses_cash_equity_and_buying_power() -> None:
     from invest.domain.models import ScanDecision
 
     start = date(2026, 1, 1)
     entry_day = start + timedelta(days=21)
-    blocked_day = start + timedelta(days=22)
+    forced_close_day = start + timedelta(days=22)
     hold_bars = _breakout_bars("HOLD", start, extra_days=2)
     hold_bars[-2] = DailyBar(
         "HOLD",
@@ -1804,7 +1799,7 @@ def test_carried_position_remains_deployed_while_pending_entry_uses_cash_and_equ
     )
     hold_bars[-1] = DailyBar(
         "HOLD",
-        blocked_day,
+        forced_close_day,
         Decimal("11.40"),
         Decimal("11.50"),
         Decimal("10.30"),
@@ -1828,8 +1823,8 @@ def test_carried_position_remains_deployed_while_pending_entry_uses_cash_and_equ
         blockers_by_symbol={
             "HOLD": (
                 BlockerWindow(
-                    blocked_day,
-                    blocked_day,
+                    forced_close_day,
+                    forced_close_day,
                     reason=ContextReason.CORPORATE_ACTION,
                 ),
             )
@@ -1848,18 +1843,16 @@ def test_carried_position_remains_deployed_while_pending_entry_uses_cash_and_equ
     ).replay(inputs)
 
     assert [(trade.symbol, trade.exit_reason, trade.qty) for trade in result.trades] == [
-        ("HOLD", "open-at-end", 32),
+        ("HOLD", "context-position-forced-closed", 32),
         ("NEXT", "open-at-end", 31),
     ]
     assert result.skipped_entries == ()
     assert result.gates.counts == {}
-    assert result.context_outcomes == ()
-    assert result.portfolio.cash == Decimal("14307.40")
-    assert result.portfolio.equity == Decimal("15025.60")
+    assert result.portfolio.cash == Decimal("14637.00")
+    assert result.portfolio.equity == Decimal("14990.40")
 
 
-def test_context_block_does_not_authorize_terminal_position_liquidation() -> None:
-    from invest.application.backtest_run import ReplayWindowInvalidError
+def test_context_block_without_same_day_bar_is_market_context_incomplete() -> None:
     from invest.domain.models import ScanDecision
 
     start = date(2026, 1, 1)
@@ -1885,8 +1878,10 @@ def test_context_block_does_not_authorize_terminal_position_liquidation() -> Non
         },
     )
 
-    with pytest.raises(ReplayWindowInvalidError):
+    with pytest.raises(MarketContextIncompleteError) as error:
         _runner(inputs, scanner=GapSignalScanner(), market_context=context).replay(inputs)
+
+    assert "unsafe position missing same-day bar" in str(error.value)
 
 
 def test_atr_exit_policy_can_produce_atr_trail_next_open_fill() -> None:
@@ -1996,3 +1991,268 @@ def test_replaying_same_range_twice_is_byte_identical_for_atr_policy() -> None:
     second = _runner(inputs, exit_policy=config).replay(inputs)
 
     assert first == second
+
+
+def test_fixed_horizon_exit_path_holds_through_stop_and_tp_then_exits_next_open() -> None:
+    """Phase 2: no hard stop, no take-profit; exit after horizon_sessions at next open."""
+    from invest.domain.exit_policy import (
+        ExitPolicyConfig,
+        KIND_FIXED_HORIZON,
+        REASON_FIXED_HORIZON,
+    )
+
+    start = date(2026, 1, 1)
+    symbol = "FH1"
+    bars = _breakout_bars(symbol, start)
+    # Entry day 21. horizon=3 → pending after 3 held sessions; fill on 4th post-signal day.
+    # Crash through stop on day 21–22; spike through take-profit (13.00) on day 22 — must not exit.
+    for i, (o, h, l, c) in enumerate(
+        (
+            (Decimal("11.40"), Decimal("11.50"), Decimal("7.00"), Decimal("11.40")),  # entry, through stop
+            (Decimal("11.40"), Decimal("14.00"), Decimal("7.00"), Decimal("13.50")),  # TP zone
+            (Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40")),  # 3rd held → pending
+            (Decimal("10.80"), Decimal("11.00"), Decimal("10.50"), Decimal("10.90")),  # fill open
+        )
+    ):
+        bars.append(
+            DailyBar(symbol, start + timedelta(days=21 + i), o, h, l, c, 100)
+        )
+    inputs = FixtureInputs(Universe("v1", (symbol,)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=3)
+
+    trades = _runner(inputs, exit_policy=config).replay(inputs).trades
+
+    assert len(trades) == 1
+    assert trades[0].exit_reason == REASON_FIXED_HORIZON
+    assert trades[0].exit_price == Decimal("10.80")
+    assert trades[0].exit_date == start + timedelta(days=24)
+
+
+def test_fixed_horizon_provenance_recorded_on_replay() -> None:
+    from invest.domain.exit_policy import ExitPolicyConfig, KIND_FIXED_HORIZON
+
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("FHPROV", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("FHPROV",)), tuple(bars))
+    config = ExitPolicyConfig(kind=KIND_FIXED_HORIZON, horizon_sessions=60)
+
+    result = _runner(inputs, exit_policy=config).replay(inputs)
+
+    assert result.exit_policy["kind"] == KIND_FIXED_HORIZON
+    assert result.exit_policy["horizon_sessions"] == 60
+    assert list(result.exit_policy.keys()) == sorted(result.exit_policy.keys())
+
+
+def _multi_symbol_same_day_breakouts(symbols: tuple[str, ...], start: date) -> FixtureInputs:
+    """Identical breakout shape on every symbol so capital admits many concurrent fills."""
+    bars: list[DailyBar] = []
+    for symbol in symbols:
+        bars.extend(_breakout_bars(symbol, start, extra_days=2))
+    return FixtureInputs(Universe("v1", symbols), tuple(bars))
+
+
+def test_seeded_slot_admission_under_cap_admits_all_eligible() -> None:
+    """When candidates <= free slots, all same-day signals fill (subject to cash/risk)."""
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=5,
+        admission_seed=11,
+    ).replay(inputs)
+
+    filled = {trade.symbol for trade in result.trades}
+    assert filled == set(symbols)
+    assert result.admission["kind"] == "seeded-random"
+    assert result.admission["max_concurrent_positions"] == 5
+    assert result.admission["seed"] == 11
+
+
+def test_seeded_slot_admission_over_cap_limits_entries_to_free_slots() -> None:
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1", "D1", "E1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=2,
+        admission_seed=7,
+    ).replay(inputs)
+
+    filled = {trade.symbol for trade in result.trades}
+    assert len(filled) == 2
+    assert filled <= set(symbols)
+    skipped_lottery = [
+        entry for entry in result.skipped_entries if entry.reason == "slot-not-admitted"
+    ]
+    assert len(skipped_lottery) == 3
+
+
+def test_seeded_slot_admission_same_seed_is_deterministic() -> None:
+    start = date(2026, 1, 1)
+    symbols = ("A1", "B1", "C1", "D1")
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+    kwargs = dict(max_concurrent_positions=2, admission_seed=99)
+
+    first = {t.symbol for t in _runner(inputs, **kwargs).replay(inputs).trades}
+    second = {t.symbol for t in _runner(inputs, **kwargs).replay(inputs).trades}
+
+    assert first == second
+    assert len(first) == 2
+
+
+def test_seeded_slot_admission_different_seed_can_change_set() -> None:
+    start = date(2026, 1, 1)
+    symbols = tuple(f"S{i}" for i in range(8))
+    inputs = _multi_symbol_same_day_breakouts(symbols, start)
+
+    sets = {
+        frozenset(
+            t.symbol
+            for t in _runner(inputs, max_concurrent_positions=2, admission_seed=seed)
+            .replay(inputs)
+            .trades
+        )
+        for seed in range(30)
+    }
+
+    assert len(sets) > 1
+
+
+def test_seeded_slot_admission_does_not_prefer_higher_momentum() -> None:
+    """Phase 2 path must not use Core ranking: oversubscribed day is seed-driven only."""
+    from invest.application.admission import select_seeded_slot_admissions
+
+    start = date(2026, 1, 1)
+    near_level = Decimal("110")
+    far_days = 231
+
+    def _bars(symbol: str, far_close: Decimal) -> list[DailyBar]:
+        far_bars = [
+            DailyBar(
+                symbol,
+                start + timedelta(days=i),
+                far_close,
+                far_close + Decimal("0.40"),
+                far_close - Decimal("0.40"),
+                far_close,
+                100,
+            )
+            for i in range(far_days)
+        ]
+        return far_bars + _tight_stop_bars(
+            symbol, start + timedelta(days=far_days), pre_days=21, near_level=near_level
+        )
+
+    # BRAVO has much higher momentum; ranked path would prefer it. Seeded path must
+    # match pure select_seeded_slot_admissions, not momentum order.
+    alpha_bars = _bars("ALPHA", far_close=Decimal("109"))
+    bravo_bars = _bars("BRAVO", far_close=Decimal("80"))
+    charlie_bars = _bars("CHARLIE", far_close=Decimal("100"))
+    inputs = FixtureInputs(
+        Universe("v1", ("ALPHA", "BRAVO", "CHARLIE")),
+        tuple(alpha_bars + bravo_bars + charlie_bars),
+    )
+    seed = 3
+    # Breakout on far_days+pre_days; next-open fill is the following calendar day.
+    fill_day = start + timedelta(days=far_days + 21 + 1)
+    expected = set(
+        select_seeded_slot_admissions(
+            ("ALPHA", "BRAVO", "CHARLIE"),
+            free_slots=1,
+            seed=seed,
+            day=fill_day,
+        )
+    )
+
+    result = _runner(
+        inputs,
+        max_concurrent_positions=1,
+        admission_seed=seed,
+        equity=Decimal("1_000_000"),
+    ).replay(inputs)
+
+    entry_symbols = {trade.symbol for trade in result.trades}
+    assert entry_symbols == expected
+
+
+def test_default_admission_provenance_is_ranked() -> None:
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("RANKED", start, extra_days=1)
+    inputs = FixtureInputs(Universe("v1", ("RANKED",)), tuple(bars))
+
+    result = _runner(inputs).replay(inputs)
+
+    assert result.admission["kind"] == "ranked"
+    assert result.admission["max_concurrent_positions"] == 5
+    assert "seed" not in result.admission
+
+
+def test_unsafe_position_forces_close_before_ordinary_exit_at_bar_low() -> None:
+    """Market-context unsafe day force-closes open positions at bar low (FC)."""
+    start = date(2026, 1, 1)
+    bars = _breakout_bars("HOLD", start)
+    entry_day = start + timedelta(days=21)
+    unsafe_day = start + timedelta(days=22)
+    bars.append(
+        DailyBar("HOLD", entry_day, Decimal("11.40"), Decimal("11.50"), Decimal("11.30"), Decimal("11.40"), 100)
+    )
+    bars.append(
+        DailyBar("HOLD", unsafe_day, Decimal("11.40"), Decimal("13.50"), Decimal("10.20"), Decimal("13.00"), 100)
+    )
+    inputs = FixtureInputs(Universe("v1", ("HOLD",)), tuple(bars))
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            "HOLD": (
+                BlockerWindow(unsafe_day, unsafe_day, reason=ContextReason.EARNINGS_CONTEXT_MISSING),
+            )
+        },
+    )
+
+    result = _runner(inputs, market_context=context).replay(inputs)
+
+    assert result.trades[0].exit_reason == "context-position-forced-closed"
+    assert result.trades[0].exit_price == Decimal("10.20")
+    assert result.context_outcomes == (
+        ContextOutcome(
+            outcome_type=ContextOutcomeType.POSITION_FORCED_CLOSED,
+            reason=ContextReason.EARNINGS_CONTEXT_MISSING,
+            symbol="HOLD",
+            date=unsafe_day,
+        ),
+    )
+
+
+def test_unsafe_position_without_same_day_bar_aborts_as_market_context_incomplete() -> None:
+    from invest.domain.models import ScanDecision
+
+    start = date(2026, 1, 1)
+    gap_bars = _breakout_bars("GAP", start, extra_days=2)
+    missing_date = start + timedelta(days=22)
+    clock_bar = DailyBar("CLOCK", missing_date, Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), 100)
+
+    class GapSignalScanner(MomentumScanner):
+        def scan(self, universe, bars):  # type: ignore[override]
+            current_day = max(bar.date for bar in bars)
+            return [ScanDecision("GAP", current_day, True)] if current_day == start + timedelta(days=20) else []
+
+    inputs = FixtureInputs(
+        Universe("v1", ("GAP", "CLOCK")),
+        tuple(bar for bar in gap_bars if bar.date != missing_date) + (clock_bar,),
+    )
+    context = _context_for_inputs(
+        inputs,
+        blockers_by_symbol={
+            "GAP": (
+                BlockerWindow(missing_date, missing_date, reason=ContextReason.CORPORATE_ACTION),
+            )
+        },
+    )
+
+    with pytest.raises(MarketContextIncompleteError) as error:
+        _runner(inputs, scanner=GapSignalScanner(), market_context=context).replay(inputs)
+
+    assert "unsafe position missing same-day bar" in str(error.value)

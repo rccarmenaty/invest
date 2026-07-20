@@ -240,6 +240,19 @@ def test_exit_policy_flag_is_backtest_only_and_absent_from_execute_and_scan_pars
     assert "exit_policy" not in scan_options
 
 
+def test_phase2_admission_flags_are_backtest_only_and_absent_from_execute_and_scan() -> None:
+    from invest.adapters.cli import _backtest_parser, _execute_parser, _parser
+
+    backtest_options = {action.dest for action in _backtest_parser()._actions}
+    execute_options = {action.dest for action in _execute_parser()._actions}
+    scan_options = {action.dest for action in _parser()._actions}
+
+    for flag in ("max_concurrent_positions", "admission_seed"):
+        assert flag in backtest_options
+        assert flag not in execute_options
+        assert flag not in scan_options
+
+
 def test_sharadar_source_is_backtest_only_and_protected_snapshot_data_is_ignored() -> None:
     from invest.adapters.cli import _backtest_parser, _execute_parser, _parser
 
