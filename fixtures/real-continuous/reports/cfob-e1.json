@@ -2,7 +2,7 @@
   "stage": "E1",
   "line": "cfob-insider-purchase-clusters",
   "experiment_id": "cfob-e1",
-  "git_sha": "d420b5c0fca5b4c3920b9f4a953e45866ef39c8a-dirty",
+  "git_sha": "99861ca3658763de310668ee574b83a40152f686",
   "verdict": "kill_line",
   "capital_go": false,
   "implementability_eligible": false,
@@ -227,7 +227,7 @@
         "start": "2006-01-01",
         "end": "2026-07-18"
       },
-      "source": "yahoo-chart-v8-fetch",
+      "source": "sidecar-file",
       "session_count": 5166
     },
     "universe_filter_diagnostics": {
