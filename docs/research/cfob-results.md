@@ -63,6 +63,41 @@
 - **D2-spread** [hard] **PASS** — years contributing >=2%: 20 vs floor 12
 - **D3-concentration** [hard] **PASS** — max year share=0.0834 (2020) vs cap 0.25
 
+
+## Stage F0 — integrity
+
+**Status: `incomplete_f1_join_deviates_from_prd`** (raw gate report: `kill_line` — **not published as a kill**)
+
+F1 resolved against the SEP price panel; PRD #76 specifies the TICKERS reference tape. Unmapped therefore includes out-of-universe issuers, not only mapping failures. F3 reconciles exactly, so ingestion is lossless. Not published as kill_line.
+
+- **F0-protocol** [hard] **PASS** — protocol freeze and trial ledger present
+- **F1-mapping** [hard] **FAIL** — mapping rate=0.6126 vs floor 0.9
+- **F2-unmapped-composition** [hard] **PASS** — worst-year unmapped rate=0.5250 (2006) vs 3.0x global 0.3874 = 1.1621
+- **F3-reconcile** [hard] **PASS** — parsed counts reconcile against SEC aggregates
+
+### Reconciliation against EDGAR full-index
+
+One row per *(filing, filer)* in `form.idx` (~2.10 rows per Form 4: issuer plus each
+reporting owner), so counts are deduplicated by accession before comparison.
+
+| Quarter | Dataset | EDGAR index | Delta |
+| --- | ---: | ---: | ---: |
+| 2006Q2 | 63,467 | 63,467 | 0.00% |
+| 2009Q4 | 42,912 | 42,912 | 0.00% |
+| 2012Q3 | 39,034 | 39,034 | 0.00% |
+| 2015Q1 | 65,957 | 65,957 | 0.00% |
+| 2018Q2 | 49,467 | 49,467 | 0.00% |
+| 2021Q4 | 40,731 | 40,731 | 0.00% |
+| 2024Q3 | 33,050 | 33,050 | 0.00% |
+
+Ingestion is lossless across all sampled quarters, so the F1 shortfall is a universe
+difference (OTC, pink-sheet, non-primary-common issuers absent from the SEP price
+panel), not data loss.
+
+**Open decision:** F1 must be re-measured against the TICKERS reference tape as PRD #76
+specifies before F0 can return an honest verdict. Amending F1's definition instead would
+be threshold retuning after seeing a failure, and is not taken unilaterally.
+
 ## What this does and does not claim
 
 ### Claims

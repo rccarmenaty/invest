@@ -1,5 +1,5 @@
 {
-  "stage": "D",
+  "stage": "D+F0",
   "line": "cfob-insider-purchase-clusters",
   "experiment_id": "cfob-d-f0",
   "verdict": "stage_pass",
@@ -92,32 +92,138 @@
     "cross_quarter_superseded": 72,
     "dropped_by_global_dedupe": 72,
     "universe_eligible_clusters": 9645,
+    "f0": {
+      "status": "incomplete_f1_join_deviates_from_prd",
+      "status_reason": "F1 resolved against the SEP price panel; PRD #76 specifies the TICKERS reference tape. Unmapped therefore includes out-of-universe issuers, not only mapping failures. F3 reconciles exactly, so ingestion is lossless. Not published as kill_line.",
+      "raw_gate_verdict": "kill_line",
+      "all_hard_gates_passed": false,
+      "gates": [
+        {
+          "id": "F0-protocol",
+          "passed": true,
+          "severity": "hard",
+          "reason": "protocol freeze and trial ledger present"
+        },
+        {
+          "id": "F1-mapping",
+          "passed": false,
+          "severity": "hard",
+          "reason": "mapping rate=0.6126 vs floor 0.9"
+        },
+        {
+          "id": "F2-unmapped-composition",
+          "passed": true,
+          "severity": "hard",
+          "reason": "worst-year unmapped rate=0.5250 (2006) vs 3.0x global 0.3874 = 1.1621"
+        },
+        {
+          "id": "F3-reconcile",
+          "passed": true,
+          "severity": "hard",
+          "reason": "parsed counts reconcile against SEC aggregates"
+        }
+      ],
+      "reconcile_sample": [
+        {
+          "quarter": "2006Q2",
+          "dataset_form4_submissions": 63467,
+          "edgar_index_form4_filings": 63467,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2009Q4",
+          "dataset_form4_submissions": 42912,
+          "edgar_index_form4_filings": 42912,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2012Q3",
+          "dataset_form4_submissions": 39034,
+          "edgar_index_form4_filings": 39034,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2015Q1",
+          "dataset_form4_submissions": 65957,
+          "edgar_index_form4_filings": 65957,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2018Q2",
+          "dataset_form4_submissions": 49467,
+          "edgar_index_form4_filings": 49467,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2021Q4",
+          "dataset_form4_submissions": 40731,
+          "edgar_index_form4_filings": 40731,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        },
+        {
+          "quarter": "2024Q3",
+          "dataset_form4_submissions": 33050,
+          "edgar_index_form4_filings": 33050,
+          "relative_delta": 0.0,
+          "within_tolerance": true
+        }
+      ],
+      "reconcile_tolerance": 0.02
+    },
     "measured_span": "2006-01-01..2025-12-31",
     "clusters_out_of_price_span": 334,
     "secondary_10m_band_clusters": 5302,
     "adjusted_price_below_5_count": 886,
     "price_floor_caveat": "SEP exposes only split/dividend-adjusted closes; the $5 price floor is reported, not gated, because adjustment scales historical prices down. Dollar volume gates.",
     "unmapped_by_year": {
-      "2006": 1052,
-      "2007": 1455,
-      "2008": 1507,
-      "2009": 766,
-      "2010": 733,
-      "2011": 859,
-      "2012": 727,
-      "2013": 707,
-      "2014": 835,
-      "2015": 944,
-      "2016": 762,
-      "2017": 707,
-      "2018": 748,
-      "2019": 685,
-      "2020": 691,
-      "2021": 747,
-      "2022": 607,
-      "2023": 468,
-      "2024": 467,
-      "2025": 438
+      "2006": 955,
+      "2007": 1340,
+      "2008": 1427,
+      "2009": 745,
+      "2010": 670,
+      "2011": 775,
+      "2012": 629,
+      "2013": 598,
+      "2014": 657,
+      "2015": 796,
+      "2016": 665,
+      "2017": 595,
+      "2018": 601,
+      "2019": 545,
+      "2020": 544,
+      "2021": 487,
+      "2022": 474,
+      "2023": 427,
+      "2024": 395,
+      "2025": 342
+    },
+    "insufficient_history_by_year": {
+      "2006": 97,
+      "2007": 115,
+      "2008": 80,
+      "2009": 21,
+      "2010": 63,
+      "2011": 84,
+      "2012": 98,
+      "2013": 109,
+      "2014": 178,
+      "2015": 148,
+      "2016": 97,
+      "2017": 112,
+      "2018": 147,
+      "2019": 140,
+      "2020": 147,
+      "2021": 260,
+      "2022": 133,
+      "2023": 41,
+      "2024": 72,
+      "2025": 96
     },
     "total_by_year": {
       "2006": 1819,

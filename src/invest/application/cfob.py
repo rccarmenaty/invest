@@ -11,12 +11,12 @@ Stage E1 (returns) is authorised separately and is not implemented here.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from math import sqrt
-from typing import Iterable, Mapping, Sequence
 
 from invest.domain.models import InsiderTransaction
 
@@ -55,8 +55,12 @@ class ProtocolConfig:
     min_distinct_insiders: int = 2
     secondary_cluster_window_days: int = 60
 
-    # Universe (habitat floor; house $10M screen is a secondary diagnostic)
+    # Universe (habitat floor; house $10M screen is a secondary diagnostic).
+    # min_price is diagnostic on adjusted closes (ADR 0002 amendment): SEP exposes
+    # only split/dividend-adjusted prices, so gating on $5 would drop early years
+    # for a representation reason. Dollar volume is the binding habitat gate.
     min_price: Decimal = Decimal("5")
+    gate_on_min_price: bool = False
     min_dollar_volume: Decimal = Decimal("2000000")
     dollar_volume_window: int = 20
     min_history_bars: int = 252
@@ -270,6 +274,101 @@ def qualifying_purchases(
         indirect_ownership=indirect,
     )
     return tuple(kept), counts
+
+
+# --- Purchase mapping (F0) ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ListingWindow:
+    """One continuous listing interval for an as-filed trading symbol.
+
+    Built from TICKERS ``firstpricedate``/``lastpricedate`` (preferred) or, when
+    that table is unavailable, from the first/last observed SEP session. Open
+    listings use ``last_price_date=None``.
+    """
+
+    symbol: str
+    first_price_date: date | None
+    last_price_date: date | None
+
+    def covers(self, as_of: date) -> bool:
+        if self.first_price_date is not None and as_of < self.first_price_date:
+            return False
+        if self.last_price_date is not None and as_of > self.last_price_date:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class PurchaseMappingResult:
+    """Purchase-level map of as-filed symbols onto listing windows."""
+
+    mapped: tuple[InsiderTransaction, ...]
+    unmapped: tuple[InsiderTransaction, ...]
+    ambiguous: tuple[InsiderTransaction, ...]
+    unmapped_by_year: dict[int, int]
+    total_by_year: dict[int, int]
+    ambiguous_by_year: dict[int, int]
+
+    @property
+    def mapped_count(self) -> int:
+        return len(self.mapped)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.mapped) + len(self.unmapped) + len(self.ambiguous)
+
+
+def map_purchases(
+    purchases: Iterable[InsiderTransaction],
+    windows: Sequence[ListingWindow],
+) -> PurchaseMappingResult:
+    """Map qualifying purchases via listing windows on filing-date.
+
+    Spec: as-filed ``ISSUERTRADINGSYMBOL`` joined on
+    ``firstpricedate ≤ FILING_DATE ≤ lastpricedate``. Ambiguous multi-matches
+    are excluded with counted reasons — not silently assigned.
+    """
+
+    by_symbol: dict[str, list[ListingWindow]] = defaultdict(list)
+    for window in windows:
+        by_symbol[window.symbol.upper()].append(window)
+
+    mapped: list[InsiderTransaction] = []
+    unmapped: list[InsiderTransaction] = []
+    ambiguous: list[InsiderTransaction] = []
+    unmapped_by_year: dict[int, int] = defaultdict(int)
+    total_by_year: dict[int, int] = defaultdict(int)
+    ambiguous_by_year: dict[int, int] = defaultdict(int)
+
+    for purchase in purchases:
+        year = purchase.filing_date.year
+        total_by_year[year] += 1
+        symbol = purchase.trading_symbol.strip().upper()
+        if not symbol:
+            unmapped.append(purchase)
+            unmapped_by_year[year] += 1
+            continue
+        hits = [window for window in by_symbol.get(symbol, ()) if window.covers(purchase.filing_date)]
+        if len(hits) == 1:
+            mapped.append(purchase)
+        elif len(hits) > 1:
+            ambiguous.append(purchase)
+            ambiguous_by_year[year] += 1
+            unmapped_by_year[year] += 1  # composition treats ambiguous as unmapped residual
+        else:
+            unmapped.append(purchase)
+            unmapped_by_year[year] += 1
+
+    return PurchaseMappingResult(
+        mapped=tuple(mapped),
+        unmapped=tuple(unmapped),
+        ambiguous=tuple(ambiguous),
+        unmapped_by_year=dict(unmapped_by_year),
+        total_by_year=dict(total_by_year),
+        ambiguous_by_year=dict(ambiguous_by_year),
+    )
 
 
 # --- Cluster construction ----------------------------------------------------
@@ -580,6 +679,128 @@ def evaluate_f3_reconcile(*, reconciled: bool | None) -> CfobGateResult:
     )
 
 
+def evaluate_f4_parse_coverage(
+    *, archives_expected: int | None, archives_parsed: int | None
+) -> CfobGateResult:
+    """Every cached archive that should contribute must parse cleanly."""
+
+    if archives_expected is None or archives_parsed is None:
+        return _gate(
+            "F4-parse-coverage",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="parse coverage not measured — fail closed",
+        )
+    if archives_expected <= 0:
+        return _gate(
+            "F4-parse-coverage",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="no archives expected — fail closed",
+        )
+    passed = archives_parsed >= archives_expected
+    return _gate(
+        "F4-parse-coverage",
+        passed=passed,
+        severity=GateSeverity.HARD,
+        reason=(
+            f"archives parsed={archives_parsed} vs expected {archives_expected}"
+        ),
+    )
+
+
+def evaluate_f5_derivative_exclusion(*, derivative_rows_in_qualified: int | None) -> CfobGateResult:
+    """Qualified stream must contain zero derivative rows (NONDERIV_TRANS only)."""
+
+    if derivative_rows_in_qualified is None:
+        return _gate(
+            "F5-derivative-exclusion",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="derivative exclusion not measured — fail closed",
+        )
+    passed = derivative_rows_in_qualified == 0
+    return _gate(
+        "F5-derivative-exclusion",
+        passed=passed,
+        severity=GateSeverity.HARD,
+        reason=(
+            "qualified stream is non-derivative only"
+            if passed
+            else f"derivative rows in qualified stream={derivative_rows_in_qualified}"
+        ),
+    )
+
+
+def evaluate_f6_amendment_dedupe(*, amendment_dedupe_measured: bool) -> CfobGateResult:
+    if not amendment_dedupe_measured:
+        return _gate(
+            "F6-amendment-dedupe",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="amendment dedupe not measured — fail closed",
+        )
+    return _gate(
+        "F6-amendment-dedupe",
+        passed=True,
+        severity=GateSeverity.HARD,
+        reason="amendment dedupe measured; original filing date kept as known-time",
+    )
+
+
+def evaluate_f7_late_filing_share(*, late_filed: int | None, qualified: int | None) -> CfobGateResult:
+    """Late-filing share must be measured. It is reported, not thresholded.
+
+    No predeclared share cap was grilled; an unmeasured share fails closed so a
+    silent zero cannot masquerade as a clean tape.
+    """
+
+    if late_filed is None or qualified is None:
+        return _gate(
+            "F7-late-filing-share",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="late-filing share not measured — fail closed",
+        )
+    if qualified <= 0:
+        return _gate(
+            "F7-late-filing-share",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="no qualified purchases — late-filing share undefined, fail closed",
+        )
+    share = late_filed / qualified
+    return _gate(
+        "F7-late-filing-share",
+        passed=True,
+        severity=GateSeverity.HARD,
+        reason=f"late_filed={late_filed} of {qualified} qualified (share={share:.6f}); reported, not capped",
+    )
+
+
+def evaluate_f8_off_market_price(*, off_market_share: float | None, reason: str) -> CfobGateResult:
+    """Off-market-price share is an F0 diagnostic (not a filter).
+
+    When the price panel has no unadjusted high/low band the share is not
+    measurable; that fact is recorded as an INFO diagnostic rather than a hard
+    kill so adjusted-only SEP does not re-seal Full-Stop on a data-shape limit.
+    """
+
+    if off_market_share is None:
+        return _gate(
+            "F8-off-market-price",
+            passed=True,
+            severity=GateSeverity.INFO,
+            reason=reason or "off-market-price share not measurable on this panel",
+        )
+    return _gate(
+        "F8-off-market-price",
+        passed=True,
+        severity=GateSeverity.INFO,
+        reason=f"off-market-price share={off_market_share:.4f} (diagnostic only)",
+    )
+
+
 # --- Reports -----------------------------------------------------------------
 
 
@@ -619,6 +840,17 @@ def evaluate_stage_f0(
     unmapped_by_year: Mapping[int, int],
     total_by_year: Mapping[int, int],
     reconciled: bool | None,
+    archives_expected: int | None = None,
+    archives_parsed: int | None = None,
+    derivative_rows_in_qualified: int | None = None,
+    amendment_dedupe_measured: bool = False,
+    late_filed: int | None = None,
+    qualified: int | None = None,
+    off_market_share: float | None = None,
+    off_market_reason: str = (
+        "SEP panel exposes only adjusted open/close; no unadjusted high/low band "
+        "for off-market-price diagnostic"
+    ),
     config: ProtocolConfig = PROTOCOL,
 ) -> CfobGateReport:
     gates = (
@@ -630,8 +862,28 @@ def evaluate_stage_f0(
             unmapped_by_year=unmapped_by_year, total_by_year=total_by_year, config=config
         ),
         evaluate_f3_reconcile(reconciled=reconciled),
+        evaluate_f4_parse_coverage(
+            archives_expected=archives_expected, archives_parsed=archives_parsed
+        ),
+        evaluate_f5_derivative_exclusion(
+            derivative_rows_in_qualified=derivative_rows_in_qualified
+        ),
+        evaluate_f6_amendment_dedupe(amendment_dedupe_measured=amendment_dedupe_measured),
+        evaluate_f7_late_filing_share(late_filed=late_filed, qualified=qualified),
+        evaluate_f8_off_market_price(
+            off_market_share=off_market_share, reason=off_market_reason
+        ),
     )
     return _report(gates, stage="F0")
+
+
+def combine_stage_reports(*reports: CfobGateReport) -> CfobGateReport:
+    """Any stage hard-fail kills the line. Top-level verdict may not bury an F0 kill."""
+
+    if not reports:
+        raise ValueError("combine_stage_reports requires at least one report")
+    gates = tuple(gate for report in reports for gate in report.gates)
+    return _report(gates, stage="combined")
 
 
 def build_cfob_artifact(
@@ -662,7 +914,14 @@ def build_cfob_artifact(
             "cluster_window_days": config.cluster_window_days,
             "min_distinct_insiders": config.min_distinct_insiders,
             "min_price": str(config.min_price),
+            "gate_on_min_price": config.gate_on_min_price,
+            "min_price_role": (
+                "primary_habitat_gate"
+                if config.gate_on_min_price
+                else "diagnostic_on_adjusted_close"
+            ),
             "min_dollar_volume": str(config.min_dollar_volume),
+            "min_dollar_volume_role": "primary_habitat_gate",
             "min_clusters": config.min_clusters,
             "min_contributing_years": config.min_contributing_years,
             "min_year_share": config.min_year_share,

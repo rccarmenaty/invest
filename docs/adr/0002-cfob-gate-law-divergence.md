@@ -19,7 +19,8 @@ CFOB is an **event-cohort** study on insider purchase clusters. R2-1, CMFT, and 
 ### 3. Universe floor: house $10M screen (precedent) vs $2M (chosen)
 
 - **House eligible-universe screen** (price ≥ $10, 20-bar median dollar volume ≥ $10M) — maximum comparability with the Gate-1a cohort. Rejected as primary: the surviving-anomaly habitat in the literature is small/mid caps with high arbitrage costs, mostly *below* that floor. Testing where the edge is not claimed to live designs the line to fail, then invites post-hoc promotion of a secondary band.
-- **Price ≥ $5, 20-bar median dollar volume ≥ $2M** (chosen) with a 10/25/50 bps cost ladder and the **primary verdict taken at 25 bps**. Capital here is retail-small, so capacity is not binding; spread and slippage are, and the 25 bps primary prices them in. The $10M band is reported as a secondary comparability diagnostic.
+- **Habitat floor (chosen):** 20-bar median dollar volume ≥ **$2M** and 252 bars of history, with a 10/25/50 bps cost ladder and the **primary E1 verdict taken at 25 bps**. Capital here is retail-small, so capacity is not binding; spread and slippage are, and the 25 bps primary prices them in. The $10M band is reported as a secondary comparability diagnostic.
+- **Price ≥ $5 — diagnostic on adjusted closes, not a hard gate (amended 2026-07-21 after Stage D measurement).** The grilled primary named both price ≥ $5 and $2M ADV. On this repo's SEP panel only split/dividend-**adjusted** closes are available (`close_adj`). Gating on adjusted $5 drops early-year clusters for a *representation* reason (adjustment scales historical prices down), not a liquidity one. Dollar volume is near-invariant to that adjustment and remains the binding habitat gate. The count of clusters whose adjusted close sits below $5 is reported in the artifact (`adjusted_price_below_5_count`); protocol records `gate_on_min_price=false` and `min_price_role=diagnostic_on_adjusted_close`. Reinstating a hard $5 gate requires unadjusted prices (or a verified as-traded proxy) and is a **new trial**.
 - **Sub-$2M microcap primary** — closest to the literature, rejected on execution honesty for a real account.
 
 ## Consequences
@@ -28,3 +29,4 @@ CFOB is an **event-cohort** study on insider purchase clusters. R2-1, CMFT, and 
 - The divergences are **not** a loosening: the placebo null is strictly harder than raw excess, the 25 bps primary cost bar is stricter than the 10 bps used elsewhere, and the power precheck (MDS ≤ 1.25%) is calibrated to a decayed effect size rather than a convenient one.
 - Prior lines stay settled. Nothing here reopens residual, R2-1, PEAD, or CMFT #74, and none of these bars may be back-ported to rescue them.
 - Changing any of the three later is a **new trial** and must be recorded as such against the deflated-Sharpe standard.
+- Demoting the $5 price floor to a diagnostic does **not** reopen residual lines; it only records what this tape can honestly measure.

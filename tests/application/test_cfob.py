@@ -9,10 +9,12 @@ import pytest
 
 from invest.application.cfob import (
     PROTOCOL,
+    ListingWindow,
     ProtocolConfig,
     Verdict,
     build_cfob_artifact,
     build_clusters,
+    combine_stage_reports,
     de_overlap,
     dedupe_amendments,
     evaluate_d1_volume,
@@ -21,8 +23,12 @@ from invest.application.cfob import (
     evaluate_f1_mapping_rate,
     evaluate_f2_unmapped_composition,
     evaluate_f3_reconcile,
+    evaluate_f4_parse_coverage,
+    evaluate_f5_derivative_exclusion,
+    evaluate_f7_late_filing_share,
     evaluate_stage_d,
     evaluate_stage_f0,
+    map_purchases,
     min_detectable_size,
     qualifying_purchases,
     required_events,
@@ -473,33 +479,107 @@ def test_unreconciled_counts_fail_closed() -> None:
     assert evaluate_f3_reconcile(reconciled=None).passed is False
 
 
+def _passing_f0_kwargs() -> dict:
+    return {
+        "protocol_present": True,
+        "trial_ledger_present": True,
+        "mapped": 95,
+        "total": 100,
+        "unmapped_by_year": {2010: 2, 2011: 3},
+        "total_by_year": {2010: 50, 2011: 50},
+        "reconciled": True,
+        "archives_expected": 10,
+        "archives_parsed": 10,
+        "derivative_rows_in_qualified": 0,
+        "amendment_dedupe_measured": True,
+        "late_filed": 1,
+        "qualified": 100,
+    }
+
+
 def test_stage_f0_requires_every_hard_gate() -> None:
-    report = evaluate_stage_f0(
-        protocol_present=True,
-        trial_ledger_present=True,
-        mapped=95,
-        total=100,
-        unmapped_by_year={2010: 2, 2011: 3},
-        total_by_year={2010: 1000, 2011: 1000},
-        reconciled=True,
-    )
+    report = evaluate_stage_f0(**_passing_f0_kwargs())
 
     assert report.all_hard_gates_passed is True
     assert report.capital_go is False
 
 
 def test_stage_f0_fails_closed_on_an_unmeasured_reconcile() -> None:
-    report = evaluate_stage_f0(
-        protocol_present=True,
-        trial_ledger_present=True,
-        mapped=95,
-        total=100,
-        unmapped_by_year={},
-        total_by_year={2010: 1000},
-        reconciled=None,
-    )
+    kwargs = _passing_f0_kwargs()
+    kwargs["reconciled"] = None
+    report = evaluate_stage_f0(**kwargs)
 
     assert report.verdict == str(Verdict.KILL_LINE)
+
+
+def test_parse_coverage_fails_closed_when_unmeasured() -> None:
+    assert evaluate_f4_parse_coverage(archives_expected=None, archives_parsed=None).passed is False
+
+
+def test_derivative_exclusion_requires_zero_derivative_rows() -> None:
+    assert evaluate_f5_derivative_exclusion(derivative_rows_in_qualified=0).passed is True
+    assert evaluate_f5_derivative_exclusion(derivative_rows_in_qualified=3).passed is False
+
+
+def test_late_filing_share_fails_closed_when_unmeasured() -> None:
+    assert evaluate_f7_late_filing_share(late_filed=None, qualified=100).passed is False
+
+
+def test_late_filing_share_is_reported_not_capped() -> None:
+    result = evaluate_f7_late_filing_share(late_filed=50, qualified=100)
+
+    assert result.passed is True
+    assert "0.500000" in result.reason
+
+
+def test_map_purchases_uses_listing_windows_on_filing_date() -> None:
+    purchases = [
+        txn(symbol="ACME", filed=date(2020, 6, 1)),
+        txn(symbol="GONE", filed=date(2020, 6, 1), owner="owner-x"),
+        txn(symbol="ACME", filed=date(2010, 1, 1), owner="owner-y", trans=date(2009, 12, 20)),
+    ]
+    windows = [
+        ListingWindow("ACME", first_price_date=date(2015, 1, 1), last_price_date=date(2024, 12, 31)),
+        ListingWindow("GONE", first_price_date=date(2000, 1, 1), last_price_date=date(2010, 1, 1)),
+    ]
+
+    result = map_purchases(purchases, windows)
+
+    assert result.mapped_count == 1
+    assert result.mapped[0].trading_symbol == "ACME"
+    assert result.mapped[0].filing_date == date(2020, 6, 1)
+    assert result.total_by_year[2020] == 2
+    assert result.unmapped_by_year[2020] == 1
+    assert result.unmapped_by_year[2010] == 1
+
+
+def test_map_purchases_excludes_ambiguous_multi_matches() -> None:
+    purchases = [txn(symbol="ACME", filed=date(2020, 6, 1))]
+    windows = [
+        ListingWindow("ACME", first_price_date=date(2010, 1, 1), last_price_date=date(2021, 1, 1)),
+        ListingWindow("ACME", first_price_date=date(2015, 1, 1), last_price_date=date(2024, 1, 1)),
+    ]
+
+    result = map_purchases(purchases, windows)
+
+    assert result.mapped_count == 0
+    assert len(result.ambiguous) == 1
+    assert result.unmapped_by_year[2020] == 1
+
+
+def test_combine_stage_reports_kills_when_f0_fails() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+    d_report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
+    kwargs = _passing_f0_kwargs()
+    kwargs["reconciled"] = False
+    f0_report = evaluate_stage_f0(**kwargs)
+
+    combined = combine_stage_reports(d_report, f0_report)
+
+    assert d_report.verdict == str(Verdict.STAGE_PASS)
+    assert f0_report.verdict == str(Verdict.KILL_LINE)
+    assert combined.verdict == str(Verdict.KILL_LINE)
+    assert combined.all_hard_gates_passed is False
 
 
 # --- Artifact ----------------------------------------------------------------
@@ -524,6 +604,9 @@ def test_artifact_records_the_frozen_protocol_and_denies_capital() -> None:
     assert artifact["implementability_eligible"] is False
     assert artifact["protocol"]["entry_rule"] == "next_open_after_filing_date"
     assert artifact["protocol"]["known_time_axis"] == "filing_date_day_granular"
+    assert artifact["protocol"]["gate_on_min_price"] is False
+    assert artifact["protocol"]["min_price_role"] == "diagnostic_on_adjusted_close"
+    assert artifact["protocol"]["min_dollar_volume_role"] == "primary_habitat_gate"
     assert artifact["clusters"]["de_overlapped"] == PROTOCOL.min_clusters
 
 
