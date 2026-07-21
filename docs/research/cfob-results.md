@@ -1,7 +1,7 @@
 # CFOB Stage D + F0 results
 
 **Date:** 2026-07-21  
-**Git SHA:** `86d1f595269ed30b3f30c1a0ac2397c0c6688da0`  
+**Git SHA:** `f188f90469bda9cbfd59b29182d53e70ae2efe0a`  
 **Driver:** `fixtures/real-continuous/reports/research_cfob.py`  
 **Artifact:** `fixtures/real-continuous/reports/cfob-structure.json`  
 **Parent PRD:** #76 (grilled 2026-07-21)  

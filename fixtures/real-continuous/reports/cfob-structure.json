@@ -2,7 +2,7 @@
   "stage": "D+F0",
   "line": "cfob-insider-purchase-clusters",
   "experiment_id": "cfob-d-f0",
-  "git_sha": "86d1f595269ed30b3f30c1a0ac2397c0c6688da0",
+  "git_sha": "f188f90469bda9cbfd59b29182d53e70ae2efe0a",
   "verdict": "stage_pass",
   "capital_go": false,
   "implementability_eligible": false,
