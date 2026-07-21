@@ -9,9 +9,9 @@ import pytest
 
 from invest.application.cfob import (
     PROTOCOL,
-    ListingWindow,
     ProtocolConfig,
     Verdict,
+    amendment_collision_count,
     build_cfob_artifact,
     build_clusters,
     combine_stage_reports,
@@ -28,7 +28,7 @@ from invest.application.cfob import (
     evaluate_f7_late_filing_share,
     evaluate_stage_d,
     evaluate_stage_f0,
-    map_purchases,
+    evaluate_universe_membership,
     min_detectable_size,
     qualifying_purchases,
     required_events,
@@ -532,41 +532,6 @@ def test_late_filing_share_is_reported_not_capped() -> None:
     assert "0.500000" in result.reason
 
 
-def test_map_purchases_uses_listing_windows_on_filing_date() -> None:
-    purchases = [
-        txn(symbol="ACME", filed=date(2020, 6, 1)),
-        txn(symbol="GONE", filed=date(2020, 6, 1), owner="owner-x"),
-        txn(symbol="ACME", filed=date(2010, 1, 1), owner="owner-y", trans=date(2009, 12, 20)),
-    ]
-    windows = [
-        ListingWindow("ACME", first_price_date=date(2015, 1, 1), last_price_date=date(2024, 12, 31)),
-        ListingWindow("GONE", first_price_date=date(2000, 1, 1), last_price_date=date(2010, 1, 1)),
-    ]
-
-    result = map_purchases(purchases, windows)
-
-    assert result.mapped_count == 1
-    assert result.mapped[0].trading_symbol == "ACME"
-    assert result.mapped[0].filing_date == date(2020, 6, 1)
-    assert result.total_by_year[2020] == 2
-    assert result.unmapped_by_year[2020] == 1
-    assert result.unmapped_by_year[2010] == 1
-
-
-def test_map_purchases_excludes_ambiguous_multi_matches() -> None:
-    purchases = [txn(symbol="ACME", filed=date(2020, 6, 1))]
-    windows = [
-        ListingWindow("ACME", first_price_date=date(2010, 1, 1), last_price_date=date(2021, 1, 1)),
-        ListingWindow("ACME", first_price_date=date(2015, 1, 1), last_price_date=date(2024, 1, 1)),
-    ]
-
-    result = map_purchases(purchases, windows)
-
-    assert result.mapped_count == 0
-    assert len(result.ambiguous) == 1
-    assert result.unmapped_by_year[2020] == 1
-
-
 def test_combine_stage_reports_kills_when_f0_fails() -> None:
     shares = {year: 1 / 15 for year in range(2010, 2025)}
     d_report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
@@ -598,15 +563,23 @@ def test_artifact_records_the_frozen_protocol_and_denies_capital() -> None:
         de_overlapped_clusters=PROTOCOL.min_clusters,
         shares=shares,
         mode="test",
+        git_sha="abc123",
     )
 
     assert artifact["capital_go"] is False
     assert artifact["implementability_eligible"] is False
+    assert artifact["git_sha"] == "abc123"
     assert artifact["protocol"]["entry_rule"] == "next_open_after_filing_date"
     assert artifact["protocol"]["known_time_axis"] == "filing_date_day_granular"
     assert artifact["protocol"]["gate_on_min_price"] is False
     assert artifact["protocol"]["min_price_role"] == "diagnostic_on_adjusted_close"
     assert artifact["protocol"]["min_dollar_volume_role"] == "primary_habitat_gate"
+    # Every threshold a gate consults is frozen in the protocol block.
+    assert artifact["protocol"]["min_history_bars"] == PROTOCOL.min_history_bars
+    assert artifact["protocol"]["dollar_volume_window"] == PROTOCOL.dollar_volume_window
+    assert artifact["protocol"]["power_z"] == PROTOCOL.power_z
+    assert artifact["protocol"]["max_unmapped_rate_ratio"] == PROTOCOL.max_unmapped_rate_ratio
+    assert artifact["protocol"]["future_e1_bars"]["primary_cost_bps"] == 25.0
     assert artifact["clusters"]["de_overlapped"] == PROTOCOL.min_clusters
 
 
@@ -638,7 +611,6 @@ def test_custom_protocol_does_not_mutate_the_frozen_default() -> None:
 
 
 from invest.application.cfob import (  # noqa: E402
-    CikMappingResult,
     ReferenceListing,
     cik_from_secfilings_url,
     map_purchases_by_cik,
@@ -746,3 +718,108 @@ def test_symbol_alone_never_establishes_identity() -> None:
 
     assert result.mapped_count == 0
     assert result.reason_counts["cik_absent_from_reference"] == 1
+
+# --- Universe (habitat floor) ------------------------------------------------
+
+
+def _bars(
+    *, days: int, close: float = 20.0, volume: float = 500_000.0, start: date = date(2019, 1, 1)
+) -> list[tuple[date, float, float]]:
+    return [(start + timedelta(days=i), close, volume) for i in range(days)]
+
+
+def test_universe_rejects_a_symbol_with_no_price_history() -> None:
+    decision = evaluate_universe_membership(bars=[], known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "no_price_history"
+
+
+def test_universe_rejects_insufficient_history_before_known_time() -> None:
+    bars = _bars(days=100)
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "insufficient_history"
+
+
+def test_universe_rejects_below_the_two_million_dollar_volume_floor() -> None:
+    bars = _bars(days=400, close=10.0, volume=1000.0)  # $10k/day
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "below_dollar_volume"
+    assert decision.dollar_volume == pytest.approx(10_000.0)
+
+
+def test_universe_admits_a_symbol_clearing_the_habitat_floor() -> None:
+    bars = _bars(days=400, close=20.0, volume=500_000.0)  # $10M/day
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is True
+    assert decision.reason == "eligible"
+    assert decision.in_secondary_band is True
+
+
+def test_universe_price_floor_is_diagnostic_not_gating_by_default() -> None:
+    bars = _bars(days=400, close=2.0, volume=2_000_000.0)  # $4M/day, price < $5
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is True
+    assert decision.below_price_floor is True
+    assert decision.in_secondary_band is False
+
+
+def test_universe_price_floor_gates_when_protocol_says_so() -> None:
+    bars = _bars(days=400, close=2.0, volume=2_000_000.0)
+    gating = ProtocolConfig(gate_on_min_price=True)
+
+    decision = evaluate_universe_membership(
+        bars=bars, known_time=date(2020, 6, 1), config=gating
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "below_price_floor"
+
+
+def test_universe_uses_only_bars_at_or_before_known_time() -> None:
+    # Volume explodes after known-time; eligibility must not see it.
+    early = _bars(days=300, close=10.0, volume=1000.0)
+    late = _bars(days=200, close=10.0, volume=10_000_000.0, start=date(2020, 6, 2))
+
+    decision = evaluate_universe_membership(bars=early + late, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "below_dollar_volume"
+
+
+# --- F5/F6 measurement -------------------------------------------------------
+
+
+def test_amendment_collision_count_is_zero_after_dedupe() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    deduped, _ = dedupe_amendments([original, amendment])
+
+    assert amendment_collision_count(deduped) == 0
+
+
+def test_amendment_collision_count_detects_an_undeduped_stream() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    assert amendment_collision_count([original, amendment]) == 1
+
+
+def test_dedupe_propagates_source_table_provenance() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    deduped, _ = dedupe_amendments([original, amendment])
+
+    assert all(t.source_table == "NONDERIV_TRANS" for t in deduped)

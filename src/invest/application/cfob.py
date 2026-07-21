@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from math import sqrt
+from statistics import median
 
 from invest.domain.models import InsiderTransaction
 
@@ -171,9 +172,13 @@ def dedupe_amendments(
     """Collapse Form 4/A amendments onto the trade they restate.
 
     An amendment supersedes the original for the same (owner, issuer,
-    transaction date, shares) trade. The *original* filing date is kept as
-    known-time: the market learned of the trade when it was first filed, and a
-    later correction does not un-publish it.
+    transaction date, transaction code) trade. The *original* filing date is
+    kept as known-time: the market learned of the trade when it was first
+    filed, and a later correction does not un-publish it.
+
+    Known limitation: two same-day purchases by one insider in one issuer share
+    a key, so an amendment restating either collapses both into the single
+    restated row — gross value is under-, never over-stated.
     """
 
     ordered = sorted(transactions, key=lambda t: (t.filing_date, t.accession_number))
@@ -214,11 +219,27 @@ def dedupe_amendments(
                 document_type=amendment.document_type,
                 original_submission_date=amendment.original_submission_date,
                 late_filing=amendment.late_filing,
+                source_table=amendment.source_table,
             )
         ]
 
     deduped = [txn for group in by_key.values() for txn in group]
     return tuple(deduped), superseded
+
+
+def amendment_collision_count(transactions: Iterable[InsiderTransaction]) -> int:
+    """Keys where an amendment coexists with an unamended original.
+
+    ``dedupe_amendments`` guarantees this is zero on its output; the F6 gate
+    measures it there instead of trusting a caller-supplied flag.
+    """
+
+    kinds: dict[tuple[str, str, date, str], set[bool]] = defaultdict(set)
+    for txn in transactions:
+        kinds[
+            (txn.owner_cik, txn.issuer_cik, txn.transaction_date, txn.transaction_code)
+        ].add(txn.is_amendment)
+    return sum(1 for seen in kinds.values() if len(seen) > 1)
 
 
 def qualifying_purchases(
@@ -277,98 +298,6 @@ def qualifying_purchases(
 
 
 # --- Purchase mapping (F0) ---------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ListingWindow:
-    """One continuous listing interval for an as-filed trading symbol.
-
-    Built from TICKERS ``firstpricedate``/``lastpricedate`` (preferred) or, when
-    that table is unavailable, from the first/last observed SEP session. Open
-    listings use ``last_price_date=None``.
-    """
-
-    symbol: str
-    first_price_date: date | None
-    last_price_date: date | None
-
-    def covers(self, as_of: date) -> bool:
-        if self.first_price_date is not None and as_of < self.first_price_date:
-            return False
-        if self.last_price_date is not None and as_of > self.last_price_date:
-            return False
-        return True
-
-
-@dataclass(frozen=True)
-class PurchaseMappingResult:
-    """Purchase-level map of as-filed symbols onto listing windows."""
-
-    mapped: tuple[InsiderTransaction, ...]
-    unmapped: tuple[InsiderTransaction, ...]
-    ambiguous: tuple[InsiderTransaction, ...]
-    unmapped_by_year: dict[int, int]
-    total_by_year: dict[int, int]
-    ambiguous_by_year: dict[int, int]
-
-    @property
-    def mapped_count(self) -> int:
-        return len(self.mapped)
-
-    @property
-    def total_count(self) -> int:
-        return len(self.mapped) + len(self.unmapped) + len(self.ambiguous)
-
-
-def map_purchases(
-    purchases: Iterable[InsiderTransaction],
-    windows: Sequence[ListingWindow],
-) -> PurchaseMappingResult:
-    """Map qualifying purchases via listing windows on filing-date.
-
-    Spec: as-filed ``ISSUERTRADINGSYMBOL`` joined on
-    ``firstpricedate ≤ FILING_DATE ≤ lastpricedate``. Ambiguous multi-matches
-    are excluded with counted reasons — not silently assigned.
-    """
-
-    by_symbol: dict[str, list[ListingWindow]] = defaultdict(list)
-    for window in windows:
-        by_symbol[window.symbol.upper()].append(window)
-
-    mapped: list[InsiderTransaction] = []
-    unmapped: list[InsiderTransaction] = []
-    ambiguous: list[InsiderTransaction] = []
-    unmapped_by_year: dict[int, int] = defaultdict(int)
-    total_by_year: dict[int, int] = defaultdict(int)
-    ambiguous_by_year: dict[int, int] = defaultdict(int)
-
-    for purchase in purchases:
-        year = purchase.filing_date.year
-        total_by_year[year] += 1
-        symbol = purchase.trading_symbol.strip().upper()
-        if not symbol:
-            unmapped.append(purchase)
-            unmapped_by_year[year] += 1
-            continue
-        hits = [window for window in by_symbol.get(symbol, ()) if window.covers(purchase.filing_date)]
-        if len(hits) == 1:
-            mapped.append(purchase)
-        elif len(hits) > 1:
-            ambiguous.append(purchase)
-            ambiguous_by_year[year] += 1
-            unmapped_by_year[year] += 1  # composition treats ambiguous as unmapped residual
-        else:
-            unmapped.append(purchase)
-            unmapped_by_year[year] += 1
-
-    return PurchaseMappingResult(
-        mapped=tuple(mapped),
-        unmapped=tuple(unmapped),
-        ambiguous=tuple(ambiguous),
-        unmapped_by_year=dict(unmapped_by_year),
-        total_by_year=dict(total_by_year),
-        ambiguous_by_year=dict(ambiguous_by_year),
-    )
 
 
 @dataclass(frozen=True)
@@ -509,8 +438,7 @@ def map_purchases_by_cik(
             reasons["matched_sole_covering_row"] += 1
             continue
         ambiguous.append(purchase)
-        ambiguous_year = year
-        unmapped_by_year[ambiguous_year] += 1  # composition treats ambiguous as residual
+        unmapped_by_year[year] += 1  # composition treats ambiguous as residual
         reasons["ambiguous_excluded"] += 1
 
     return CikMappingResult(
@@ -624,6 +552,56 @@ def de_overlap(
             )
 
     return tuple(kept)
+
+
+# --- Universe (habitat floor) ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UniverseDecision:
+    """Habitat-floor verdict for one cluster at its known-time. Every exclusion
+    carries a reason so the driver can count it, never drop silently."""
+
+    eligible: bool
+    reason: str  # eligible | no_price_history | insufficient_history | below_dollar_volume | below_price_floor
+    dollar_volume: float | None
+    below_price_floor: bool
+    in_secondary_band: bool
+
+
+def evaluate_universe_membership(
+    *,
+    bars: Sequence[tuple[date, float, float]],
+    known_time: date,
+    config: ProtocolConfig = PROTOCOL,
+) -> UniverseDecision:
+    """Habitat floor (ADR 0002 amended): 20-bar median dollar volume ≥ $2M and
+    252 bars of history at known-time. The $5 price floor is diagnostic on
+    adjusted closes unless ``gate_on_min_price`` is set; the $10M house band is
+    reported as a secondary.
+
+    ``bars`` are (session date, adjusted close, volume) sorted ascending.
+    """
+
+    if not bars:
+        return UniverseDecision(False, "no_price_history", None, False, False)
+    prior = [bar for bar in bars if bar[0] <= known_time]
+    if len(prior) < config.min_history_bars:
+        return UniverseDecision(False, "insufficient_history", None, False, False)
+    window = prior[-config.dollar_volume_window :]
+    dollar_volume = median(close * volume for _, close, volume in window)
+    below_floor = prior[-1][1] < float(config.min_price)
+    if dollar_volume < float(config.min_dollar_volume):
+        return UniverseDecision(False, "below_dollar_volume", dollar_volume, below_floor, False)
+    if below_floor and config.gate_on_min_price:
+        return UniverseDecision(False, "below_price_floor", dollar_volume, below_floor, False)
+    return UniverseDecision(
+        True,
+        "eligible",
+        dollar_volume,
+        below_floor,
+        dollar_volume >= float(config.secondary_min_dollar_volume),
+    )
 
 
 # --- Density statistics ------------------------------------------------------
@@ -1047,6 +1025,7 @@ def build_cfob_artifact(
     de_overlapped_clusters: int,
     shares: Mapping[int, float],
     mode: str,
+    git_sha: str | None = None,
     notes: Mapping[str, object] | None = None,
     config: ProtocolConfig = PROTOCOL,
 ) -> dict:
@@ -1056,6 +1035,7 @@ def build_cfob_artifact(
         "stage": stage,
         "line": config.line,
         "experiment_id": config.experiment_id,
+        "git_sha": git_sha,
         "verdict": report.verdict,
         "capital_go": False,
         "implementability_eligible": False,
@@ -1064,6 +1044,7 @@ def build_cfob_artifact(
             "min_gross_value": str(config.min_gross_value),
             "staleness_cap_days": config.staleness_cap_days,
             "cluster_window_days": config.cluster_window_days,
+            "secondary_cluster_window_days": config.secondary_cluster_window_days,
             "min_distinct_insiders": config.min_distinct_insiders,
             "min_price": str(config.min_price),
             "gate_on_min_price": config.gate_on_min_price,
@@ -1074,14 +1055,27 @@ def build_cfob_artifact(
             ),
             "min_dollar_volume": str(config.min_dollar_volume),
             "min_dollar_volume_role": "primary_habitat_gate",
+            "dollar_volume_window": config.dollar_volume_window,
+            "min_history_bars": config.min_history_bars,
+            "secondary_min_dollar_volume": str(config.secondary_min_dollar_volume),
             "min_clusters": config.min_clusters,
             "min_contributing_years": config.min_contributing_years,
             "min_year_share": config.min_year_share,
             "max_year_share": config.max_year_share,
             "mds_bar": config.mds_bar,
             "excess_dispersion": config.excess_dispersion,
+            "power_z": config.power_z,
             "horizon_sessions": config.horizon_sessions,
             "min_mapping_rate": config.min_mapping_rate,
+            "max_unmapped_rate_ratio": config.max_unmapped_rate_ratio,
+            "min_year_weight_for_composition": config.min_year_weight_for_composition,
+            "future_e1_bars": {
+                "min_clustered_t": config.future_min_clustered_t,
+                "trimmed_min_t": config.future_trimmed_min_t,
+                "winsor_tail": config.future_winsor_tail,
+                "primary_cost_bps": config.future_primary_cost_bps,
+                "placebo_draws": config.future_placebo_draws,
+            },
             "known_time_axis": "filing_date_day_granular",
             "known_time_conservatism": (
                 "SEC Insider Transactions Data Sets carry no acceptance timestamp; "

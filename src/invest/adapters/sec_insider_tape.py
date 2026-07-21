@@ -42,6 +42,35 @@ class InsiderTapeError(RuntimeError):
     """Raised when the tape cannot be read exactly as published."""
 
 
+def parse_form_index_form4(lines) -> tuple[int, frozenset[str]]:
+    """Count Form 4 / 4/A rows in an EDGAR quarterly ``form.idx``.
+
+    The index lists each filing once per (form, filer) appearance, so raw line
+    counts run ~2× the submission count. Integrity comparisons bind on the
+    *unique accession numbers* (second element); the raw 4/4A line count is
+    returned first as a diagnostic.
+    """
+
+    started = False
+    form4_lines = 0
+    accessions: set[str] = set()
+    for line in lines:
+        if not started:
+            if line.startswith("---"):
+                started = True
+            continue
+        if line[:12].strip() not in {"4", "4/A"}:
+            continue
+        form4_lines += 1
+        parts = line.split()
+        if not parts:
+            continue
+        filename = parts[-1]
+        if filename.endswith(".txt"):
+            accessions.add(filename.rsplit("/", 1)[-1][:-4])
+    return form4_lines, frozenset(accessions)
+
+
 def _parse_date(raw: str, *, field: str) -> date:
     text = (raw or "").strip()
     if not text:
@@ -150,6 +179,7 @@ class SecInsiderTapeReader:
                         _parse_date(original_raw, field="DATE_OF_ORIG_SUB") if original_raw else None
                     ),
                     late_filing=(row.get("TRANS_TIMELINESS") or "").strip().upper() == "L",
+                    source_table="NONDERIV_TRANS",
                 )
             )
         return tuple(parsed)

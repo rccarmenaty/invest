@@ -38,6 +38,10 @@ class InsiderTransaction:
     document_type: str
     original_submission_date: date | None
     late_filing: bool
+    # Provenance: which structured table the row came from. The F5 derivative-
+    # exclusion gate measures this over the qualified stream instead of trusting
+    # a caller-supplied constant.
+    source_table: str = "NONDERIV_TRANS"
 
     @property
     def gross_value(self) -> Decimal:

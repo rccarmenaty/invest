@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -27,24 +28,26 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from statistics import median
 
-from invest.adapters.sec_insider_tape import InsiderTapeError, SecInsiderTapeReader
+from invest.adapters.sec_insider_tape import (
+    InsiderTapeError,
+    SecInsiderTapeReader,
+    parse_form_index_form4,
+)
 from invest.application.cfob import (
     PROTOCOL,
-    ListingWindow,
     ReferenceListing,
     cik_from_secfilings_url,
     PurchaseCluster,
     QualificationCounts,
+    amendment_collision_count,
     build_cfob_artifact,
     build_clusters,
     combine_stage_reports,
     de_overlap,
-    dedupe_amendments,
     evaluate_stage_d,
     evaluate_stage_f0,
-    map_purchases,
+    evaluate_universe_membership,
     map_purchases_by_cik,
     qualifying_purchases,
     year_shares,
@@ -60,7 +63,6 @@ SEP_DIR = Path(os.environ.get("CFOB_SEP_DIR", REPO_ROOT / "fixtures" / "full-dep
 REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
-TICKERS_CACHE = TAPE_DIR / "tickers_listing_windows.json"
 REFERENCE_CACHE = TAPE_DIR / "tickers_reference_v2.json"
 
 BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
@@ -116,15 +118,20 @@ def pull_tape(*, through: date, verbose: bool = True) -> dict:
 
 
 def load_purchases(*, through: date, verbose: bool = True) -> tuple[list[InsiderTransaction], dict]:
-    """Parse every cached quarter into qualifying purchases.
+    """Parse every cached quarter, then dedupe and qualify once globally.
 
-    Quarters are qualified as they are read so only the surviving purchases
-    stay resident — the raw tape is an order of magnitude larger.
+    Quarters are prefiltered to code-P rows as they are read (the raw tape is
+    an order of magnitude larger, ~7M rows vs ~1M code-P). Amendment dedupe and
+    qualification then run in ONE global pass, so a Form 4/A filed quarters
+    after the trade it restates can still supersede — or disqualify — the
+    original. Qualifying before deduping would let an amendment that shrinks a
+    trade below the size floor vanish while its original survived.
     """
 
     reader = SecInsiderTapeReader(cache_dir=TAPE_DIR)
-    kept: list[InsiderTransaction] = []
-    totals: dict[str, int] = defaultdict(int)
+    code_p_rows: list[InsiderTransaction] = []
+    total_rows = 0
+    wrong_code = 0
     quarters_read = 0
     archives_expected = 0
     archives_parsed = 0
@@ -139,26 +146,25 @@ def load_purchases(*, through: date, verbose: bool = True) -> tuple[list[Insider
         except InsiderTapeError as exc:
             raise SystemExit(f"fail-closed: {exc}") from exc
         archives_parsed += 1
-        purchases, counts = qualifying_purchases(transactions)
-        kept.extend(purchases)
         quarters_read += 1
-        for field, value in counts.to_dict().items():
-            totals[field] += value
+        total_rows += len(transactions)
+        for txn in transactions:
+            if txn.transaction_code == PROTOCOL.transaction_code:
+                code_p_rows.append(txn)
+            else:
+                wrong_code += 1
         if verbose and quarter == 4:
-            print(f"  {year}: cumulative qualifying purchases {len(kept):,}")
+            print(f"  {year}: cumulative code-P rows {len(code_p_rows):,}")
 
-    # Quarter-local dedupe cannot see an amendment filed in a later quarter than
-    # the trade it restates, so run one global pass over the (much smaller)
-    # qualified set.
-    before = len(kept)
-    kept_tuple, cross_quarter_superseded = dedupe_amendments(kept)
+    purchases, counts = qualifying_purchases(code_p_rows)
+    del code_p_rows
+    totals = counts.to_dict()
+    totals["total_rows"] = total_rows
+    totals["wrong_code"] = wrong_code
     totals["quarters_read"] = quarters_read
     totals["archives_expected"] = archives_expected
     totals["archives_parsed"] = archives_parsed
-    totals["cross_quarter_superseded"] = cross_quarter_superseded
-    totals["qualified"] = len(kept_tuple)
-    totals["dropped_by_global_dedupe"] = before - len(kept_tuple)
-    return list(kept_tuple), dict(totals)
+    return list(purchases), totals
 
 
 def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, float, float]]]:
@@ -190,73 +196,6 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
             continue
         day = day.date() if hasattr(day, "date") else day
         out[ticker].append((day, float(close), float(volume)))
-    return out
-
-
-def build_listing_windows_from_sep(*, verbose: bool = True) -> list[ListingWindow]:
-    """Offline listing windows: first/last observed SEP session per symbol.
-
-    Preferred source is Sharadar TICKERS first/lastpricedate (see
-    ``load_listing_windows``). SEP-derived windows are the fail-closed offline
-    substitute when no TICKERS cache/API is available: they include delisted
-    names and cannot invent a listing that never trades on the panel.
-    """
-
-    import pyarrow.parquet as pq
-
-    available_years = sorted(
-        int(path.stem.split("_")[1]) for path in SEP_DIR.glob("sep_*.parquet")
-    )
-    if not available_years:
-        raise SystemExit(f"fail-closed: no SEP year parquet found in {SEP_DIR}")
-
-    first_last: dict[str, list[date | None]] = {}
-    for year in available_years:
-        path = SEP_DIR / f"sep_{year}.parquet"
-        table = pq.read_table(path, columns=["symbol", "date"])
-        symbols = table.column("symbol").to_pylist()
-        days = table.column("date").to_pylist()
-        for symbol, day in zip(symbols, days, strict=False):
-            if symbol is None or day is None:
-                continue
-            day = day.date() if hasattr(day, "date") else day
-            entry = first_last.get(symbol)
-            if entry is None:
-                first_last[symbol] = [day, day]
-            else:
-                if day < entry[0]:
-                    entry[0] = day
-                if day > entry[1]:
-                    entry[1] = day
-        if verbose and year % 5 == 0:
-            print(f"  listing windows through {year}: {len(first_last):,} symbols")
-
-    windows = [
-        ListingWindow(symbol=symbol, first_price_date=bounds[0], last_price_date=bounds[1])
-        for symbol, bounds in first_last.items()
-    ]
-    if verbose:
-        print(f"  listing windows total: {len(windows):,}")
-    return windows
-
-
-def _dedupe_windows(windows: list[ListingWindow]) -> list[ListingWindow]:
-    """Collapse identical listing windows for one symbol.
-
-    TICKERS carries several rows per ticker (exchange/category variants) with
-    the same first/last price dates. Those are duplicates, not recycled-ticker
-    ambiguity, and leaving them in makes almost every symbol look ambiguous —
-    which the mapper then excludes, collapsing the cohort.
-    """
-
-    seen: set[tuple[str, date | None, date | None]] = set()
-    out: list[ListingWindow] = []
-    for window in windows:
-        key = (window.symbol, window.first_price_date, window.last_price_date)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(window)
     return out
 
 
@@ -366,72 +305,6 @@ def load_reference_listings(*, verbose: bool = True) -> tuple[list[ReferenceList
     return listings, "tickers-reference-api"
 
 
-def load_listing_windows(*, verbose: bool = True) -> tuple[list[ListingWindow], str]:
-    """Load listing windows: TICKERS cache → live TICKERS → SEP fallback."""
-
-    if TICKERS_CACHE.is_file():
-        payload = json.loads(TICKERS_CACHE.read_text())
-        windows = [
-            ListingWindow(
-                symbol=row["symbol"],
-                first_price_date=date.fromisoformat(row["first"]) if row.get("first") else None,
-                last_price_date=date.fromisoformat(row["last"]) if row.get("last") else None,
-            )
-            for row in payload
-        ]
-        if verbose:
-            print(f"  listing windows from cache {TICKERS_CACHE.name}: {len(windows):,}")
-        return _dedupe_windows(windows), "tickers-cache"
-
-    api_key = os.environ.get("NASDAQ_DATA_LINK_API_KEY")
-    if api_key:
-        import httpx
-
-        from invest.adapters.sharadar_tickers import SharadarTickersReader
-
-        if verbose:
-            print("  fetching Sharadar TICKERS for listing windows...")
-        with httpx.Client(timeout=180.0) as client:
-            # Reader already filters columns; keep primary+delisted equities.
-            os.environ.setdefault("NASDAQ_DATA_LINK_API_KEY", api_key)
-            reader = SharadarTickersReader(client=client)
-            # _request_params uses env key via nasdaq helpers — check reader
-            tickers = reader.fetch()
-        windows = [
-            ListingWindow(
-                symbol=row.ticker,
-                first_price_date=row.listed_date,
-                last_price_date=row.delisted_date if not row.is_listed else None,
-            )
-            for row in tickers
-            if row.is_primary_common_stock or row.delisted_date is not None or row.is_listed
-        ]
-        TAPE_DIR.mkdir(parents=True, exist_ok=True)
-        TICKERS_CACHE.write_text(
-            json.dumps(
-                [
-                    {
-                        "symbol": window.symbol,
-                        "first": window.first_price_date.isoformat()
-                        if window.first_price_date
-                        else None,
-                        "last": window.last_price_date.isoformat()
-                        if window.last_price_date
-                        else None,
-                    }
-                    for window in windows
-                ]
-            )
-        )
-        if verbose:
-            print(f"  listing windows from TICKERS API: {len(windows):,}")
-        return _dedupe_windows(windows), "tickers-api"
-
-    if verbose:
-        print("  no TICKERS cache/API key; building listing windows from SEP...")
-    return build_listing_windows_from_sep(verbose=verbose), "sep-first-last"
-
-
 def apply_universe_filter(
     clusters: list[PurchaseCluster], *, verbose: bool = True
 ) -> tuple[list[PurchaseCluster], dict[str, list[date]], dict]:
@@ -460,6 +333,7 @@ def apply_universe_filter(
     market_sessions: set[date] = set()
     no_price_history_by_year: dict[int, int] = defaultdict(int)
     insufficient_history_by_year: dict[int, int] = defaultdict(int)
+    below_dollar_volume_by_year: dict[int, int] = defaultdict(int)
     total_by_year: dict[int, int] = defaultdict(int)
 
     clusters_by_year: dict[int, list[PurchaseCluster]] = defaultdict(list)
@@ -478,25 +352,25 @@ def apply_universe_filter(
 
         for cluster in clusters_by_year[year]:
             total_by_year[year] += 1
-            bars = history.get(cluster.trading_symbol, [])
-            if not bars:
+            decision = evaluate_universe_membership(
+                bars=history.get(cluster.trading_symbol, []),
+                known_time=cluster.known_time,
+            )
+            if decision.reason == "no_price_history":
                 no_price_history_by_year[year] += 1
                 continue
-            prior = [bar for bar in bars if bar[0] <= cluster.known_time]
-            if len(prior) < PROTOCOL.min_history_bars:
+            if decision.reason == "insufficient_history":
                 insufficient_history_by_year[year] += 1
                 continue
-            window = prior[-PROTOCOL.dollar_volume_window :]
-            price = prior[-1][1]
-            dollar_volume = median(close * volume for _, close, volume in window)
-            if dollar_volume < float(PROTOCOL.min_dollar_volume):
+            if decision.reason == "below_dollar_volume":
+                below_dollar_volume_by_year[year] += 1
                 continue
-            if price < float(PROTOCOL.min_price):
+            if decision.below_price_floor:
                 price_floor_excluded += 1
-                if PROTOCOL.gate_on_min_price:
+                if not decision.eligible:
                     continue
             kept.append(cluster)
-            if dollar_volume >= float(PROTOCOL.secondary_min_dollar_volume):
+            if decision.in_secondary_band:
                 secondary_kept += 1
 
         if verbose:
@@ -518,6 +392,7 @@ def apply_universe_filter(
         ),
         "no_price_history_by_year": dict(no_price_history_by_year),
         "insufficient_history_by_year": dict(insufficient_history_by_year),
+        "below_dollar_volume_by_year": dict(below_dollar_volume_by_year),
         "universe_total_by_year": dict(total_by_year),
     }
     return kept, sessions, diagnostics
@@ -550,27 +425,11 @@ def reconcile_against_edgar_index(*, verbose: bool = True) -> tuple[bool | None,
 
         url = f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/form.idx"
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        accessions: set[str] = set()
-        form4_lines = 0
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
-                started = False
-                for raw in response:
-                    line = raw.decode("utf-8", "replace").rstrip("\n")
-                    if not started:
-                        if line.startswith("---"):
-                            started = True
-                        continue
-                    form = line[:12].strip()
-                    if form not in {"4", "4/A"}:
-                        continue
-                    form4_lines += 1
-                    parts = line.split()
-                    if not parts:
-                        continue
-                    filename = parts[-1]
-                    if filename.endswith(".txt"):
-                        accessions.add(filename.rsplit("/", 1)[-1][:-4])
+                form4_lines, accessions = parse_form_index_form4(
+                    raw.decode("utf-8", "replace").rstrip("\n") for raw in response
+                )
         except urllib.error.HTTPError as exc:
             if verbose:
                 print(f"  {year}Q{quarter}: index unavailable (HTTP {exc.code})")
@@ -598,6 +457,22 @@ def reconcile_against_edgar_index(*, verbose: bool = True) -> tuple[bool | None,
     if not rows:
         return None, rows
     return all(row["within_tolerance"] for row in rows), rows
+
+
+def current_git_sha() -> str:
+    """SHA the artifact was produced at — required for gate-run traceability.
+
+    A dirty tree is marked: an artifact from uncommitted code must not claim
+    the parent commit produced it.
+    """
+
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+    ).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True
+    ).strip()
+    return f"{sha}-dirty" if dirty else sha
 
 
 def synthetic_clusters() -> list[PurchaseCluster]:
@@ -631,6 +506,7 @@ def write_docs(artifact: dict) -> None:
         "# CFOB Stage D + F0 results",
         "",
         f"**Date:** {date.today().isoformat()}  ",
+        f"**Git SHA:** `{artifact.get('git_sha')}`  ",
         "**Driver:** `fixtures/real-continuous/reports/research_cfob.py`  ",
         "**Artifact:** `fixtures/real-continuous/reports/cfob-structure.json`  ",
         "**Parent PRD:** #76 (grilled 2026-07-21)  ",
@@ -674,7 +550,7 @@ def write_docs(artifact: dict) -> None:
             "## Stage F0 detail",
             "",
             f"- F0 sub-verdict (informational; top-level already combines): `{f0.get('verdict')}`",
-            f"- listing window source: `{f0.get('listing_window_source')}`",
+            f"- reference source: `{f0.get('reference_source')}`",
             f"- mapped purchases: `{f0.get('mapped_purchases')}`",
             f"- total purchases mapped against: `{f0.get('total_purchases')}`",
             f"- ambiguous multi-match: `{f0.get('ambiguous_purchases')}`",
@@ -689,8 +565,10 @@ def write_docs(artifact: dict) -> None:
         "SEC tape (2006-), measured against floors frozen before any returns existed.",
         "- The density floor is derived from Gate-1a's measured dispersion, not chosen "
         "for convenience.",
-        "- Purchase-level mapping uses listing windows (TICKERS first/lastpricedate when "
-        "available; otherwise SEP first/last session) on filing-date.",
+        "- Purchase-level mapping is a CIK-primary identity join against the Sharadar "
+        "TICKERS reference, with the frozen tiebreak ladder: exact as-filed symbol → "
+        "related symbols → sole covering row → ambiguous-excluded, counted (grill "
+        "2026-07-21). The as-filed symbol never establishes identity on its own.",
         "",
         "### Non-claims",
         "",
@@ -757,6 +635,7 @@ def main() -> int:
             de_overlapped_clusters=len(deoverlapped),
             shares=shares,
             mode="synthetic",
+            git_sha=current_git_sha(),
             notes={"warning": "synthetic smoke cohort — claims nothing"},
         )
         ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
@@ -822,16 +701,7 @@ def main() -> int:
     d_report = evaluate_stage_d(de_overlapped_clusters=len(deoverlapped), shares=shares)
 
     counts_obj = QualificationCounts(
-        total_rows=counts.get("total_rows", 0),
-        qualified=counts.get("qualified", 0),
-        wrong_code=counts.get("wrong_code", 0),
-        disposals=counts.get("disposals", 0),
-        below_size_floor=counts.get("below_size_floor", 0),
-        stale=counts.get("stale", 0),
-        amendment_superseded=counts.get("amendment_superseded", 0),
-        unparseable_value=counts.get("unparseable_value", 0),
-        late_filed=counts.get("late_filed", 0),
-        indirect_ownership=counts.get("indirect_ownership", 0),
+        **{field: counts.get(field, 0) for field in QualificationCounts.__dataclass_fields__}
     )
 
     print("\nRunning Stage F0 integrity gates...")
@@ -840,6 +710,11 @@ def main() -> int:
         print("  reconcile skipped (--skip-reconcile) → fail closed")
     else:
         reconciled, reconcile_rows = reconcile_against_edgar_index()
+
+    # F5/F6 are measured over the qualified stream, not asserted: provenance is
+    # stamped by the adapter, and residual amendment collisions must be zero.
+    derivative_rows = sum(1 for p in purchases if p.source_table != "NONDERIV_TRANS")
+    amendment_collisions = amendment_collision_count(purchases)
 
     f0_report = evaluate_stage_f0(
         protocol_present=True,
@@ -851,8 +726,8 @@ def main() -> int:
         reconciled=reconciled,
         archives_expected=counts.get("archives_expected"),
         archives_parsed=counts.get("archives_parsed"),
-        derivative_rows_in_qualified=0,  # reader only emits NONDERIV_TRANS
-        amendment_dedupe_measured=True,
+        derivative_rows_in_qualified=derivative_rows,
+        amendment_dedupe_measured=amendment_collisions == 0,
         late_filed=counts_obj.late_filed,
         qualified=counts_obj.qualified,
     )
@@ -869,10 +744,13 @@ def main() -> int:
         de_overlapped_clusters=len(deoverlapped),
         shares=shares,
         mode="sec-insider-tape-2006-present",
+        git_sha=current_git_sha(),
         notes={
             "quarters_read": counts.get("quarters_read", 0),
-            "cross_quarter_superseded": counts.get("cross_quarter_superseded", 0),
-            "dropped_by_global_dedupe": counts.get("dropped_by_global_dedupe", 0),
+            "dedupe_scope": (
+                "single global pass over all code-P rows before qualification; "
+                "a cross-quarter 4/A can supersede or disqualify its original"
+            ),
             "universe_eligible_clusters": len(eligible),
             "stage_d": {
                 "verdict": d_report.verdict,
@@ -883,14 +761,17 @@ def main() -> int:
                 "verdict": f0_report.verdict,
                 "all_hard_gates_passed": f0_report.all_hard_gates_passed,
                 "gates": f0_report.to_dict()["gates"],
-                "listing_window_source": window_source,
+                "reference_source": window_source,
                 "mapped_purchases": mapping.mapped_count,
                 "total_purchases": mapping.total_count,
                 "ambiguous_purchases": len(mapping.ambiguous),
                 "unmapped_by_year": mapping.unmapped_by_year,
                 "total_by_year": mapping.total_by_year,
+                "derivative_rows_in_qualified": derivative_rows,
+                "amendment_collisions": amendment_collisions,
                 "reconcile_sample": reconcile_rows,
                 "reconcile_tolerance": RECONCILE_TOLERANCE,
+                "reconcile_sample_quarters": [f"{y}Q{q}" for y, q in RECONCILE_SAMPLE],
             },
             **diagnostics,
         },

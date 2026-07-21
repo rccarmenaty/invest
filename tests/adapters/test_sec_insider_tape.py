@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from invest.adapters.sec_insider_tape import InsiderTapeError, SecInsiderTapeReader
+from invest.adapters.sec_insider_tape import (
+    InsiderTapeError,
+    SecInsiderTapeReader,
+    parse_form_index_form4,
+)
 
 SUBMISSION = (
     "ACCESSION_NUMBER\tFILING_DATE\tDOCUMENT_TYPE\tISSUERCIK\tISSUERTRADINGSYMBOL\tDATE_OF_ORIG_SUB\n"
@@ -64,6 +68,7 @@ def test_reads_typed_transactions_from_a_well_formed_archive(tmp_path: Path) -> 
     assert first.gross_value == Decimal("150250.00")
     assert first.direct_ownership is True
     assert first.is_amendment is False
+    assert first.source_table == "NONDERIV_TRANS"
 
 
 def test_identifies_amendments_and_their_original_submission(tmp_path: Path) -> None:
@@ -149,3 +154,33 @@ def test_footnoted_amounts_are_dropped_not_guessed(tmp_path: Path) -> None:
     _write_archive(reader.archive_path(2024, 1), tables=tables)
 
     assert reader.load_quarter(2024, 1) == ()
+
+FORM_IDX = """Description of the index
+4 IN THE PREAMBLE MUST NOT COUNT  edgar/data/9/0000000009-24-000009.txt
+Form Type   Company Name      CIK         Date Filed  File Name
+---------------------------------------------------------------------------
+4           ACME CORP         0000001     2024-03-05  edgar/data/1/0000000001-24-000001.txt
+4           ACME CORP CEO     0000002     2024-03-05  edgar/data/2/0000000001-24-000001.txt
+4/A         OTHER CORP        0000003     2024-03-06  edgar/data/3/0000000001-24-000002.txt
+10-K        BIG CORP          0000004     2024-03-06  edgar/data/4/0000000001-24-000003.txt
+"""
+
+
+def test_form_index_counts_unique_accessions_not_filer_lines() -> None:
+    lines = FORM_IDX.splitlines()
+
+    form4_lines, accessions = parse_form_index_form4(lines)
+
+    # Three 4/4A lines after the separator, but the first two share one
+    # accession (one filing listed once per filer); 10-K rows never count.
+    assert form4_lines == 3
+    assert accessions == frozenset({"0000000001-24-000001", "0000000001-24-000002"})
+
+
+def test_form_index_ignores_everything_before_the_separator() -> None:
+    header_only = ["4    SHOULD NOT COUNT   edgar/data/9/0000000009-24-000009.txt"]
+
+    form4_lines, accessions = parse_form_index_form4(header_only)
+
+    assert form4_lines == 0
+    assert accessions == frozenset()
