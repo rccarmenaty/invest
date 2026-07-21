@@ -632,3 +632,117 @@ def test_custom_protocol_does_not_mutate_the_frozen_default() -> None:
 
     assert evaluate_d1_volume(de_overlapped_clusters=10, config=relaxed).passed is True
     assert evaluate_d1_volume(de_overlapped_clusters=10).passed is False
+
+
+# --- CIK-primary mapping (grill 2026-07-21 Q1/Q2) ----------------------------
+
+
+from invest.application.cfob import (  # noqa: E402
+    CikMappingResult,
+    ReferenceListing,
+    cik_from_secfilings_url,
+    map_purchases_by_cik,
+    normalize_cik,
+)
+
+
+def listing(
+    symbol: str,
+    cik: str | None = "849399",
+    related: tuple[str, ...] = (),
+    first: date | None = date(1986, 1, 1),
+    last: date | None = None,
+) -> ReferenceListing:
+    return ReferenceListing(
+        symbol=symbol,
+        cik=cik,
+        related_symbols=frozenset(related),
+        first_price_date=first,
+        last_price_date=last,
+    )
+
+
+def cik_txn(*, symbol: str = "SYMC", cik: str = "0000849399", **kwargs) -> InsiderTransaction:
+    base = txn(symbol=symbol, **kwargs)
+    return InsiderTransaction(
+        **{**base.__dict__, "issuer_cik": cik, "trading_symbol": symbol}
+    )
+
+
+def test_normalize_cik_strips_leading_zeros_and_junk() -> None:
+    assert normalize_cik("0000849399") == "849399"
+    assert normalize_cik("849399") == "849399"
+    assert normalize_cik("") is None
+    assert normalize_cik(None) is None
+    assert normalize_cik("0000") is None
+
+
+def test_cik_extracted_from_secfilings_url() -> None:
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000849399"
+    assert cik_from_secfilings_url(url) == "849399"
+    assert cik_from_secfilings_url(None) is None
+    assert cik_from_secfilings_url("https://example.com/no-cik") is None
+
+
+def test_renamed_ticker_maps_through_related_symbols() -> None:
+    # As-filed SYMC; Sharadar row is GEN with SYMC in relatedtickers.
+    gen = listing("GEN", related=("SYMC", "NLOK"))
+    result = map_purchases_by_cik([cik_txn(symbol="SYMC")], [gen])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "GEN"
+    assert result.reason_counts["matched_related_symbol"] == 1
+
+
+def test_exact_symbol_wins_among_dual_class_rows() -> None:
+    a = listing("LGF.A", cik="929351", related=("LGF", "LGF.B"))
+    b = listing("LGF.B", cik="929351", related=("LGF", "LGF.A"))
+    result = map_purchases_by_cik([cik_txn(symbol="LGF.A", cik="929351")], [a, b])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "LGF.A"
+    assert result.reason_counts["matched_exact_symbol"] == 1
+
+
+def test_dual_class_with_shared_related_and_no_exact_match_is_ambiguous() -> None:
+    a = listing("LGF.A", cik="929351", related=("LGF", "LGF.B"))
+    b = listing("LGF.B", cik="929351", related=("LGF", "LGF.A"))
+    result = map_purchases_by_cik([cik_txn(symbol="LGF", cik="929351")], [a, b])
+
+    assert result.mapped_count == 0
+    assert len(result.ambiguous) == 1
+    assert result.reason_counts["ambiguous_excluded"] == 1
+
+
+def test_sole_covering_row_maps_without_symbol_agreement() -> None:
+    gen = listing("GEN", related=())
+    result = map_purchases_by_cik([cik_txn(symbol="WEIRD")], [gen])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "GEN"
+    assert result.reason_counts["matched_sole_covering_row"] == 1
+
+
+def test_cik_absent_from_reference_is_unmapped_with_reason() -> None:
+    result = map_purchases_by_cik([cik_txn(cik="123456")], [listing("GEN")])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_absent_from_reference"] == 1
+
+
+def test_window_miss_is_unmapped_with_reason() -> None:
+    delisted = listing("DF1", cik="27500", first=date(1990, 1, 1), last=date(2020, 5, 1))
+    late = cik_txn(symbol="DF", cik="27500", trans=date(2023, 3, 4))
+    result = map_purchases_by_cik([late], [delisted])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_known_but_window_miss"] == 1
+
+
+def test_symbol_alone_never_establishes_identity() -> None:
+    # Same symbol, different CIK: must not map.
+    other = listing("SYMC", cik="999999")
+    result = map_purchases_by_cik([cik_txn(symbol="SYMC", cik="849399")], [other])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_absent_from_reference"] == 1

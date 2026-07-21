@@ -371,6 +371,158 @@ def map_purchases(
     )
 
 
+@dataclass(frozen=True)
+class ReferenceListing:
+    """One TICKERS reference row: canonical symbol, issuer CIK, history.
+
+    ``related_symbols`` carries the issuer's historical/alternate tickers
+    (Sharadar ``relatedtickers``), which is how an as-filed symbol like SYMC
+    finds the renamed GEN row.
+    """
+
+    symbol: str
+    cik: str | None
+    related_symbols: frozenset[str]
+    first_price_date: date | None
+    last_price_date: date | None
+
+    def covers(self, as_of: date) -> bool:
+        if self.first_price_date is not None and as_of < self.first_price_date:
+            return False
+        if self.last_price_date is not None and as_of > self.last_price_date:
+            return False
+        return True
+
+
+def normalize_cik(raw: str | None) -> str | None:
+    """Canonical CIK: digits only, leading zeros stripped. None if absent."""
+
+    if raw is None:
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    stripped = digits.lstrip("0")
+    return stripped or None
+
+
+def cik_from_secfilings_url(url: str | None) -> str | None:
+    """Extract the CIK Sharadar embeds in the TICKERS ``secfilings`` URL."""
+
+    if not url:
+        return None
+    marker = "CIK="
+    index = url.find(marker)
+    if index < 0:
+        return None
+    tail = url[index + len(marker) :]
+    digits = ""
+    for ch in tail:
+        if ch.isdigit():
+            digits += ch
+        else:
+            break
+    return normalize_cik(digits)
+
+
+@dataclass(frozen=True)
+class CikMappingResult:
+    """Purchase-level identity mapping via issuer CIK (grill 2026-07-21 Q1/Q2).
+
+    ``canonical`` pairs each mapped purchase with the Sharadar canonical symbol
+    of its matched reference row — the symbol the SEP price panel uses.
+    """
+
+    canonical: tuple[tuple[InsiderTransaction, str], ...]
+    unmapped: tuple[InsiderTransaction, ...]
+    ambiguous: tuple[InsiderTransaction, ...]
+    unmapped_by_year: dict[int, int]
+    total_by_year: dict[int, int]
+    reason_counts: dict[str, int]
+
+    @property
+    def mapped_count(self) -> int:
+        return len(self.canonical)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.canonical) + len(self.unmapped) + len(self.ambiguous)
+
+
+def map_purchases_by_cik(
+    purchases: Iterable[InsiderTransaction],
+    listings: Sequence[ReferenceListing],
+) -> CikMappingResult:
+    """CIK-primary identity join with the frozen tiebreak ladder.
+
+    Ladder among the CIK's rows whose window covers the filing date:
+    exact as-filed-symbol match → row whose related symbols contain the
+    as-filed symbol → sole covering row → ambiguous-excluded, counted.
+    The as-filed symbol only disambiguates identity already established by
+    CIK; it never establishes identity on its own here.
+    """
+
+    by_cik: dict[str, list[ReferenceListing]] = defaultdict(list)
+    for listing in listings:
+        if listing.cik is not None:
+            by_cik[listing.cik].append(listing)
+
+    canonical: list[tuple[InsiderTransaction, str]] = []
+    unmapped: list[InsiderTransaction] = []
+    ambiguous: list[InsiderTransaction] = []
+    unmapped_by_year: dict[int, int] = defaultdict(int)
+    total_by_year: dict[int, int] = defaultdict(int)
+    reasons: dict[str, int] = defaultdict(int)
+
+    for purchase in purchases:
+        year = purchase.filing_date.year
+        total_by_year[year] += 1
+        cik = normalize_cik(purchase.issuer_cik)
+        if cik is None:
+            unmapped.append(purchase)
+            unmapped_by_year[year] += 1
+            reasons["filing_has_no_cik"] += 1
+            continue
+        rows = by_cik.get(cik)
+        if not rows:
+            unmapped.append(purchase)
+            unmapped_by_year[year] += 1
+            reasons["cik_absent_from_reference"] += 1
+            continue
+        covering = [row for row in rows if row.covers(purchase.filing_date)]
+        if not covering:
+            unmapped.append(purchase)
+            unmapped_by_year[year] += 1
+            reasons["cik_known_but_window_miss"] += 1
+            continue
+        symbol = purchase.trading_symbol.strip().upper()
+        exact = [row for row in covering if row.symbol.upper() == symbol]
+        if len(exact) == 1:
+            canonical.append((purchase, exact[0].symbol))
+            reasons["matched_exact_symbol"] += 1
+            continue
+        related = [row for row in covering if symbol and symbol in row.related_symbols]
+        if len(related) == 1:
+            canonical.append((purchase, related[0].symbol))
+            reasons["matched_related_symbol"] += 1
+            continue
+        if len(covering) == 1:
+            canonical.append((purchase, covering[0].symbol))
+            reasons["matched_sole_covering_row"] += 1
+            continue
+        ambiguous.append(purchase)
+        ambiguous_year = year
+        unmapped_by_year[ambiguous_year] += 1  # composition treats ambiguous as residual
+        reasons["ambiguous_excluded"] += 1
+
+    return CikMappingResult(
+        canonical=tuple(canonical),
+        unmapped=tuple(unmapped),
+        ambiguous=tuple(ambiguous),
+        unmapped_by_year=dict(unmapped_by_year),
+        total_by_year=dict(total_by_year),
+        reason_counts=dict(reasons),
+    )
+
+
 # --- Cluster construction ----------------------------------------------------
 
 

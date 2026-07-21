@@ -2,7 +2,7 @@
   "stage": "D+F0",
   "line": "cfob-insider-purchase-clusters",
   "experiment_id": "cfob-d-f0",
-  "verdict": "kill_line",
+  "verdict": "stage_pass",
   "capital_go": false,
   "implementability_eligible": false,
   "protocol": {
@@ -41,31 +41,31 @@
     "indirect_ownership": 157142
   },
   "clusters": {
-    "raw": 23954,
-    "de_overlapped": 8363,
+    "raw": 31311,
+    "de_overlapped": 10398,
     "required_for_mds_bar": 7246,
-    "mds_at_measured_n": 0.011634844399862676,
+    "mds_at_measured_n": 0.010434381743528768,
     "year_shares": {
-      "2006": 0.03312208537606122,
-      "2007": 0.052851847423173504,
-      "2008": 0.07796245366495277,
-      "2009": 0.03623101757742437,
-      "2010": 0.031448044959942606,
-      "2011": 0.05189525289967715,
-      "2012": 0.0346765514767428,
-      "2013": 0.028578261389453546,
-      "2014": 0.0365897405237355,
-      "2015": 0.04938419227549922,
-      "2016": 0.04519909123520268,
-      "2017": 0.038383355255291164,
-      "2018": 0.06110247518832955,
-      "2019": 0.05404759057754394,
-      "2020": 0.0834628721750568,
-      "2021": 0.046873131651321294,
-      "2022": 0.06468970465144087,
-      "2023": 0.06241779265813703,
-      "2024": 0.047231854597632426,
-      "2025": 0.06385268444338156
+      "2006": 0.03981534910559723,
+      "2007": 0.0658780534718215,
+      "2008": 0.0854972110021158,
+      "2009": 0.038949798038084245,
+      "2010": 0.034237353337180226,
+      "2011": 0.05558761300250048,
+      "2012": 0.038084246970571264,
+      "2013": 0.03289094056549336,
+      "2014": 0.04096941719561454,
+      "2015": 0.0523177534141181,
+      "2016": 0.04548951721484901,
+      "2017": 0.03885362569724947,
+      "2018": 0.0578957491825351,
+      "2019": 0.05193306405077899,
+      "2020": 0.07511059819195999,
+      "2021": 0.04308520869397961,
+      "2022": 0.057511059819196,
+      "2023": 0.05376033852663974,
+      "2024": 0.03971917676476246,
+      "2025": 0.05241392575495288
     }
   },
   "gates": [
@@ -73,7 +73,7 @@
       "id": "D1-volume",
       "passed": true,
       "severity": "hard",
-      "reason": "de-overlapped clusters=8363 vs floor 7500 (MDS=0.0116 vs bar 0.0125)"
+      "reason": "de-overlapped clusters=10398 vs floor 7500 (MDS=0.0104 vs bar 0.0125)"
     },
     {
       "id": "D2-spread",
@@ -85,7 +85,7 @@
       "id": "D3-concentration",
       "passed": true,
       "severity": "hard",
-      "reason": "max year share=0.0835 (2020) vs cap 0.25"
+      "reason": "max year share=0.0855 (2008) vs cap 0.25"
     },
     {
       "id": "F0-protocol",
@@ -95,15 +95,15 @@
     },
     {
       "id": "F1-mapping",
-      "passed": false,
+      "passed": true,
       "severity": "hard",
-      "reason": "mapping rate=0.6849 vs floor 0.9"
+      "reason": "mapping rate=0.9020 vs floor 0.9"
     },
     {
       "id": "F2-unmapped-composition",
       "passed": true,
       "severity": "hard",
-      "reason": "worst-year unmapped rate=0.4498 (2007) vs 3.0x global 0.3151 = 0.9454"
+      "reason": "worst-year unmapped rate=0.1415 (2006) vs 3.0x global 0.0980 = 0.2940"
     },
     {
       "id": "F3-reconcile",
@@ -142,13 +142,13 @@
       "reason": "SEP panel exposes only adjusted open/close; no unadjusted high/low band for off-market-price diagnostic"
     }
   ],
-  "all_hard_gates_passed": false,
+  "all_hard_gates_passed": true,
   "mode": "sec-insider-tape-2006-present",
   "notes": {
     "quarters_read": 81,
     "cross_quarter_superseded": 72,
     "dropped_by_global_dedupe": 72,
-    "universe_eligible_clusters": 9639,
+    "universe_eligible_clusters": 11996,
     "stage_d": {
       "verdict": "stage_pass",
       "all_hard_gates_passed": true,
@@ -157,7 +157,7 @@
           "id": "D1-volume",
           "passed": true,
           "severity": "hard",
-          "reason": "de-overlapped clusters=8363 vs floor 7500 (MDS=0.0116 vs bar 0.0125)"
+          "reason": "de-overlapped clusters=10398 vs floor 7500 (MDS=0.0104 vs bar 0.0125)"
         },
         {
           "id": "D2-spread",
@@ -169,13 +169,13 @@
           "id": "D3-concentration",
           "passed": true,
           "severity": "hard",
-          "reason": "max year share=0.0835 (2020) vs cap 0.25"
+          "reason": "max year share=0.0855 (2008) vs cap 0.25"
         }
       ]
     },
     "f0": {
-      "verdict": "kill_line",
-      "all_hard_gates_passed": false,
+      "verdict": "stage_pass",
+      "all_hard_gates_passed": true,
       "gates": [
         {
           "id": "F0-protocol",
@@ -185,15 +185,15 @@
         },
         {
           "id": "F1-mapping",
-          "passed": false,
+          "passed": true,
           "severity": "hard",
-          "reason": "mapping rate=0.6849 vs floor 0.9"
+          "reason": "mapping rate=0.9020 vs floor 0.9"
         },
         {
           "id": "F2-unmapped-composition",
           "passed": true,
           "severity": "hard",
-          "reason": "worst-year unmapped rate=0.4498 (2007) vs 3.0x global 0.3151 = 0.9454"
+          "reason": "worst-year unmapped rate=0.1415 (2006) vs 3.0x global 0.0980 = 0.2940"
         },
         {
           "id": "F3-reconcile",
@@ -232,32 +232,32 @@
           "reason": "SEP panel exposes only adjusted open/close; no unadjusted high/low band for off-market-price diagnostic"
         }
       ],
-      "listing_window_source": "tickers-cache",
-      "mapped_purchases": 257775,
+      "listing_window_source": "tickers-reference-api",
+      "mapped_purchases": 339500,
       "total_purchases": 376382,
-      "ambiguous_purchases": 0,
+      "ambiguous_purchases": 4968,
       "unmapped_by_year": {
-        "2006": 10601,
-        "2007": 15777,
-        "2008": 20682,
-        "2009": 6941,
-        "2010": 6116,
-        "2011": 5909,
-        "2012": 4625,
-        "2013": 4017,
-        "2014": 4977,
-        "2015": 5526,
-        "2016": 4859,
-        "2017": 4102,
-        "2018": 4523,
-        "2019": 3976,
-        "2020": 3574,
-        "2021": 3230,
-        "2022": 3577,
-        "2023": 2124,
-        "2024": 1774,
-        "2025": 1421,
-        "2026": 276
+        "2006": 3535,
+        "2007": 4297,
+        "2008": 4231,
+        "2009": 1872,
+        "2010": 1459,
+        "2011": 1639,
+        "2012": 1429,
+        "2013": 1151,
+        "2014": 1114,
+        "2015": 1435,
+        "2016": 1496,
+        "2017": 1519,
+        "2018": 1931,
+        "2019": 1387,
+        "2020": 1611,
+        "2021": 1375,
+        "2022": 1530,
+        "2023": 1318,
+        "2024": 1152,
+        "2025": 1155,
+        "2026": 246
       },
       "total_by_year": {
         "2006": 24988,
@@ -343,76 +343,76 @@
       "reconcile_tolerance": 0.02
     },
     "measured_span": "2006-01-01..2025-12-31",
-    "clusters_out_of_price_span": 299,
-    "secondary_10m_band_clusters": 5299,
-    "adjusted_price_below_5_count": 886,
+    "clusters_out_of_price_span": 301,
+    "secondary_10m_band_clusters": 6382,
+    "adjusted_price_below_5_count": 1146,
     "price_floor_role": "diagnostic_on_adjusted_close",
     "price_floor_caveat": "SEP exposes only split/dividend-adjusted closes; the $5 price floor is reported, not gated (ADR 0002). Dollar volume is the binding habitat gate.",
     "no_price_history_by_year": {
-      "2006": 80,
-      "2007": 114,
-      "2008": 107,
-      "2009": 69,
-      "2010": 70,
-      "2011": 89,
-      "2012": 80,
-      "2013": 110,
-      "2014": 93,
-      "2015": 150,
-      "2016": 141,
-      "2017": 121,
-      "2018": 107,
-      "2019": 97,
-      "2020": 125,
-      "2021": 77,
-      "2022": 94,
-      "2023": 141,
-      "2024": 174,
-      "2025": 131
+      "2006": 187,
+      "2007": 234,
+      "2008": 218,
+      "2009": 130,
+      "2010": 125,
+      "2011": 129,
+      "2012": 125,
+      "2013": 145,
+      "2014": 140,
+      "2015": 193,
+      "2016": 175,
+      "2017": 143,
+      "2018": 122,
+      "2019": 111,
+      "2020": 146,
+      "2021": 100,
+      "2022": 109,
+      "2023": 156,
+      "2024": 190,
+      "2025": 137
     },
     "insufficient_history_by_year": {
-      "2006": 94,
-      "2007": 109,
-      "2008": 74,
-      "2009": 20,
-      "2010": 63,
-      "2011": 83,
-      "2012": 94,
-      "2013": 109,
-      "2014": 173,
-      "2015": 145,
-      "2016": 91,
-      "2017": 109,
-      "2018": 144,
-      "2019": 138,
-      "2020": 144,
-      "2021": 259,
-      "2022": 132,
-      "2023": 40,
-      "2024": 71,
-      "2025": 93
+      "2006": 148,
+      "2007": 172,
+      "2008": 123,
+      "2009": 33,
+      "2010": 96,
+      "2011": 129,
+      "2012": 135,
+      "2013": 164,
+      "2014": 259,
+      "2015": 217,
+      "2016": 127,
+      "2017": 141,
+      "2018": 183,
+      "2019": 163,
+      "2020": 175,
+      "2021": 319,
+      "2022": 150,
+      "2023": 43,
+      "2024": 73,
+      "2025": 95
     },
     "universe_total_by_year": {
-      "2006": 940,
-      "2007": 1377,
-      "2008": 1806,
-      "2009": 999,
-      "2010": 796,
-      "2011": 1180,
-      "2012": 1011,
-      "2013": 869,
-      "2014": 1052,
-      "2015": 1299,
-      "2016": 1167,
-      "2017": 957,
-      "2018": 1254,
-      "2019": 1189,
-      "2020": 1623,
-      "2021": 1127,
-      "2022": 1419,
-      "2023": 1340,
-      "2024": 1101,
-      "2025": 1149
+      "2006": 1508,
+      "2007": 2196,
+      "2008": 2748,
+      "2009": 1473,
+      "2010": 1213,
+      "2011": 1652,
+      "2012": 1385,
+      "2013": 1206,
+      "2014": 1467,
+      "2015": 1771,
+      "2016": 1518,
+      "2017": 1244,
+      "2018": 1545,
+      "2019": 1467,
+      "2020": 1869,
+      "2021": 1350,
+      "2022": 1606,
+      "2023": 1444,
+      "2024": 1166,
+      "2025": 1182
     }
   }
 }

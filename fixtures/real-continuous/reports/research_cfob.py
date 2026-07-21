@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -32,6 +33,8 @@ from invest.adapters.sec_insider_tape import InsiderTapeError, SecInsiderTapeRea
 from invest.application.cfob import (
     PROTOCOL,
     ListingWindow,
+    ReferenceListing,
+    cik_from_secfilings_url,
     PurchaseCluster,
     QualificationCounts,
     build_cfob_artifact,
@@ -42,6 +45,7 @@ from invest.application.cfob import (
     evaluate_stage_d,
     evaluate_stage_f0,
     map_purchases,
+    map_purchases_by_cik,
     qualifying_purchases,
     year_shares,
 )
@@ -57,6 +61,7 @@ REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
 TICKERS_CACHE = TAPE_DIR / "tickers_listing_windows.json"
+REFERENCE_CACHE = TAPE_DIR / "tickers_reference_v2.json"
 
 BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
 USER_AGENT = "invest-research ramoncarmenaty@gmail.com"
@@ -253,6 +258,112 @@ def _dedupe_windows(windows: list[ListingWindow]) -> list[ListingWindow]:
         seen.add(key)
         out.append(window)
     return out
+
+
+def load_reference_listings(*, verbose: bool = True) -> tuple[list[ReferenceListing], str]:
+    """TICKERS reference with CIK + related symbols (cache -> live fetch).
+
+    CIK-primary mapping (grill 2026-07-21) needs three columns the plain
+    listing-window path never fetched: secfilings (embeds the issuer CIK) and
+    relatedtickers (historical/renamed symbols). Fails closed when neither a
+    cache nor an API key is available -- there is no honest symbol-only
+    fallback for an identity join.
+    """
+
+    if REFERENCE_CACHE.is_file():
+        rows = json.loads(REFERENCE_CACHE.read_text())
+        listings = [
+            ReferenceListing(
+                symbol=row["symbol"],
+                cik=row.get("cik"),
+                related_symbols=frozenset(row.get("related", [])),
+                first_price_date=date.fromisoformat(row["first"]) if row.get("first") else None,
+                last_price_date=date.fromisoformat(row["last"]) if row.get("last") else None,
+            )
+            for row in rows
+        ]
+        if verbose:
+            print(f"  reference listings from cache: {len(listings):,}")
+        return listings, "tickers-reference-cache"
+
+    api_key = os.environ.get("NASDAQ_DATA_LINK_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "fail-closed: CIK-primary mapping needs the TICKERS reference; no "
+            f"cache at {REFERENCE_CACHE} and no NASDAQ_DATA_LINK_API_KEY set"
+        )
+
+    if verbose:
+        print("  fetching Sharadar TICKERS reference (CIK + related symbols)...")
+    columns = "ticker,category,firstpricedate,lastpricedate,isdelisted,secfilings,relatedtickers"
+    base = (
+        "https://data.nasdaq.com/api/v3/datatables/SHARADAR/TICKERS.json"
+        f"?qopts.columns={columns}&api_key={api_key}"
+    )
+    seen: set[tuple] = set()
+    listings: list[ReferenceListing] = []
+    cursor: str | None = None
+    for _page in range(512):
+        url = base + (f"&qopts.cursor_id={cursor}" if cursor else "")
+        with urllib.request.urlopen(url, timeout=180) as response:
+            payload = json.loads(response.read().decode())
+        table = payload.get("datatable", {})
+        names = [column["name"] for column in table.get("columns", [])]
+        index = {name: position for position, name in enumerate(names)}
+        for values in table.get("data", []):
+            symbol = (values[index["ticker"]] or "").strip()
+            if not symbol:
+                continue
+            first_raw = values[index["firstpricedate"]]
+            last_raw = values[index["lastpricedate"]]
+            delisted = values[index["isdelisted"]]
+            cik = cik_from_secfilings_url(values[index["secfilings"]])
+            related_raw = values[index["relatedtickers"]] or ""
+            related = frozenset(part.strip().upper() for part in related_raw.split() if part.strip())
+            first = date.fromisoformat(first_raw) if first_raw else None
+            # Open listings keep last=None so covers() extends to the present.
+            last = date.fromisoformat(last_raw) if (last_raw and delisted == "Y") else None
+            key = (symbol, cik, related, first, last)
+            if key in seen:
+                continue
+            seen.add(key)
+            listings.append(
+                ReferenceListing(
+                    symbol=symbol,
+                    cik=cik,
+                    related_symbols=related,
+                    first_price_date=first,
+                    last_price_date=last,
+                )
+            )
+        cursor = payload.get("meta", {}).get("next_cursor_id")
+        if not cursor:
+            break
+    else:
+        raise SystemExit("fail-closed: TICKERS pagination did not terminate")
+
+    TAPE_DIR.mkdir(parents=True, exist_ok=True)
+    REFERENCE_CACHE.write_text(
+        json.dumps(
+            [
+                {
+                    "symbol": listing.symbol,
+                    "cik": listing.cik,
+                    "related": sorted(listing.related_symbols),
+                    "first": listing.first_price_date.isoformat()
+                    if listing.first_price_date
+                    else None,
+                    "last": listing.last_price_date.isoformat()
+                    if listing.last_price_date
+                    else None,
+                }
+                for listing in listings
+            ]
+        )
+    )
+    if verbose:
+        print(f"  reference listings from TICKERS API: {len(listings):,}")
+    return listings, "tickers-reference-api"
 
 
 def load_listing_windows(*, verbose: bool = True) -> tuple[list[ListingWindow], str]:
@@ -672,18 +783,26 @@ def main() -> int:
             "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory."
         )
 
-    print("Loading listing windows for purchase-level mapping...")
-    windows, window_source = load_listing_windows()
-    mapping = map_purchases(purchases, windows)
+    print("Loading TICKERS reference for CIK-primary mapping...")
+    listings, window_source = load_reference_listings()
+    mapping = map_purchases_by_cik(purchases, listings)
     print(
         f"  mapped purchases: {mapping.mapped_count:,} / {mapping.total_count:,} "
         f"(ambiguous {len(mapping.ambiguous):,}; source={window_source})"
     )
+    for reason, count in sorted(mapping.reason_counts.items(), key=lambda kv: -kv[1]):
+        print(f"    {reason}: {count:,}")
     if mapping.mapped_count == 0:
-        raise SystemExit("fail-closed: zero purchases mapped to listing windows")
+        raise SystemExit("fail-closed: zero purchases mapped via CIK reference")
 
-    print("Building clusters from mapped purchases only...")
-    raw = list(build_clusters(mapping.mapped))
+    print("Building clusters on canonical Sharadar symbols...")
+    # The canonical symbol is what SEP prices — so renamed issuers (as-filed
+    # SYMC → GEN row) now find their price history downstream.
+    canonical_purchases = [
+        replace(purchase, trading_symbol=canonical_symbol)
+        for purchase, canonical_symbol in mapping.canonical
+    ]
+    raw = list(build_clusters(canonical_purchases))
     print(f"  raw clusters: {len(raw):,}")
 
     print(f"Applying habitat universe filter from SEP ({SEP_DIR})...")
