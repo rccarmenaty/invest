@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from invest.application.cfob import (
     PROTOCOL,
     ProtocolConfig,
@@ -284,6 +286,35 @@ def test_de_overlap_is_per_symbol() -> None:
     ]
 
     assert len(de_overlap(build_clusters(purchases))) == 2
+
+
+def test_partial_session_calendar_is_rejected_not_silently_over_blocking() -> None:
+    # Regression: a calendar starting after the event resolved "the Nth session
+    # later" to a far-future date, blocking the symbol for years and shrinking
+    # the cohort by 60% — a silent, publishable wrong answer.
+    purchases = [
+        txn(owner="owner-1", trans=date(2008, 1, 2)),
+        txn(owner="owner-2", trans=date(2008, 1, 3)),
+    ]
+    clusters = build_clusters(purchases)
+    late_calendar = [date(2023, 1, 1) + timedelta(days=offset) for offset in range(400)]
+
+    with pytest.raises(ValueError, match="after cluster known-time"):
+        de_overlap(clusters, sessions_by_symbol={"ACME": late_calendar})
+
+
+def test_de_overlap_never_lets_a_symbol_re_enter_inside_its_horizon() -> None:
+    purchases = []
+    for month in range(1, 13):
+        purchases.append(txn(owner=f"owner-{month}a", trans=date(2024, month, 2)))
+        purchases.append(txn(owner=f"owner-{month}b", trans=date(2024, month, 3)))
+    clusters = build_clusters(purchases)
+
+    kept = de_overlap(clusters, horizon_sessions=60)
+
+    known_times = sorted(c.known_time for c in kept)
+    gaps = [(b - a).days for a, b in zip(known_times, known_times[1:])]
+    assert all(gap > 60 for gap in gaps), gaps
 
 
 def test_de_overlap_uses_the_session_calendar_when_given_one() -> None:

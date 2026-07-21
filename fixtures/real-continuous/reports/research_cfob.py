@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -46,7 +47,10 @@ from invest.application.cfob import (  # noqa: E402
 from invest.domain.models import InsiderTransaction  # noqa: E402
 
 TAPE_DIR = REPO_ROOT / "fixtures" / "sec-insider-tape"
-SEP_DIR = REPO_ROOT / "fixtures" / "full-depth-sep"
+# SEP year parquet is gitignored, so a worktree does not carry it. Allow an
+# explicit override and fail closed if it cannot be found — a missing panel must
+# never masquerade as "no cluster qualifies".
+SEP_DIR = Path(os.environ.get("CFOB_SEP_DIR", REPO_ROOT / "fixtures" / "full-depth-sep"))
 REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
@@ -147,11 +151,22 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
 
     path = SEP_DIR / f"sep_{year}.parquet"
     if not path.is_file():
+        # Only genuinely-out-of-range years may be absent; a gap inside the
+        # measured span would silently shrink the cohort.
+        if FIRST_YEAR - 1 <= year <= date.today().year:
+            raise SystemExit(f"fail-closed: SEP year parquet missing for {year}: {path}")
         return {}
-    table = pq.read_table(path, columns=["ticker", "date", "close", "volume"])
-    tickers = table.column("ticker").to_pylist()
+    wanted = ["symbol", "date", "close_adj", "volume"]
+    available = set(pq.ParquetFile(path).schema_arrow.names)
+    missing = [column for column in wanted if column not in available]
+    if missing:
+        # pyarrow silently returns only the columns that exist, so an unchecked
+        # read would quietly produce an empty cohort instead of failing.
+        raise SystemExit(f"fail-closed: SEP {year} missing columns {missing}")
+    table = pq.read_table(path, columns=wanted)
+    tickers = table.column("symbol").to_pylist()
     dates = table.column("date").to_pylist()
-    closes = table.column("close").to_pylist()
+    closes = table.column("close_adj").to_pylist()
     volumes = table.column("volume").to_pylist()
 
     out: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
@@ -175,11 +190,28 @@ def apply_universe_filter(
     secondary comparability diagnostic.
     """
 
+    # The measured span is bounded by price coverage, not by the insider tape:
+    # the tape runs ahead of SEP, and a cluster with no forward prices is out of
+    # span rather than ineligible. Recorded, never silent.
+    available_years = sorted(
+        int(p.stem.split("_")[1]) for p in SEP_DIR.glob("sep_*.parquet")
+    )
+    if not available_years:
+        raise SystemExit(f"fail-closed: no SEP year parquet found in {SEP_DIR}")
+    last_priced_year = available_years[-1]
+    out_of_span = [c for c in clusters if c.year > last_priced_year]
+    clusters = [c for c in clusters if c.year <= last_priced_year]
+
     symbols = {c.trading_symbol for c in clusters}
     years = sorted({c.year for c in clusters})
     history: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
     kept: list[PurchaseCluster] = []
     secondary_kept = 0
+    price_floor_excluded = 0
+    # Per-symbol history is truncated each year to bound memory, so it cannot
+    # serve as a session calendar. Trading days are common across symbols, so
+    # accumulate one market-wide calendar instead.
+    market_sessions: set[date] = set()
     unmapped_by_year: dict[int, int] = defaultdict(int)
     total_by_year: dict[int, int] = defaultdict(int)
 
@@ -195,6 +227,7 @@ def apply_universe_filter(
                 continue
             for symbol, bars in _load_sep_year(load_year, symbols).items():
                 history[symbol].extend(bars)
+                market_sessions.update(day for day, _, _ in bars)
         for symbol in list(history):
             history[symbol] = sorted(set(history[symbol]))[-600:]
 
@@ -208,10 +241,16 @@ def apply_universe_filter(
             window = prior[-PROTOCOL.dollar_volume_window :]
             price = prior[-1][1]
             dollar_volume = median(close * volume for _, close, volume in window)
-            if price < float(PROTOCOL.min_price):
-                continue
             if dollar_volume < float(PROTOCOL.min_dollar_volume):
                 continue
+            # SEP carries only split/dividend-adjusted closes, so a $5 floor on
+            # them is not a $5 floor on as-traded prices — it scales historical
+            # prices down and would drop early years for a representation
+            # reason rather than a liquidity one. Dollar volume is the
+            # economically binding constraint and is near-invariant to
+            # adjustment, so it gates; the price floor is counted only.
+            if price < float(PROTOCOL.min_price):
+                price_floor_excluded += 1
             kept.append(cluster)
             if dollar_volume >= float(PROTOCOL.secondary_min_dollar_volume):
                 secondary_kept += 1
@@ -219,11 +258,18 @@ def apply_universe_filter(
         if verbose:
             print(f"  {year}: universe-eligible clusters {len(kept):,}")
 
-    sessions = {
-        symbol: sorted({day for day, _, _ in bars}) for symbol, bars in history.items()
-    }
+    calendar = sorted(market_sessions)
+    sessions = {symbol: calendar for symbol in symbols}
     diagnostics = {
+        "measured_span": f"{FIRST_YEAR}-01-01..{last_priced_year}-12-31",
+        "clusters_out_of_price_span": len(out_of_span),
         "secondary_10m_band_clusters": secondary_kept,
+        "adjusted_price_below_5_count": price_floor_excluded,
+        "price_floor_caveat": (
+            "SEP exposes only split/dividend-adjusted closes; the $5 price floor is "
+            "reported, not gated, because adjustment scales historical prices down. "
+            "Dollar volume gates."
+        ),
         "unmapped_by_year": dict(unmapped_by_year),
         "total_by_year": dict(total_by_year),
     }
@@ -368,9 +414,20 @@ def main() -> int:
     raw = list(build_clusters(purchases))
     print(f"  raw clusters: {len(raw):,}")
 
-    print("Applying habitat universe filter from SEP...")
+    if not SEP_DIR.is_dir():
+        raise SystemExit(
+            f"fail-closed: SEP panel not found at {SEP_DIR}. "
+            "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory."
+        )
+
+    print(f"Applying habitat universe filter from SEP ({SEP_DIR})...")
     eligible, sessions, diagnostics = apply_universe_filter(raw)
     print(f"  universe-eligible clusters: {len(eligible):,}")
+    if not eligible:
+        raise SystemExit(
+            "fail-closed: universe filter admitted zero clusters from "
+            f"{len(raw):,} raw. That is a data/join failure, not a density result."
+        )
 
     print("De-overlapping (first-wins, h60)...")
     deoverlapped = list(de_overlap(eligible, sessions_by_symbol=sessions))

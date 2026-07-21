@@ -354,6 +354,15 @@ def de_overlap(
             continue
         kept.append(cluster)
         sessions = sessions_by_symbol.get(cluster.trading_symbol) if sessions_by_symbol else None
+        if sessions and sessions[0] > cluster.known_time:
+            # The calendar starts after this event, so "the Nth session after
+            # known-time" would resolve to a far-future date and block the
+            # symbol for years. A partial calendar is a caller error, not a
+            # reason to silently over-exclude.
+            raise ValueError(
+                f"session calendar for {cluster.trading_symbol} starts "
+                f"{sessions[0]}, after cluster known-time {cluster.known_time}"
+            )
         if sessions:
             future = [s for s in sessions if s > cluster.known_time]
             close = future[horizon - 1] if len(future) >= horizon else None
