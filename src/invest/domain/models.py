@@ -16,6 +16,39 @@ class Universe:
 
 
 @dataclass(frozen=True)
+class InsiderTransaction:
+    """One non-derivative insider transaction as filed on SEC Forms 3/4/5.
+
+    ``filing_date`` is day-granular: the SEC Insider Transactions Data Sets carry
+    no acceptance timestamp, so it is the only knowledge-time axis available.
+    ``trading_symbol`` is the as-filed symbol and is therefore point-in-time.
+    """
+
+    accession_number: str
+    issuer_cik: str
+    trading_symbol: str
+    owner_cik: str
+    filing_date: date
+    transaction_date: date
+    transaction_code: str
+    acquired_disposed: str
+    shares: Decimal
+    price_per_share: Decimal
+    direct_ownership: bool
+    document_type: str
+    original_submission_date: date | None
+    late_filing: bool
+
+    @property
+    def gross_value(self) -> Decimal:
+        return self.shares * self.price_per_share
+
+    @property
+    def is_amendment(self) -> bool:
+        return self.document_type.endswith("/A")
+
+
+@dataclass(frozen=True)
 class DailyBar:
     symbol: str
     date: date

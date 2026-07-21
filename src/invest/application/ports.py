@@ -4,7 +4,16 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from invest.domain.models import AccountSnapshot, BrokerAck, DailyBar, FixtureInputs, OrderIntent, ScanDecision, Universe
+from invest.domain.models import (
+    AccountSnapshot,
+    BrokerAck,
+    DailyBar,
+    FixtureInputs,
+    InsiderTransaction,
+    OrderIntent,
+    ScanDecision,
+    Universe,
+)
 
 
 class FixtureReader(Protocol):
@@ -30,6 +39,18 @@ class ScannerPort(Protocol):
 @runtime_checkable
 class MarketDataReader(Protocol):
     def fetch(self, universe: Universe, as_of: date) -> FixtureInputs: ...
+
+
+@runtime_checkable
+class InsiderTapeReader(Protocol):
+    """Seam over the SEC Insider Transactions Data Sets (Forms 3/4/5, 2006-).
+
+    Implementations are fail-closed: a truncated file, a missing required
+    column, or an unparseable row raises rather than yielding a short panel
+    that would silently understate event density.
+    """
+
+    def load_quarter(self, year: int, quarter: int) -> tuple[InsiderTransaction, ...]: ...
 
 
 class BrokerPort(Protocol):

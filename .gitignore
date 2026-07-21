@@ -17,3 +17,4 @@ fixtures/real-smoke-replay/
 fixtures/real-years/
 # Full-depth SEP year shards (parquet; CMFT #74 research pull — not committed)
 fixtures/full-depth-sep/
+fixtures/sec-insider-tape/
