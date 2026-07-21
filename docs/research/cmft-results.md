@@ -1,9 +1,10 @@
 # CMFT Stage A results
 
-**Date:** 2026-07-21
-**Driver:** `fixtures/real-continuous/reports/research_cmft.py`
-**Artifact:** `fixtures/real-continuous/reports/cmft-structure.json`
-**Parent PRD:** #74
+**Date:** 2026-07-21  
+**Driver:** `fixtures/real-continuous/reports/research_cmft.py`  
+**Artifact:** `fixtures/real-continuous/reports/cmft-structure.json`  
+**Parent PRD:** #74  
+**Loop status:** **CLOSED** (2026-07-21) — dual-exit **underpowered-stop**; issue #74 closed
 
 ## Verdict
 
@@ -15,6 +16,7 @@
 - R2-1 kill_line untouched: `True`
 - SF* features included: `False`
 - HMM included: `False`
+- T1 / C2 trained: **No** (skipped after K0 fail — protocol)
 
 ## C1 diagnostics
 
@@ -75,6 +77,28 @@
 - mode: `full-depth-sep-parquet`
 - note: Full-depth Sharadar SEP 1998-01-02..2025-12-31 via year parquet shards under /Users/rcty/invest/fixtures/full-depth-sep (primary common, snappy). T1/C2 only if K0 passes and research-ml feature panel is available. K0 failed → T1/C2 not trained (underpowered-stop / cheap path).
 - t1_status: `skipped_k0`
+
+## What this does and does not claim
+
+### Claims (settled for this PRD)
+
+- Primary span measured: full-depth Sharadar SEP **1998–2025** (year parquet under `fixtures/full-depth-sep/`, gitignored).
+- **K0 failed** — MDS ≈ 162 bps > predeclared 50 bps bar at n=323 monthly formations → **underpowered-stop**.
+- **T1/C2 not trained** — required by protocol after K0 fail; not a post-hoc choice to hide a null.
+- Frozen **C1** (12–1 D10−D1) does **not** clear hard gates on this measure (G0-data 0/27; G1 t≈2.95 &lt; 3).
+- `capital_go` remains **false**. Residual freeze and R2-1 kill_line **untouched**.
+- Dual-exit success: the line **stopped honestly** without inventing edge or capital permission.
+
+### Non-claims (do not restate as facts)
+
+- **Not** “trees / conditional momentum have no edge” — T1 was never scored.
+- **Not** a price-trend **family kill** via G5 (beat-C1) — that gate was unmeasured by design after K0.
+- **Not** permission to retune K0, thresholds, or train T1 on this artifact.
+- **Not** Full-Stop repeal — this was an **event-only re-open** (#74) that dual-exited; CS alpha budget returns to Full-Stop default.
+
+## Fail / stop meaning
+
+Publish **underpowered-stop** for CMFT Stage A under this protocol. Do not train T1/C2, do not retune power or cost bars, do not reopen residual/R2-1/PEAD as rescue. A future tree or momentum-family trial requires a **new PRD + grill + named hypothesis** (event-only re-open), not a silent re-run of this driver.
 
 ## How to re-run
 
