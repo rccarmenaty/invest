@@ -10,49 +10,49 @@
       "id": "G0-data",
       "passed": false,
       "severity": "hard",
-      "reason": "G0-data not measured \u2014 fail closed"
+      "reason": "monotone years 0/7 < 4"
     },
     {
       "id": "K0-power",
       "passed": false,
       "severity": "hard",
-      "reason": "K0 power inputs not measured \u2014 fail closed"
+      "reason": "underpowered: MDS=225.31bps > 50.0bps (n=83)"
     },
     {
       "id": "G0-placebo",
       "passed": true,
       "severity": "hard",
-      "reason": "placebo |t|=0.0 < 2.0"
+      "reason": "placebo |t|=1.0814244611011348 < 2.0"
     },
     {
       "id": "G1",
       "passed": false,
       "severity": "hard",
-      "reason": "insufficient or non-finite spread sample"
+      "reason": "gross D10-D1 clustered_t<3.0 (t=1.5186487430724112)"
     },
     {
       "id": "G2",
-      "passed": false,
+      "passed": true,
       "severity": "hard",
-      "reason": "median missing or non-finite"
+      "reason": "median spread>0 (median=0.022305956378001136)"
     },
     {
       "id": "G3",
       "passed": false,
       "severity": "hard",
-      "reason": "no annual folds"
+      "reason": "folds=6/7 majority=True; year_share=0.26747382330193364 (max 0.25); month_share=0.04909316588624629 (max 0.2)"
     },
     {
       "id": "G4-costs",
-      "passed": false,
+      "passed": true,
       "severity": "hard",
-      "reason": "mean_net_10bps=nan<=0"
+      "reason": "mean_net_10bps=0.010146385344112609>0 (mean_net_5bps=0.011146385344112608 diagnostic)"
     },
     {
       "id": "G5-beat-c1",
       "passed": false,
       "severity": "hard",
-      "reason": "T1 mean nan vs C1 nan (ok=False); T1 median nan vs C1 nan (ok=False)"
+      "reason": "T1 mean nan vs C1 0.010146385344112609 (ok=False); T1 median nan vs C1 0.020305956378001137 (ok=False)"
     },
     {
       "id": "G6-VI",
@@ -73,7 +73,43 @@
       "reason": "deflated Sharpe not measured \u2014 fail closed"
     }
   ],
-  "fold_table": [],
+  "fold_table": [
+    {
+      "year": 2019,
+      "n": 12,
+      "mean": 0.02086723671781213
+    },
+    {
+      "year": 2020,
+      "n": 12,
+      "mean": 0.009728976747540575
+    },
+    {
+      "year": 2021,
+      "n": 12,
+      "mean": -0.01986216961145229
+    },
+    {
+      "year": 2022,
+      "n": 12,
+      "mean": 0.020438359313304368
+    },
+    {
+      "year": 2023,
+      "n": 12,
+      "mean": 0.023095394783817867
+    },
+    {
+      "year": 2024,
+      "n": 12,
+      "mean": 0.0277837546587912
+    },
+    {
+      "year": 2025,
+      "n": 11,
+      "mean": 0.002139213840325486
+    }
+  ],
   "protocol": {
     "experiment_id": "cmft-stage-a",
     "line": "cmft-conditional-momentum-family",
@@ -122,6 +158,16 @@
     "sma50_over_sma200"
   ],
   "declared_trial_count": 96,
-  "mode": "default-unmeasured",
-  "mode_note": "Continuous full-depth SEP panel measurement is not executed in this default path. Publish fail-closed until a sequential panel load is implemented against entitled SEP. Use --synthetic for harness smoke."
+  "mode": "continuous-fixture",
+  "mode_note": "Continuous 2019\u20132025 fixture panel: C1 + G0-data + K0 + placebo measured. Not full-depth SEP (~1998+). T1/C2 only if K0 passes and research-ml present. K0 failed \u2192 T1/C2 not trained (cheap kill / underpowered-stop path).",
+  "t1_status": "skipped_k0",
+  "c1_n_formations": 83,
+  "c1_mean_gross": 0.012146385344112609,
+  "c1_median_gross": 0.022305956378001136,
+  "c1_mean_net_10bps": 0.010146385344112609,
+  "c1_clustered_t": 1.5186487430724112,
+  "k0_mds_bps": 225.30969066079206,
+  "g0_years_monotone": 0,
+  "g0_years_total": 7,
+  "placebo_t_abs": 1.0814244611011348
 }
