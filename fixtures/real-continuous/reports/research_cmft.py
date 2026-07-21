@@ -6,6 +6,9 @@ Modes:
   default / --continuous — load real-continuous bars (multi-GB, sequential);
                            measure C1 + G0-data + K0 + placebo; T1/C2 only if
                            K0 passes and research-ml is installed
+  --full-depth           — pull Sharadar SEP from ~1998 into year parquet shards
+                           under fixtures/full-depth-sep/, then measure from them
+                           (resumable; primary PRD span when entitled)
   --synthetic            — tiny in-memory panel smoke (no multi-GB, no LightGBM)
   unmeasured fallback    — bars missing → fail-closed (no invented spreads)
 
@@ -22,17 +25,20 @@ Outputs:
 Parent PRD: #74
 
 Honesty:
-  - 2019–2025 continuous fixture is the available local panel. Full-depth SEP
-    (~1998+) is the PRD primary span when a deeper entitled pull is available;
-    if K0 fails here, that is underpowered-stop — not a fabricated kill/pass.
+  - 2019–2025 continuous fixture is the harness panel. Full-depth SEP (~1998+)
+    is the PRD primary span when entitled (NASDAQ_DATA_LINK_API_KEY).
   - T1/C2 unmeasured → G5/VI/DSR fail closed (honest).
+  - Full-depth year shards are parquet under fixtures/full-depth-sep/ (gitignored).
+    Resume skips years whose parquet already exists.
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -40,7 +46,14 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+import exchange_calendars as xcals
+import httpx
+from dotenv import load_dotenv
+
+from invest.adapters.alpaca_market_data import MarketDataFetchError
 from invest.adapters.fixtures_json import JsonFixtureReader
+from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+from invest.adapters.sharadar_tickers import SharadarTickersReader
 from invest.application.cmft import (
     PROTOCOL,
     assign_deciles,
@@ -58,13 +71,26 @@ from invest.application.cmft import (
 )
 from invest.application.event_study_excess import summarize
 
+load_dotenv()
+
 FIXTURES = Path(__file__).resolve().parents[1]
 REPORTS = Path(__file__).resolve().parent
 OUT_PATH = REPORTS / "cmft-structure.json"
 LOG_PATH = REPORTS / "cmft-run.log"
 DOCS_PATH = Path(__file__).resolve().parents[3] / "docs" / "research" / "cmft-results.md"
+CHECKPOINT_PATH = REPORTS / "cmft-full-depth-checkpoint.json"
+PARQUET_ROOT = Path(__file__).resolve().parents[3] / "fixtures" / "full-depth-sep"
+MANIFEST_PATH = PARQUET_ROOT / "manifest.json"
 
 ADV_WINDOW = 20
+# Rolling buffer: ≥2y so after year Y+1 loads we still hold year-Y lookback
+# for mom_12_1 (252) + ADV + skip/horizon headroom.
+ROLLING_SESSIONS = 650
+SEP_ENDPOINT = SharadarMarketDataReader.ENDPOINT
+SEP_COLUMNS = ",".join(SharadarMarketDataReader.COLUMNS)
+FULL_DEPTH_START = date(1998, 1, 2)
+FULL_DEPTH_END = date(2025, 12, 31)
+PARQUET_COLS = ("symbol", "date", "open_adj", "close_adj", "volume")
 
 
 def log(msg: str) -> None:
@@ -136,6 +162,14 @@ def _render_markdown(artifact: dict) -> str:
             "```bash",
             "# Continuous fixture panel (sequential multi-GB; alone on 16GB host)",
             "uv run python fixtures/real-continuous/reports/research_cmft.py --write-docs",
+            "",
+            "# Full-depth SEP → year parquet + measure (needs NASDAQ_DATA_LINK_API_KEY)",
+            "uv sync --extra research-ml",
+            "uv run python fixtures/real-continuous/reports/research_cmft.py --full-depth --write-docs",
+            "",
+            "# Resume pull only / measure only",
+            "uv run python fixtures/real-continuous/reports/research_cmft.py --full-depth --pull-only",
+            "uv run python fixtures/real-continuous/reports/research_cmft.py --full-depth --measure-only --write-docs",
             "",
             "# Synthetic harness smoke (no LightGBM, no multi-GB)",
             "uv run python fixtures/real-continuous/reports/research_cmft.py --synthetic --write-docs",
@@ -817,6 +851,484 @@ def _run_t1_walk_forward(
     return oos_spreads
 
 
+def _require_parquet_stack() -> None:
+    """Fail early with an actionable message if research-ml parquet deps missing."""
+    try:
+        import pandas  # noqa: F401
+        import pyarrow  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "full-depth parquet path requires research-ml extras "
+            "(pandas + pyarrow). Install: uv sync --extra research-ml"
+        ) from exc
+
+
+def _year_parquet_path(year: int) -> Path:
+    return PARQUET_ROOT / f"sep_{year}.parquet"
+
+
+def _primary_common_tickers(client: httpx.Client) -> set[str]:
+    tickers = SharadarTickersReader(client=client).fetch()
+    return {t.ticker for t in tickers if t.is_primary_common_stock}
+
+
+def _adjust_float(raw: float, close: float, closeadj: float) -> float:
+    if close <= 0:
+        return float("nan")
+    return raw * (closeadj / close)
+
+
+def _fetch_sep_date_range_rows(
+    client: httpx.Client,
+    *,
+    start: date,
+    end: date,
+    primary: set[str],
+    sleep: float = 0.15,
+) -> list[tuple[str, date, float, float, float]]:
+    """Date-range SEP pages → row list (symbol, date, open_adj, close_adj, volume)."""
+    api_key = os.environ.get("NASDAQ_DATA_LINK_API_KEY")
+    if not api_key:
+        raise MarketDataFetchError("auth-failure")
+
+    rows: list[tuple[str, date, float, float, float]] = []
+    cursor: str | None = None
+    pages = 0
+    max_pages = 2048
+    while pages < max_pages:
+        params: dict[str, str] = {
+            "date.gte": start.isoformat(),
+            "date.lte": end.isoformat(),
+            "qopts.columns": SEP_COLUMNS,
+            "api_key": api_key,
+        }
+        if cursor is not None:
+            params["qopts.cursor_id"] = cursor
+        for attempt in range(5):
+            try:
+                resp = client.get(SEP_ENDPOINT, params=params, timeout=180.0)
+            except httpx.RequestError as exc:
+                if attempt == 4:
+                    raise MarketDataFetchError("network-failure", str(exc)) from exc
+                time.sleep(min(4.0, 0.5 * (2**attempt)))
+                continue
+            if resp.status_code in {401, 403}:
+                raise MarketDataFetchError("auth-failure")
+            if resp.status_code in {429, *range(500, 600)}:
+                if attempt == 4:
+                    raise MarketDataFetchError(
+                        "rate-limited" if resp.status_code == 429 else "network-failure"
+                    )
+                time.sleep(min(4.0, 0.5 * (2**attempt)))
+                continue
+            if resp.is_error:
+                raise MarketDataFetchError("network-failure", f"HTTP {resp.status_code}")
+            break
+        payload = resp.json()
+        datatable = payload.get("datatable") or {}
+        columns = [c["name"] for c in datatable.get("columns") or []]
+        col = {name: i for i, name in enumerate(columns)}
+        required = {"ticker", "date", "open", "high", "low", "close", "volume", "closeadj"}
+        if required - set(col):
+            raise MarketDataFetchError("malformed-response", "SEP columns missing")
+        for values in datatable.get("data") or []:
+            ticker = values[col["ticker"]]
+            if ticker not in primary:
+                continue
+            try:
+                d = date.fromisoformat(values[col["date"]])
+                raw_o = float(values[col["open"]])
+                raw_c = float(values[col["close"]])
+                closeadj = float(values[col["closeadj"]])
+                vol = float(values[col["volume"]] or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if raw_c <= 0 or closeadj <= 0 or raw_o <= 0:
+                continue
+            o_adj = _adjust_float(raw_o, raw_c, closeadj)
+            if not math.isfinite(o_adj) or o_adj <= 0:
+                continue
+            rows.append((ticker, d, o_adj, closeadj, vol))
+        pages += 1
+        cursor = (payload.get("meta") or {}).get("next_cursor_id")
+        if pages % 25 == 0:
+            log(
+                f"  SEP pages={pages} rows_kept={len(rows)} "
+                f"cursor={'yes' if cursor else 'no'}"
+            )
+        if not cursor:
+            break
+        if sleep > 0:
+            time.sleep(sleep)
+    else:
+        raise MarketDataFetchError("malformed-response", f"page cap {max_pages} exhausted")
+    log(f"  SEP range {start}..{end}: pages={pages} rows_kept={len(rows)}")
+    return rows
+
+
+def _write_year_parquet(
+    year: int,
+    rows: list[tuple[str, date, float, float, float]],
+) -> Path:
+    """Write/overwrite one year shard; columns compressed with snappy."""
+    import pandas as pd
+
+    PARQUET_ROOT.mkdir(parents=True, exist_ok=True)
+    path = _year_parquet_path(year)
+    tmp = path.with_suffix(".parquet.tmp")
+    df = pd.DataFrame(rows, columns=list(PARQUET_COLS))
+    if not df.empty:
+        # De-dupe symbol-date (keep last page row).
+        df = df.drop_duplicates(subset=["symbol", "date"], keep="last")
+        df = df.sort_values(["symbol", "date"], kind="mergesort")
+        df["symbol"] = df["symbol"].astype("category")
+        df["open_adj"] = df["open_adj"].astype("float32")
+        df["close_adj"] = df["close_adj"].astype("float32")
+        df["volume"] = df["volume"].astype("float32")
+    df.to_parquet(tmp, engine="pyarrow", compression="snappy", index=False)
+    tmp.replace(path)
+    size_mb = path.stat().st_size / (1024 * 1024)
+    log(f"  wrote {path.name} rows={len(df)} size={size_mb:.1f}MB")
+    return path
+
+
+def _load_year_parquet(year: int) -> "object":
+    import pandas as pd
+
+    path = _year_parquet_path(year)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return pd.read_parquet(path, engine="pyarrow")
+
+
+def _merge_parquet_df_into_series(series: dict[str, dict], df: "object") -> None:
+    """Merge a year parquet DataFrame into rolling per-symbol series."""
+    if df is None or len(df) == 0:
+        return
+    # Groupby symbol once — faster than row iteration.
+    for sym, g in df.groupby("symbol", observed=True, sort=False):
+        symbol = str(sym)
+        dates = [d.date() if hasattr(d, "date") else d for d in g["date"].tolist()]
+        opens = [float(x) for x in g["open_adj"].tolist()]
+        closes = [float(x) for x in g["close_adj"].tolist()]
+        volumes = [float(x) for x in g["volume"].tolist()]
+        if symbol not in series:
+            series[symbol] = {
+                "dates": [],
+                "opens": [],
+                "closes": [],
+                "volumes": [],
+                "date_to_i": {},
+            }
+        s = series[symbol]
+        by_date: dict[date, tuple[float, float, float]] = {
+            d: (o, c, v)
+            for d, o, c, v in zip(s["dates"], s["opens"], s["closes"], s["volumes"], strict=True)
+        }
+        for d, o, c, v in zip(dates, opens, closes, volumes, strict=True):
+            if isinstance(d, str):
+                d = date.fromisoformat(d)
+            by_date[d] = (o, c, v)
+        ordered = sorted(by_date.items(), key=lambda kv: kv[0])
+        if len(ordered) > ROLLING_SESSIONS:
+            ordered = ordered[-ROLLING_SESSIONS:]
+        s["dates"] = [d for d, _ in ordered]
+        s["opens"] = [ov[0] for _, ov in ordered]
+        s["closes"] = [ov[1] for _, ov in ordered]
+        s["volumes"] = [ov[2] for _, ov in ordered]
+        s["date_to_i"] = {d: i for i, d in enumerate(s["dates"])}
+
+
+def _prune_dead_symbols(series: dict[str, dict], *, keep_after: date) -> None:
+    """Drop names whose last bar is before keep_after (history no longer needed)."""
+    dead = [sym for sym, s in series.items() if not s["dates"] or s["dates"][-1] < keep_after]
+    for sym in dead:
+        del series[sym]
+
+
+def _update_manifest(*, years: list[int], start: date, end: date) -> None:
+    PARQUET_ROOT.mkdir(parents=True, exist_ok=True)
+    present = sorted(
+        int(p.stem.split("_")[1])
+        for p in PARQUET_ROOT.glob("sep_*.parquet")
+        if p.stem.startswith("sep_")
+    )
+    payload = {
+        "span_start": start.isoformat(),
+        "span_end": end.isoformat(),
+        "years_requested": years,
+        "years_on_disk": present,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "columns": list(PARQUET_COLS),
+        "format": "parquet+snappy",
+    }
+    MANIFEST_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _measure_formations_in_year(
+    series: dict[str, dict],
+    *,
+    year: int,
+    sessions_in_year: list[date],
+    rng: random.Random,
+    spread_by_date: list[tuple[date, float]],
+    means_by_year_decile: dict[int, dict[int, list[float]]],
+    placebo_spreads: list[float],
+    placebo_clusters: list[date],
+) -> int:
+    """Append C1 / G0 / placebo for month-end formations in ``year``. Returns count added."""
+    formations = [
+        d for d in month_end_formation_dates(sessions_in_year) if d.year == year
+    ]
+    added = 0
+    for fdate in formations:
+        scores: list[float] = []
+        labels: list[float] = []
+        for _sym, s in series.items():
+            idx = s["date_to_i"].get(fdate)
+            if idx is None or idx < PROTOCOL.mom_far_sessions:
+                continue
+            px = s["closes"][idx]
+            adv = _trailing_median_adv(s["closes"], s["volumes"], end_index=idx)
+            if adv is None or not _is_liquid(price=px, median_adv=adv):
+                continue
+            mom = mom_12_1_return(s["closes"], formation_index=idx)
+            fwd = forward_open_to_open_return(s["opens"], formation_index=idx)
+            if mom is None or fwd is None:
+                continue
+            scores.append(mom)
+            labels.append(fwd)
+        if len(scores) < PROTOCOL.deciles * 2:
+            continue
+        labels_dm = demean_cross_section(labels)
+        deciles = assign_deciles(scores)
+        d1 = [labels_dm[i] for i, d in enumerate(deciles) if d == 1]
+        d10 = [labels_dm[i] for i, d in enumerate(deciles) if d == 10]
+        spread = top_minus_bottom_spread(d1, d10)
+        if spread is None:
+            continue
+        spread_by_date.append((fdate, spread))
+        for i, d in enumerate(deciles):
+            means_by_year_decile[fdate.year][d].append(labels_dm[i])
+        shuffled = scores[:]
+        rng.shuffle(shuffled)
+        p_dec = assign_deciles(shuffled)
+        p_d1 = [labels_dm[i] for i, d in enumerate(p_dec) if d == 1]
+        p_d10 = [labels_dm[i] for i, d in enumerate(p_dec) if d == 10]
+        p_spread = top_minus_bottom_spread(p_d1, p_d10)
+        if p_spread is not None:
+            placebo_spreads.append(p_spread)
+            placebo_clusters.append(fdate)
+        added += 1
+    return added
+
+
+def run_full_depth(
+    *,
+    start: date = FULL_DEPTH_START,
+    end: date = FULL_DEPTH_END,
+    seed: int = 42,
+    sleep: float = 0.15,
+    pull_only: bool = False,
+    measure_only: bool = False,
+    force_repull: bool = False,
+) -> dict:
+    """Pull full-depth SEP into year parquet shards, then measure C1/G0/K0/placebo.
+
+    Primary PRD path. Year shards live under ``fixtures/full-depth-sep/`` (gitignored).
+    Resume: existing ``sep_YYYY.parquet`` is skipped unless ``force_repull``.
+    """
+    try:
+        _require_parquet_stack()
+    except RuntimeError as exc:
+        return _fail_closed_unmeasured(mode="full-depth-no-parquet-deps", mode_note=str(exc))
+
+    if not measure_only and not os.environ.get("NASDAQ_DATA_LINK_API_KEY"):
+        return _fail_closed_unmeasured(
+            mode="full-depth-no-key",
+            mode_note="NASDAQ_DATA_LINK_API_KEY missing — cannot pull full-depth SEP.",
+        )
+
+    cal = xcals.get_calendar("XNYS", start="1990-01-01")
+    all_sessions = [s.date() for s in cal.sessions_in_range(start, end)]
+    if not all_sessions:
+        return _fail_closed_unmeasured(
+            mode="full-depth-no-sessions",
+            mode_note=f"No XNYS sessions in {start}..{end}.",
+        )
+
+    years = sorted({d.year for d in all_sessions})
+    log(
+        f"full-depth years={years[0]}..{years[-1]} sessions={len(all_sessions)} "
+        f"parquet_root={PARQUET_ROOT}"
+    )
+    PARQUET_ROOT.mkdir(parents=True, exist_ok=True)
+
+    # --- Pull phase (date-range API → year parquet) ---
+    if not measure_only:
+        with httpx.Client(timeout=180.0) as client:
+            log("fetching TICKERS (primary common filter)")
+            primary = _primary_common_tickers(client)
+            log(f"primary common tickers: {len(primary)}")
+
+            for yi, year in enumerate(years):
+                path = _year_parquet_path(year)
+                if path.exists() and path.stat().st_size > 0 and not force_repull:
+                    log(f"year {year} ({yi + 1}/{len(years)}): skip pull (parquet exists)")
+                    continue
+                y_start = max(date(year, 1, 1), start)
+                y_end = min(date(year, 12, 31), end)
+                log(f"year {year} ({yi + 1}/{len(years)}): pull SEP {y_start}..{y_end}")
+                try:
+                    rows = _fetch_sep_date_range_rows(
+                        client, start=y_start, end=y_end, primary=primary, sleep=sleep
+                    )
+                except MarketDataFetchError as exc:
+                    log(f"SEP pull failed year={year}: {exc}")
+                    return _fail_closed_unmeasured(
+                        mode="full-depth-pull-failed",
+                        mode_note=f"SEP pull failed at year={year}: {exc}",
+                    )
+                _write_year_parquet(year, rows)
+                del rows
+                gc.collect()
+                _update_manifest(years=years, start=start, end=end)
+
+        _update_manifest(years=years, start=start, end=end)
+        if pull_only:
+            present = [y for y in years if _year_parquet_path(y).exists()]
+            return {
+                "experiment_id": PROTOCOL.experiment_id,
+                "verdict": "pull_complete",
+                "capital_go": False,
+                "mode": "full-depth-pull-only",
+                "mode_note": f"Pulled {len(present)}/{len(years)} year parquet shards to {PARQUET_ROOT}",
+                "years_on_disk": present,
+                "parquet_root": str(PARQUET_ROOT),
+            }
+
+    # --- Measure phase (load year parquets → rolling series → gates) ---
+    missing = [y for y in years if not _year_parquet_path(y).exists()]
+    if missing:
+        return _fail_closed_unmeasured(
+            mode="full-depth-parquet-incomplete",
+            mode_note=(
+                f"Missing year parquet shards: {missing[:8]}{'…' if len(missing) > 8 else ''}. "
+                "Run --full-depth (pull) first."
+            ),
+        )
+
+    rng = random.Random(seed)
+    series: dict[str, dict] = {}
+    spread_by_date: list[tuple[date, float]] = []
+    means_by_year_decile: dict[int, dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    placebo_spreads: list[float] = []
+    placebo_clusters: list[date] = []
+
+    for yi, year in enumerate(years):
+        log(f"year {year} ({yi + 1}/{len(years)}): load parquet → series")
+        df = _load_year_parquet(year)
+        _merge_parquet_df_into_series(series, df)
+        del df
+        gc.collect()
+
+        measure_year = year - 1 if yi > 0 else None
+        if measure_year is not None:
+            sessions_my = [d for d in all_sessions if d.year == measure_year]
+            n_add = _measure_formations_in_year(
+                series,
+                year=measure_year,
+                sessions_in_year=sessions_my,
+                rng=rng,
+                spread_by_date=spread_by_date,
+                means_by_year_decile=means_by_year_decile,
+                placebo_spreads=placebo_spreads,
+                placebo_clusters=placebo_clusters,
+            )
+            log(
+                f"  measured year={measure_year}: +{n_add} formations "
+                f"(total={len(spread_by_date)}); series_symbols={len(series)}"
+            )
+            CHECKPOINT_PATH.write_text(
+                json.dumps(
+                    {
+                        "last_measured_year": measure_year,
+                        "n_formations": len(spread_by_date),
+                        "n_symbols_series": len(series),
+                        "parquet_root": str(PARQUET_ROOT),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            keep_after = date(measure_year - 1, 1, 1)
+            _prune_dead_symbols(series, keep_after=keep_after)
+            gc.collect()
+
+    last_year = years[-1]
+    sessions_last = [d for d in all_sessions if d.year == last_year]
+    n_add = _measure_formations_in_year(
+        series,
+        year=last_year,
+        sessions_in_year=sessions_last,
+        rng=rng,
+        spread_by_date=spread_by_date,
+        means_by_year_decile=means_by_year_decile,
+        placebo_spreads=placebo_spreads,
+        placebo_clusters=placebo_clusters,
+    )
+    log(f"  measured year={last_year}: +{n_add} formations (total={len(spread_by_date)})")
+
+    del series
+    gc.collect()
+
+    placebo_t = 0.0
+    if placebo_spreads:
+        p_stats = summarize(placebo_spreads, placebo_clusters)
+        if math.isfinite(p_stats.clustered_t):
+            placebo_t = abs(float(p_stats.clustered_t))
+
+    art = _build_artifact_from_c1(
+        spread_by_date=spread_by_date,
+        means_by_year_decile=means_by_year_decile,
+        placebo_t_abs=placebo_t,
+        mode="full-depth-sep-parquet",
+        mode_note=(
+            f"Full-depth Sharadar SEP {start.isoformat()}..{end.isoformat()} via year "
+            f"parquet shards under {PARQUET_ROOT} (primary common, snappy). "
+            "T1/C2 only if K0 passes and research-ml feature panel is available."
+        ),
+        t1_status="not_run",
+    )
+    art["span_start"] = start.isoformat()
+    art["span_end"] = end.isoformat()
+    art["data_source"] = "sharadar-sep-parquet"
+    art["parquet_root"] = str(PARQUET_ROOT)
+
+    k0_passed = any(
+        g["id"] == "K0-power" and g["passed"] for g in art.get("gates", [])
+    )
+    log(f"K0 passed={k0_passed}; verdict={art.get('verdict')} n={art.get('c1_n_formations')}")
+
+    if not k0_passed:
+        art["mode_note"] = (
+            art["mode_note"]
+            + " K0 failed → T1/C2 not trained (underpowered-stop / cheap path)."
+        )
+        art["t1_status"] = "skipped_k0"
+        return art
+
+    art["mode_note"] = (
+        art["mode_note"]
+        + " K0 passed; T1 feature panel not auto-built on this path — unmeasured fail-closed."
+    )
+    art["t1_status"] = "skipped_no_feature_panel"
+    return art
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="CMFT Stage A research driver (#74)")
     parser.add_argument(
@@ -827,7 +1339,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--continuous",
         action="store_true",
-        help="Force continuous fixture path (default when not --synthetic)",
+        help="Force continuous fixture path (default when not --synthetic/--full-depth)",
+    )
+    parser.add_argument(
+        "--full-depth",
+        action="store_true",
+        help="Full-depth Sharadar SEP → year parquet + measure (primary PRD; API key)",
+    )
+    parser.add_argument(
+        "--full-depth-start",
+        type=date.fromisoformat,
+        default=FULL_DEPTH_START,
+        help="Full-depth start date (default 1998-01-02)",
+    )
+    parser.add_argument(
+        "--full-depth-end",
+        type=date.fromisoformat,
+        default=FULL_DEPTH_END,
+        help="Full-depth end date (default 2025-12-31)",
+    )
+    parser.add_argument(
+        "--pull-only",
+        action="store_true",
+        help="With --full-depth: write year parquet shards only (no measure)",
+    )
+    parser.add_argument(
+        "--measure-only",
+        action="store_true",
+        help="With --full-depth: measure from existing year parquet (no API pull)",
+    )
+    parser.add_argument(
+        "--force-repull",
+        action="store_true",
+        help="With --full-depth: re-download years even if parquet exists",
     )
     parser.add_argument(
         "--write-docs",
@@ -838,7 +1382,13 @@ def main(argv: list[str] | None = None) -> int:
         "--max-formations",
         type=int,
         default=0,
-        help="If >0, cap month-end formations (debug only; not for accept path)",
+        help="If >0, cap month-end formations (debug only; continuous path)",
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.15,
+        help="Seconds between SEP pages on full-depth pull (rate-limit courtesy)",
     )
     args = parser.parse_args(argv)
 
@@ -848,6 +1398,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic:
         log("mode=synthetic")
         artifact = run_synthetic()
+    elif args.full_depth:
+        log("mode=full-depth-sep-parquet")
+        artifact = run_full_depth(
+            start=args.full_depth_start,
+            end=args.full_depth_end,
+            sleep=args.sleep,
+            pull_only=args.pull_only,
+            measure_only=args.measure_only,
+            force_repull=args.force_repull,
+        )
     else:
         log("mode=continuous-fixture")
         artifact = run_continuous(max_formations=args.max_formations)
