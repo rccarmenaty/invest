@@ -1,0 +1,825 @@
+"""Unit tests for CFOB Stage D / F0 pure helpers (PRD #76)."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from decimal import Decimal
+
+import pytest
+
+from invest.application.cfob import (
+    PROTOCOL,
+    ProtocolConfig,
+    Verdict,
+    amendment_collision_count,
+    build_cfob_artifact,
+    build_clusters,
+    combine_stage_reports,
+    de_overlap,
+    dedupe_amendments,
+    evaluate_d1_volume,
+    evaluate_d2_year_spread,
+    evaluate_d3_year_concentration,
+    evaluate_f1_mapping_rate,
+    evaluate_f2_unmapped_composition,
+    evaluate_f3_reconcile,
+    evaluate_f4_parse_coverage,
+    evaluate_f5_derivative_exclusion,
+    evaluate_f7_late_filing_share,
+    evaluate_stage_d,
+    evaluate_stage_f0,
+    evaluate_universe_membership,
+    min_detectable_size,
+    qualifying_purchases,
+    required_events,
+    year_shares,
+)
+from invest.domain.models import InsiderTransaction
+
+
+def txn(
+    *,
+    owner: str = "owner-1",
+    symbol: str = "ACME",
+    trans: date = date(2024, 3, 4),
+    filed: date | None = None,
+    code: str = "P",
+    acquired: str = "A",
+    shares: str = "1000",
+    price: str = "50",
+    direct: bool = True,
+    document_type: str = "4",
+    accession: str | None = None,
+    late: bool = False,
+) -> InsiderTransaction:
+    filing_date = filed if filed is not None else trans + timedelta(days=2)
+    return InsiderTransaction(
+        accession_number=accession or f"{owner}-{trans:%Y%m%d}-{document_type}",
+        issuer_cik="0000001",
+        trading_symbol=symbol,
+        owner_cik=owner,
+        filing_date=filing_date,
+        transaction_date=trans,
+        transaction_code=code,
+        acquired_disposed=acquired,
+        shares=Decimal(shares),
+        price_per_share=Decimal(price),
+        direct_ownership=direct,
+        document_type=document_type,
+        original_submission_date=None,
+        late_filing=late,
+    )
+
+
+# --- Qualification -----------------------------------------------------------
+
+
+def test_keeps_code_p_acquisitions_clearing_the_size_floor() -> None:
+    kept, counts = qualifying_purchases([txn()])
+
+    assert len(kept) == 1
+    assert counts.qualified == 1
+
+
+def test_excludes_non_purchase_codes() -> None:
+    kept, counts = qualifying_purchases([txn(code="S"), txn(code="A"), txn(code="M")])
+
+    assert kept == ()
+    assert counts.wrong_code == 3
+
+
+def test_excludes_disposals_even_under_code_p() -> None:
+    kept, counts = qualifying_purchases([txn(acquired="D")])
+
+    assert kept == ()
+    assert counts.disposals == 1
+
+
+def test_excludes_purchases_below_the_ten_thousand_dollar_floor() -> None:
+    kept, counts = qualifying_purchases([txn(shares="10", price="50")])
+
+    assert kept == ()
+    assert counts.below_size_floor == 1
+
+
+def test_size_floor_is_inclusive_at_exactly_ten_thousand() -> None:
+    kept, _ = qualifying_purchases([txn(shares="200", price="50")])
+
+    assert len(kept) == 1
+
+
+def test_excludes_purchases_filed_beyond_the_staleness_cap() -> None:
+    stale = txn(trans=date(2024, 3, 4), filed=date(2024, 3, 20))
+
+    kept, counts = qualifying_purchases([stale])
+
+    assert kept == ()
+    assert counts.stale == 1
+
+
+def test_staleness_cap_is_inclusive_at_ten_days() -> None:
+    kept, _ = qualifying_purchases([txn(trans=date(2024, 3, 4), filed=date(2024, 3, 14))])
+
+    assert len(kept) == 1
+
+
+def test_excludes_filings_dated_before_their_transaction() -> None:
+    kept, counts = qualifying_purchases(
+        [txn(trans=date(2024, 3, 4), filed=date(2024, 3, 1))]
+    )
+
+    assert kept == ()
+    assert counts.stale == 1
+
+
+def test_indirect_ownership_qualifies_but_is_counted() -> None:
+    kept, counts = qualifying_purchases([txn(direct=False)])
+
+    assert len(kept) == 1
+    assert counts.indirect_ownership == 1
+
+
+def test_late_filings_qualify_but_are_counted() -> None:
+    kept, counts = qualifying_purchases([txn(late=True)])
+
+    assert len(kept) == 1
+    assert counts.late_filed == 1
+
+
+# --- Amendments --------------------------------------------------------------
+
+
+def test_amendment_supersedes_the_original_trade() -> None:
+    original = txn(accession="a-1", document_type="4", filed=date(2024, 3, 6))
+    amendment = txn(accession="a-2", document_type="4/A", filed=date(2024, 3, 9))
+
+    deduped, superseded = dedupe_amendments([original, amendment])
+
+    assert superseded == 1
+    assert len(deduped) == 1
+    assert deduped[0].is_amendment is True
+
+
+def test_amendment_keeps_the_original_filing_date_as_known_time() -> None:
+    original = txn(accession="a-1", document_type="4", filed=date(2024, 3, 6))
+    amendment = txn(accession="a-2", document_type="4/A", filed=date(2024, 3, 9))
+
+    deduped, _ = dedupe_amendments([original, amendment])
+
+    assert deduped[0].filing_date == date(2024, 3, 6)
+
+
+def test_distinct_trades_are_not_treated_as_amendments() -> None:
+    deduped, superseded = dedupe_amendments(
+        [txn(owner="owner-1"), txn(owner="owner-2")]
+    )
+
+    assert superseded == 0
+    assert len(deduped) == 2
+
+
+# --- Cluster construction ----------------------------------------------------
+
+
+def test_two_insiders_inside_the_window_form_a_cluster() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4)),
+        txn(owner="owner-2", trans=date(2024, 3, 20)),
+    ]
+
+    clusters = build_clusters(purchases)
+
+    assert len(clusters) == 1
+    assert clusters[0].distinct_insiders == 2
+
+
+def test_one_insider_buying_repeatedly_is_not_a_cluster() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4)),
+        txn(owner="owner-1", trans=date(2024, 3, 10)),
+        txn(owner="owner-1", trans=date(2024, 3, 15)),
+    ]
+
+    assert build_clusters(purchases) == ()
+
+
+def test_insiders_beyond_the_window_do_not_cluster() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4)),
+        txn(owner="owner-2", trans=date(2024, 5, 1)),
+    ]
+
+    assert build_clusters(purchases) == ()
+
+
+def test_insiders_at_different_issuers_do_not_cluster() -> None:
+    purchases = [
+        txn(owner="owner-1", symbol="ACME", trans=date(2024, 3, 4)),
+        txn(owner="owner-2", symbol="OTHER", trans=date(2024, 3, 6)),
+    ]
+
+    assert build_clusters(purchases) == ()
+
+
+def test_cluster_known_time_is_the_latest_filing_date() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4), filed=date(2024, 3, 6)),
+        txn(owner="owner-2", trans=date(2024, 3, 5), filed=date(2024, 3, 12)),
+    ]
+
+    clusters = build_clusters(purchases)
+
+    assert clusters[0].known_time == date(2024, 3, 12)
+
+
+def test_cluster_aggregates_value_and_purchase_count() -> None:
+    purchases = [
+        txn(owner="owner-1", shares="1000", price="50"),
+        txn(owner="owner-2", shares="200", price="50"),
+    ]
+
+    cluster = build_clusters(purchases)[0]
+
+    assert cluster.purchase_count == 2
+    assert cluster.gross_value == Decimal("60000")
+
+
+def test_secondary_sixty_day_window_is_available_without_retuning_the_default() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4)),
+        txn(owner="owner-2", trans=date(2024, 4, 15)),
+    ]
+
+    assert build_clusters(purchases) == ()
+    assert len(build_clusters(purchases, window_days=60)) == 1
+
+
+# --- De-overlap --------------------------------------------------------------
+
+
+def test_repeat_cluster_inside_the_horizon_is_dropped() -> None:
+    # Two genuinely separate clusters (58 days apart, so outside the 30-day
+    # trade window) but inside the h60 measurement horizon.
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 1, 2)),
+        txn(owner="owner-2", trans=date(2024, 1, 3)),
+        txn(owner="owner-3", trans=date(2024, 3, 1)),
+        txn(owner="owner-4", trans=date(2024, 3, 2)),
+    ]
+    clusters = build_clusters(purchases)
+    assert len(clusters) == 2
+
+    assert len(de_overlap(clusters)) == 1
+
+
+def test_repeat_cluster_after_the_horizon_closes_is_kept() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 1, 2)),
+        txn(owner="owner-2", trans=date(2024, 1, 3)),
+        txn(owner="owner-3", trans=date(2024, 9, 2)),
+        txn(owner="owner-4", trans=date(2024, 9, 3)),
+    ]
+
+    assert len(de_overlap(build_clusters(purchases))) == 2
+
+
+def test_de_overlap_is_per_symbol() -> None:
+    purchases = [
+        txn(owner="owner-1", symbol="ACME", trans=date(2024, 1, 2)),
+        txn(owner="owner-2", symbol="ACME", trans=date(2024, 1, 3)),
+        txn(owner="owner-3", symbol="OTHER", trans=date(2024, 1, 2)),
+        txn(owner="owner-4", symbol="OTHER", trans=date(2024, 1, 3)),
+    ]
+
+    assert len(de_overlap(build_clusters(purchases))) == 2
+
+
+def test_partial_session_calendar_is_rejected_not_silently_over_blocking() -> None:
+    # Regression: a calendar starting after the event resolved "the Nth session
+    # later" to a far-future date, blocking the symbol for years and shrinking
+    # the cohort by 60% — a silent, publishable wrong answer.
+    purchases = [
+        txn(owner="owner-1", trans=date(2008, 1, 2)),
+        txn(owner="owner-2", trans=date(2008, 1, 3)),
+    ]
+    clusters = build_clusters(purchases)
+    late_calendar = [date(2023, 1, 1) + timedelta(days=offset) for offset in range(400)]
+
+    with pytest.raises(ValueError, match="after cluster known-time"):
+        de_overlap(clusters, sessions_by_symbol={"ACME": late_calendar})
+
+
+def test_de_overlap_never_lets_a_symbol_re_enter_inside_its_horizon() -> None:
+    purchases = []
+    for month in range(1, 13):
+        purchases.append(txn(owner=f"owner-{month}a", trans=date(2024, month, 2)))
+        purchases.append(txn(owner=f"owner-{month}b", trans=date(2024, month, 3)))
+    clusters = build_clusters(purchases)
+
+    kept = de_overlap(clusters, horizon_sessions=60)
+
+    known_times = sorted(c.known_time for c in kept)
+    gaps = [(b - a).days for a, b in zip(known_times, known_times[1:])]
+    assert all(gap > 60 for gap in gaps), gaps
+
+
+def test_de_overlap_uses_the_session_calendar_when_given_one() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 1, 2)),
+        txn(owner="owner-2", trans=date(2024, 1, 3)),
+        txn(owner="owner-3", trans=date(2024, 3, 1)),
+        txn(owner="owner-4", trans=date(2024, 3, 2)),
+    ]
+    clusters = build_clusters(purchases)
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(400)]
+
+    # A 2-session horizon closes long before the March cluster, so both survive
+    # — where the calendar-day approximation would have blocked the second.
+    kept = de_overlap(clusters, horizon_sessions=2, sessions_by_symbol={"ACME": sessions})
+
+    assert len(kept) == 2
+
+
+# --- Power -------------------------------------------------------------------
+
+
+def test_required_events_matches_the_grilled_density_floor() -> None:
+    assert 7000 <= required_events() <= 8000
+    assert PROTOCOL.min_clusters >= 7000
+
+
+def test_min_detectable_size_falls_as_events_accumulate() -> None:
+    assert min_detectable_size(n_events=1000) > min_detectable_size(n_events=10_000)
+
+
+def test_min_detectable_size_is_infinite_without_events() -> None:
+    assert min_detectable_size(n_events=0) == float("inf")
+
+
+def test_measured_dispersion_reproduces_the_gate_1a_calibration() -> None:
+    # Gate-1a: mean +1.89% at clustered t=5.3 on n=11,489 implies sigma ~= 0.38.
+    assert abs(PROTOCOL.excess_dispersion - 0.38) < 0.01
+
+
+# --- Stage D gates -----------------------------------------------------------
+
+
+def test_year_shares_sum_to_one() -> None:
+    purchases = [
+        txn(owner="owner-1", trans=date(2024, 3, 4)),
+        txn(owner="owner-2", trans=date(2024, 3, 5)),
+        txn(owner="owner-3", symbol="OTHER", trans=date(2023, 3, 4)),
+        txn(owner="owner-4", symbol="OTHER", trans=date(2023, 3, 5)),
+    ]
+
+    shares = year_shares(build_clusters(purchases))
+
+    assert abs(sum(shares.values()) - 1.0) < 1e-9
+
+
+def test_d1_fails_below_the_cluster_floor() -> None:
+    assert evaluate_d1_volume(de_overlapped_clusters=100).passed is False
+
+
+def test_d1_passes_at_the_floor() -> None:
+    assert evaluate_d1_volume(de_overlapped_clusters=PROTOCOL.min_clusters).passed is True
+
+
+def test_d2_fails_when_too_few_years_contribute() -> None:
+    shares = {2020: 0.5, 2021: 0.5}
+
+    assert evaluate_d2_year_spread(shares=shares).passed is False
+
+
+def test_d2_passes_with_a_broad_year_spread() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+
+    assert evaluate_d2_year_spread(shares=shares).passed is True
+
+
+def test_d3_fails_when_one_year_dominates() -> None:
+    shares = {2020: 0.4, 2021: 0.3, 2022: 0.3}
+
+    assert evaluate_d3_year_concentration(shares=shares).passed is False
+
+
+def test_empty_cohort_fails_stage_d_closed() -> None:
+    report = evaluate_stage_d(de_overlapped_clusters=0, shares={})
+
+    assert report.all_hard_gates_passed is False
+    assert report.verdict == str(Verdict.KILL_LINE)
+
+
+def test_stage_d_passes_only_when_every_hard_gate_passes() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+
+    report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
+
+    assert report.all_hard_gates_passed is True
+    assert report.verdict == str(Verdict.STAGE_PASS)
+
+
+def test_stage_d_never_grants_capital() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+
+    report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
+
+    assert report.capital_go is False
+
+
+# --- Stage F0 gates ----------------------------------------------------------
+
+
+def test_mapping_gate_fails_below_ninety_percent() -> None:
+    assert evaluate_f1_mapping_rate(mapped=80, total=100).passed is False
+
+
+def test_mapping_gate_passes_at_ninety_percent() -> None:
+    assert evaluate_f1_mapping_rate(mapped=90, total=100).passed is True
+
+
+def test_mapping_gate_fails_closed_without_any_purchases() -> None:
+    assert evaluate_f1_mapping_rate(mapped=0, total=0).passed is False
+
+
+def test_unmapped_composition_fails_when_failures_concentrate_in_one_year() -> None:
+    result = evaluate_f2_unmapped_composition(
+        unmapped_by_year={2008: 90, 2009: 10},
+        total_by_year={2008: 100, 2009: 1000},
+    )
+
+    assert result.passed is False
+
+
+def test_unmapped_composition_passes_when_failures_spread_evenly() -> None:
+    result = evaluate_f2_unmapped_composition(
+        unmapped_by_year={year: 10 for year in range(2010, 2020)},
+        total_by_year={year: 1000 for year in range(2010, 2020)},
+    )
+
+    assert result.passed is True
+
+
+def test_a_small_unmapped_set_does_not_fail_merely_for_being_small() -> None:
+    result = evaluate_f2_unmapped_composition(
+        unmapped_by_year={2010: 2, 2011: 3},
+        total_by_year={2010: 1000, 2011: 1000},
+    )
+
+    assert result.passed is True
+
+
+def test_unmapped_composition_fails_closed_without_year_totals() -> None:
+    result = evaluate_f2_unmapped_composition(unmapped_by_year={2010: 5}, total_by_year={})
+
+    assert result.passed is False
+
+
+def test_unreconciled_counts_fail_closed() -> None:
+    assert evaluate_f3_reconcile(reconciled=None).passed is False
+
+
+def _passing_f0_kwargs() -> dict:
+    return {
+        "protocol_present": True,
+        "trial_ledger_present": True,
+        "mapped": 95,
+        "total": 100,
+        "unmapped_by_year": {2010: 2, 2011: 3},
+        "total_by_year": {2010: 50, 2011: 50},
+        "reconciled": True,
+        "archives_expected": 10,
+        "archives_parsed": 10,
+        "derivative_rows_in_qualified": 0,
+        "amendment_dedupe_measured": True,
+        "late_filed": 1,
+        "qualified": 100,
+    }
+
+
+def test_stage_f0_requires_every_hard_gate() -> None:
+    report = evaluate_stage_f0(**_passing_f0_kwargs())
+
+    assert report.all_hard_gates_passed is True
+    assert report.capital_go is False
+
+
+def test_stage_f0_fails_closed_on_an_unmeasured_reconcile() -> None:
+    kwargs = _passing_f0_kwargs()
+    kwargs["reconciled"] = None
+    report = evaluate_stage_f0(**kwargs)
+
+    assert report.verdict == str(Verdict.KILL_LINE)
+
+
+def test_parse_coverage_fails_closed_when_unmeasured() -> None:
+    assert evaluate_f4_parse_coverage(archives_expected=None, archives_parsed=None).passed is False
+
+
+def test_derivative_exclusion_requires_zero_derivative_rows() -> None:
+    assert evaluate_f5_derivative_exclusion(derivative_rows_in_qualified=0).passed is True
+    assert evaluate_f5_derivative_exclusion(derivative_rows_in_qualified=3).passed is False
+
+
+def test_late_filing_share_fails_closed_when_unmeasured() -> None:
+    assert evaluate_f7_late_filing_share(late_filed=None, qualified=100).passed is False
+
+
+def test_late_filing_share_is_reported_not_capped() -> None:
+    result = evaluate_f7_late_filing_share(late_filed=50, qualified=100)
+
+    assert result.passed is True
+    assert "0.500000" in result.reason
+
+
+def test_combine_stage_reports_kills_when_f0_fails() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+    d_report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
+    kwargs = _passing_f0_kwargs()
+    kwargs["reconciled"] = False
+    f0_report = evaluate_stage_f0(**kwargs)
+
+    combined = combine_stage_reports(d_report, f0_report)
+
+    assert d_report.verdict == str(Verdict.STAGE_PASS)
+    assert f0_report.verdict == str(Verdict.KILL_LINE)
+    assert combined.verdict == str(Verdict.KILL_LINE)
+    assert combined.all_hard_gates_passed is False
+
+
+# --- Artifact ----------------------------------------------------------------
+
+
+def test_artifact_records_the_frozen_protocol_and_denies_capital() -> None:
+    shares = {year: 1 / 15 for year in range(2010, 2025)}
+    report = evaluate_stage_d(de_overlapped_clusters=PROTOCOL.min_clusters, shares=shares)
+    _, counts = qualifying_purchases([txn()])
+
+    artifact = build_cfob_artifact(
+        stage="D",
+        report=report,
+        counts=counts,
+        raw_clusters=9000,
+        de_overlapped_clusters=PROTOCOL.min_clusters,
+        shares=shares,
+        mode="test",
+        git_sha="abc123",
+    )
+
+    assert artifact["capital_go"] is False
+    assert artifact["implementability_eligible"] is False
+    assert artifact["git_sha"] == "abc123"
+    assert artifact["protocol"]["entry_rule"] == "next_open_after_filing_date"
+    assert artifact["protocol"]["known_time_axis"] == "filing_date_day_granular"
+    assert artifact["protocol"]["gate_on_min_price"] is False
+    assert artifact["protocol"]["min_price_role"] == "diagnostic_on_adjusted_close"
+    assert artifact["protocol"]["min_dollar_volume_role"] == "primary_habitat_gate"
+    # Every threshold a gate consults is frozen in the protocol block.
+    assert artifact["protocol"]["min_history_bars"] == PROTOCOL.min_history_bars
+    assert artifact["protocol"]["dollar_volume_window"] == PROTOCOL.dollar_volume_window
+    assert artifact["protocol"]["power_z"] == PROTOCOL.power_z
+    assert artifact["protocol"]["max_unmapped_rate_ratio"] == PROTOCOL.max_unmapped_rate_ratio
+    assert artifact["protocol"]["future_e1_bars"]["primary_cost_bps"] == 25.0
+    assert artifact["clusters"]["de_overlapped"] == PROTOCOL.min_clusters
+
+
+def test_artifact_reports_raw_and_de_overlapped_counts_separately() -> None:
+    report = evaluate_stage_d(de_overlapped_clusters=10, shares={2020: 1.0})
+
+    artifact = build_cfob_artifact(
+        stage="D",
+        report=report,
+        counts=qualifying_purchases([txn()])[1],
+        raw_clusters=25,
+        de_overlapped_clusters=10,
+        shares={2020: 1.0},
+        mode="test",
+    )
+
+    assert artifact["clusters"]["raw"] == 25
+    assert artifact["clusters"]["de_overlapped"] == 10
+
+
+def test_custom_protocol_does_not_mutate_the_frozen_default() -> None:
+    relaxed = ProtocolConfig(min_clusters=10)
+
+    assert evaluate_d1_volume(de_overlapped_clusters=10, config=relaxed).passed is True
+    assert evaluate_d1_volume(de_overlapped_clusters=10).passed is False
+
+
+# --- CIK-primary mapping (grill 2026-07-21 Q1/Q2) ----------------------------
+
+
+from invest.application.cfob import (  # noqa: E402
+    ReferenceListing,
+    cik_from_secfilings_url,
+    map_purchases_by_cik,
+    normalize_cik,
+)
+
+
+def listing(
+    symbol: str,
+    cik: str | None = "849399",
+    related: tuple[str, ...] = (),
+    first: date | None = date(1986, 1, 1),
+    last: date | None = None,
+) -> ReferenceListing:
+    return ReferenceListing(
+        symbol=symbol,
+        cik=cik,
+        related_symbols=frozenset(related),
+        first_price_date=first,
+        last_price_date=last,
+    )
+
+
+def cik_txn(*, symbol: str = "SYMC", cik: str = "0000849399", **kwargs) -> InsiderTransaction:
+    base = txn(symbol=symbol, **kwargs)
+    return InsiderTransaction(
+        **{**base.__dict__, "issuer_cik": cik, "trading_symbol": symbol}
+    )
+
+
+def test_normalize_cik_strips_leading_zeros_and_junk() -> None:
+    assert normalize_cik("0000849399") == "849399"
+    assert normalize_cik("849399") == "849399"
+    assert normalize_cik("") is None
+    assert normalize_cik(None) is None
+    assert normalize_cik("0000") is None
+
+
+def test_cik_extracted_from_secfilings_url() -> None:
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000849399"
+    assert cik_from_secfilings_url(url) == "849399"
+    assert cik_from_secfilings_url(None) is None
+    assert cik_from_secfilings_url("https://example.com/no-cik") is None
+
+
+def test_renamed_ticker_maps_through_related_symbols() -> None:
+    # As-filed SYMC; Sharadar row is GEN with SYMC in relatedtickers.
+    gen = listing("GEN", related=("SYMC", "NLOK"))
+    result = map_purchases_by_cik([cik_txn(symbol="SYMC")], [gen])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "GEN"
+    assert result.reason_counts["matched_related_symbol"] == 1
+
+
+def test_exact_symbol_wins_among_dual_class_rows() -> None:
+    a = listing("LGF.A", cik="929351", related=("LGF", "LGF.B"))
+    b = listing("LGF.B", cik="929351", related=("LGF", "LGF.A"))
+    result = map_purchases_by_cik([cik_txn(symbol="LGF.A", cik="929351")], [a, b])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "LGF.A"
+    assert result.reason_counts["matched_exact_symbol"] == 1
+
+
+def test_dual_class_with_shared_related_and_no_exact_match_is_ambiguous() -> None:
+    a = listing("LGF.A", cik="929351", related=("LGF", "LGF.B"))
+    b = listing("LGF.B", cik="929351", related=("LGF", "LGF.A"))
+    result = map_purchases_by_cik([cik_txn(symbol="LGF", cik="929351")], [a, b])
+
+    assert result.mapped_count == 0
+    assert len(result.ambiguous) == 1
+    assert result.reason_counts["ambiguous_excluded"] == 1
+
+
+def test_sole_covering_row_maps_without_symbol_agreement() -> None:
+    gen = listing("GEN", related=())
+    result = map_purchases_by_cik([cik_txn(symbol="WEIRD")], [gen])
+
+    assert result.mapped_count == 1
+    assert result.canonical[0][1] == "GEN"
+    assert result.reason_counts["matched_sole_covering_row"] == 1
+
+
+def test_cik_absent_from_reference_is_unmapped_with_reason() -> None:
+    result = map_purchases_by_cik([cik_txn(cik="123456")], [listing("GEN")])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_absent_from_reference"] == 1
+
+
+def test_window_miss_is_unmapped_with_reason() -> None:
+    delisted = listing("DF1", cik="27500", first=date(1990, 1, 1), last=date(2020, 5, 1))
+    late = cik_txn(symbol="DF", cik="27500", trans=date(2023, 3, 4))
+    result = map_purchases_by_cik([late], [delisted])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_known_but_window_miss"] == 1
+
+
+def test_symbol_alone_never_establishes_identity() -> None:
+    # Same symbol, different CIK: must not map.
+    other = listing("SYMC", cik="999999")
+    result = map_purchases_by_cik([cik_txn(symbol="SYMC", cik="849399")], [other])
+
+    assert result.mapped_count == 0
+    assert result.reason_counts["cik_absent_from_reference"] == 1
+
+# --- Universe (habitat floor) ------------------------------------------------
+
+
+def _bars(
+    *, days: int, close: float = 20.0, volume: float = 500_000.0, start: date = date(2019, 1, 1)
+) -> list[tuple[date, float, float]]:
+    return [(start + timedelta(days=i), close, volume) for i in range(days)]
+
+
+def test_universe_rejects_a_symbol_with_no_price_history() -> None:
+    decision = evaluate_universe_membership(bars=[], known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "no_price_history"
+
+
+def test_universe_rejects_insufficient_history_before_known_time() -> None:
+    bars = _bars(days=100)
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "insufficient_history"
+
+
+def test_universe_rejects_below_the_two_million_dollar_volume_floor() -> None:
+    bars = _bars(days=400, close=10.0, volume=1000.0)  # $10k/day
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "below_dollar_volume"
+    assert decision.dollar_volume == pytest.approx(10_000.0)
+
+
+def test_universe_admits_a_symbol_clearing_the_habitat_floor() -> None:
+    bars = _bars(days=400, close=20.0, volume=500_000.0)  # $10M/day
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is True
+    assert decision.reason == "eligible"
+    assert decision.in_secondary_band is True
+
+
+def test_universe_price_floor_is_diagnostic_not_gating_by_default() -> None:
+    bars = _bars(days=400, close=2.0, volume=2_000_000.0)  # $4M/day, price < $5
+
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is True
+    assert decision.below_price_floor is True
+    assert decision.in_secondary_band is False
+
+
+def test_universe_price_floor_gates_when_protocol_says_so() -> None:
+    bars = _bars(days=400, close=2.0, volume=2_000_000.0)
+    gating = ProtocolConfig(gate_on_min_price=True)
+
+    decision = evaluate_universe_membership(
+        bars=bars, known_time=date(2020, 6, 1), config=gating
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "below_price_floor"
+
+
+def test_universe_uses_only_bars_at_or_before_known_time() -> None:
+    # Volume explodes after known-time; eligibility must not see it.
+    early = _bars(days=300, close=10.0, volume=1000.0)
+    late = _bars(days=200, close=10.0, volume=10_000_000.0, start=date(2020, 6, 2))
+
+    decision = evaluate_universe_membership(bars=early + late, known_time=date(2020, 6, 1))
+
+    assert decision.eligible is False
+    assert decision.reason == "below_dollar_volume"
+
+
+# --- F5/F6 measurement -------------------------------------------------------
+
+
+def test_amendment_collision_count_is_zero_after_dedupe() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    deduped, _ = dedupe_amendments([original, amendment])
+
+    assert amendment_collision_count(deduped) == 0
+
+
+def test_amendment_collision_count_detects_an_undeduped_stream() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    assert amendment_collision_count([original, amendment]) == 1
+
+
+def test_dedupe_propagates_source_table_provenance() -> None:
+    original = txn(accession="orig-1")
+    amendment = txn(document_type="4/A", accession="amend-1", shares="900")
+
+    deduped, _ = dedupe_amendments([original, amendment])
+
+    assert all(t.source_table == "NONDERIV_TRANS" for t in deduped)
