@@ -44,6 +44,28 @@ _Avoid_: regime risk (broader), drawdown (path metric)
 Trade P&L after removing context/corporate-action forced closes from the alpha claim.
 _Avoid_: clean book, alpha book (unless defined)
 
+### Insider events
+
+**Purchase cluster**:
+Two or more distinct insiders of one issuer making non-derivative code-P purchases whose *trade* dates fall inside a 30-calendar-day window. The unit of the CFOB hypothesis.
+_Avoid_: insider buy (a single trade), Form-4 event (a filing, not a cluster)
+
+**Cluster known-time**:
+The latest filing date among a cluster's purchases — the first moment the whole cluster is public. Entry is the next trading day's open. Filing date is day-granular; the insider tape carries no acceptance timestamp, so this is deliberately conservative.
+_Avoid_: formation date (means the cross-sectional sort date), transaction date, acceptance datetime (does not exist on this tape)
+
+**Staleness cap**:
+Rejection of a purchase filed more than 10 calendar days after its trade date. The statutory deadline is two business days; the cap drops stale catch-up filings whose news is long since priced.
+_Avoid_: late-filing flag alone (a reported attribute, not the rule)
+
+**De-overlapped cohort**:
+The first-wins event set: once a ticker produces a cluster it cannot re-enter until its measurement horizon closes. Prevents one firm entering repeatedly on overlapping windows, which would inflate significance. Density floors bind on this count.
+_Avoid_: raw cluster count (reported, never gated on)
+
+**Placebo null**:
+The within-ticker date-shuffled distribution that an observed event excess is measured *against*. The primary statistic is the difference between observed and placebo mean — not the raw excess, because event cohorts can drift for cohort reasons alone.
+_Avoid_: placebo gate (the weaker sanity-check sense used in R2-1 and CMFT)
+
 ### Selection
 
 **Random admission**:
