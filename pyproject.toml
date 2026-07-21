@@ -18,6 +18,13 @@ invest-generate-context = "invest.adapters.generate_context_cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2,<9", "ruff>=0.5,<1"]
+# Research-only (CMFT Stage A driver T1/C2). Not required for production scan/backtest.
+research-ml = [
+    "numpy>=1.26,<3",
+    "pandas>=2.1,<3",
+    "scikit-learn>=1.4,<2",
+    "lightgbm>=4.3,<5",
+]
 
 [build-system]
 requires = ["hatchling"]
