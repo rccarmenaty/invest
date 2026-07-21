@@ -15,6 +15,8 @@ Round-4 meta-v2 Week-0 inventory, finally executed (read-only datatable calls un
 | **EVENTS** | ✅ current, deep | rows 1998→2026-04-30; 8-K item codes (`22` = Results of Operations = Item 2.02 earnings) |
 | **METRICS** | ⚠️ snapshot-only | 1 row (2026-07-20); no history — reference data, not a factor tape |
 | **SP500** | ✅ current | constituents to 2026-07-20 |
+| **TICKERS** | ✅ current | listing/delisting and primary-common fields used by existing adapters |
+| **ACTIONS** | ✅ current | corporate-action history used by existing adapters |
 | **SF1** | ❌ sample only | bare query returns 2 static MRY rows (2022–23); `dimension=ARQ` → 0 rows; any `datekey.gte` filter → 0 |
 | **SF2** | ❌ sample only | 5 static rows, filingdate 2018 (AAPL and MSFT both) |
 | **SF3** | ❌ sample only | static rows, calendardate 2015 |
@@ -23,7 +25,7 @@ Round-4 meta-v2 Week-0 inventory, finally executed (read-only datatable calls un
 
 **I0 verdict:** subscription = **Sharadar US Equities price/event tier** (SEP + EVENTS + METRICS + TICKERS + ACTIONS + SP500). **SF1 / SF2 / SF3 / DAILY are not entitled** — the "rows" are static demo samples that ignore recent-date filters. PEAD F0 and Form-4 remain **data-blocked under Sharadar**, exactly as when PEAD F0 published kill_line on `no_sf1_or_sec_original_tape`.
 
-Under Round-4 law the strict branch is: *"I0 fail (only SEP entitled) → re-seal Full-Stop; do not invent price alpha."* One material amendment to that premise: **EVENTS is live with 1993/1998→present depth**, which R4 only parenthesized ("and DAILY/EVENTS if present"). Earnings-announcement filing dates for the whole universe are derivable from entitled data today.
+Under Round-4 law the strict branch is: *"I0 fail (only SEP entitled) → re-seal Full-Stop; do not invent price alpha."* One material amendment to that premise: **EVENTS is live with 1998→present depth** (probed through 2026-04-30), which R4 only parenthesized ("and DAILY/EVENTS if present"). Earnings-announcement filing dates for the whole universe are derivable from entitled data today.
 
 ## 2. The power lesson that constrains every next design
 
@@ -50,13 +52,13 @@ CMFT Stage A died **underpowered-stop**: monthly cross-sectional formations give
 
 ### Option A — $0 data: SEC EDGAR tape → Form-4 line (recommended)
 
-SEC publishes for free: **Insider Transactions Data Sets** (structured Forms 3/4/5 derived from XML, 2006→present, quarterly TSV) and full Form 4 XML back to 1996 via EDGAR indexes; acceptance datetimes give an honest known-time (PIT) axis. Also free: **Financial Statement Data Sets** (as-filed XBRL numbers, 2009q2→present) — a future SF1 substitute for the PEAD/quality queue.
+SEC publishes for free: **Insider Transactions Data Sets** (structured Forms 3/4/5 derived from XML, 2006→present, quarterly TSV) and full Form 4 XML back to 1996 via EDGAR indexes. The free insider flat files carry **filing date at day granularity only** (no acceptance-timestamp field on that tape); a conservative known-time axis is therefore latest filing date → next trading-day open. True acceptance timestamps live in other EDGAR metadata and are a named future refinement, not a prerequisite for density/integrity work. Also free: **Financial Statement Data Sets** (as-filed XBRL numbers, 2009q2→present) — a future SF1 substitute for the PEAD/quality queue.
 
 Sequence (mirrors R4 meta-v2, source swapped):
 
 1. **CFOB-D density memo** — histogram of open-market purchase events (transaction code P) after ADV/liquidity filter; cluster definition (≥2 distinct insiders / 30d or officer-purchase); year-mass check (~25% law). **No returns.** Kill in memo if sparse or year-concentrated.
 2. **CFOB-F0 integrity** — filing-vs-transaction lag audit, amendment handling, CIK→ticker mapping via entitled TICKERS, dedupe. Fail-closed gates in house D-gate style.
-3. **CFOB-E1** — one event study: h60 open-to-open excess vs same-date eligible universe, date-clustered t, median as co-primary, year-share ≤25%, 10 bps costs, matched-SPY trade windows. Long-leg (purchases) primary. Dual-exit: kill_line or eligibility-only.
+3. **CFOB-E1** — one event study: h60 open-to-open excess vs same-date eligible universe, date-clustered t, median as co-primary, year-share ≤25%, 10 bps costs, matched-SPY trade windows. Long-leg (purchases) primary. Dual-exit: kill_line or implementability_eligible only (`capital_go` always false).
 
 Cost: ~2–3 weeks engineering tax (XML/TSV ingestion, entity mapping). Buys the **highest-novelty, most-persistent unmeasured family** with power O(10⁴⁺) events and no subscription spend.
 
