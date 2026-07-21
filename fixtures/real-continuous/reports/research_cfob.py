@@ -235,6 +235,26 @@ def build_listing_windows_from_sep(*, verbose: bool = True) -> list[ListingWindo
     return windows
 
 
+def _dedupe_windows(windows: list[ListingWindow]) -> list[ListingWindow]:
+    """Collapse identical listing windows for one symbol.
+
+    TICKERS carries several rows per ticker (exchange/category variants) with
+    the same first/last price dates. Those are duplicates, not recycled-ticker
+    ambiguity, and leaving them in makes almost every symbol look ambiguous —
+    which the mapper then excludes, collapsing the cohort.
+    """
+
+    seen: set[tuple[str, date | None, date | None]] = set()
+    out: list[ListingWindow] = []
+    for window in windows:
+        key = (window.symbol, window.first_price_date, window.last_price_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(window)
+    return out
+
+
 def load_listing_windows(*, verbose: bool = True) -> tuple[list[ListingWindow], str]:
     """Load listing windows: TICKERS cache → live TICKERS → SEP fallback."""
 
@@ -250,7 +270,7 @@ def load_listing_windows(*, verbose: bool = True) -> tuple[list[ListingWindow], 
         ]
         if verbose:
             print(f"  listing windows from cache {TICKERS_CACHE.name}: {len(windows):,}")
-        return windows, "tickers-cache"
+        return _dedupe_windows(windows), "tickers-cache"
 
     api_key = os.environ.get("NASDAQ_DATA_LINK_API_KEY")
     if api_key:
@@ -294,7 +314,7 @@ def load_listing_windows(*, verbose: bool = True) -> tuple[list[ListingWindow], 
         )
         if verbose:
             print(f"  listing windows from TICKERS API: {len(windows):,}")
-        return windows, "tickers-api"
+        return _dedupe_windows(windows), "tickers-api"
 
     if verbose:
         print("  no TICKERS cache/API key; building listing windows from SEP...")
