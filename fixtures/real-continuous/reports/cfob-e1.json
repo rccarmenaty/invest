@@ -1,0 +1,238 @@
+{
+  "stage": "E1",
+  "line": "cfob-insider-purchase-clusters",
+  "experiment_id": "cfob-e1",
+  "git_sha": "d420b5c0fca5b4c3920b9f4a953e45866ef39c8a-dirty",
+  "verdict": "kill_line",
+  "capital_go": false,
+  "implementability_eligible": false,
+  "protocol": {
+    "transaction_code": "P",
+    "min_gross_value": "10000",
+    "staleness_cap_days": 10,
+    "cluster_window_days": 30,
+    "secondary_cluster_window_days": 60,
+    "min_distinct_insiders": 2,
+    "min_price": "5",
+    "gate_on_min_price": false,
+    "min_price_role": "diagnostic_on_adjusted_close",
+    "min_dollar_volume": "2000000",
+    "min_dollar_volume_role": "primary_habitat_gate",
+    "dollar_volume_window": 20,
+    "min_history_bars": 252,
+    "secondary_min_dollar_volume": "10000000",
+    "min_clusters": 7500,
+    "min_contributing_years": 12,
+    "min_year_share": 0.02,
+    "max_year_share": 0.25,
+    "mds_bar": 0.0125,
+    "excess_dispersion": 0.38,
+    "power_z": 2.8,
+    "horizon_sessions": 60,
+    "min_mapping_rate": 0.9,
+    "max_unmapped_rate_ratio": 3.0,
+    "min_year_weight_for_composition": 0.01,
+    "future_e1_bars": {
+      "min_clustered_t": 3.0,
+      "trimmed_min_t": 2.0,
+      "winsor_tail": 0.01,
+      "primary_cost_bps": 25.0,
+      "placebo_draws": 100
+    },
+    "known_time_axis": "filing_date_day_granular",
+    "known_time_conservatism": "SEC Insider Transactions Data Sets carry no acceptance timestamp; entry is the open of the first trading day strictly after filing_date",
+    "entry_rule": "next_open_after_filing_date",
+    "e1": {
+      "placebo_seed": 20260722,
+      "placebo_draws": 100,
+      "cost_ladder_bps": [
+        10.0,
+        25.0,
+        50.0
+      ],
+      "primary_cost_bps": 25.0,
+      "cost_application": "round-trip 2x cost_bps subtracted from the traded (event) leg only; the placebo leg stays gross \u2014 a cost-symmetric placebo would cancel and make the frozen cost ladder vacuous",
+      "excess_benchmark": "same-entry-date habitat-eligible-universe mean open-to-open forward return (Gate-1a machinery, ADR 0002 universe floor)",
+      "placebo_candidate_rule": "uniform over the event symbol's habitat-eligible sessions with full forward-horizon coverage and a universe mean, within the measured span",
+      "return_convention": "open_to_open_adjusted",
+      "long_leg_only": true
+    }
+  },
+  "exclusions": {
+    "incomplete_horizon": 169,
+    "no_entry_session": 7,
+    "no_placebo_candidates": 0,
+    "matched_spy_window_missing": 0
+  },
+  "measurements": {
+    "cohort": {
+      "de_overlapped_clusters": 10394,
+      "measured_events": 10218,
+      "mds_at_cohort_n": 0.010436389320602377,
+      "mds_at_realized_n": 0.010525886404280224
+    },
+    "h60": {
+      "raw_excess_gross": {
+        "mean": 0.010933852984478933,
+        "clustered_t": 3.81633312794197,
+        "median_diagnostic": -0.005474982137623366,
+        "hit_rate_gt0": 0.4879624192601292,
+        "n": 10218
+      },
+      "placebo": {
+        "draws": 100,
+        "seed": 20260722,
+        "mean_of_per_event_means": -0.009279562805958897,
+        "mean_of_draw_cohort_means": -0.009279562805958846,
+        "observed_gross_mean_percentile": 1.0
+      },
+      "placebo_differenced_net_ladder": {
+        "10bps": {
+          "cost_bps_per_side": 10.0,
+          "mean": 0.018213415790437813,
+          "clustered_t": 6.536107380448633,
+          "median_diagnostic": -0.0011598027796422793,
+          "n": 10218
+        },
+        "25bps": {
+          "cost_bps_per_side": 25.0,
+          "mean": 0.015213415790437787,
+          "clustered_t": 5.459520628849815,
+          "median_diagnostic": -0.004159802779642279,
+          "n": 10218
+        },
+        "50bps": {
+          "cost_bps_per_side": 50.0,
+          "mean": 0.010213415790437774,
+          "clustered_t": 3.6652093761851288,
+          "median_diagnostic": -0.00915980277964228,
+          "n": 10218
+        }
+      },
+      "winsorized_primary": {
+        "tail": 0.01,
+        "mean": 0.010733536738979371,
+        "clustered_t": 4.519279891399839
+      },
+      "contribution_at_primary_cost": {
+        "max_year_share": 0.3103248650009476,
+        "max_month_share": 0.1166434905737517,
+        "by_year": {
+          "2006": 1.3628400875462379,
+          "2007": 7.618267862672318,
+          "2008": 8.221052894843492,
+          "2009": 51.76297162779202,
+          "2010": 7.307593975777742,
+          "2011": 1.9732039808764907,
+          "2012": 1.7331895864149027,
+          "2013": -0.3924431407208983,
+          "2014": -0.5236121824735757,
+          "2015": -8.600726335826758,
+          "2016": 8.717316206383103,
+          "2017": 1.1841003145890954,
+          "2018": 17.921650555707707,
+          "2019": -0.7588944203004397,
+          "2020": 42.25106436645162,
+          "2021": 2.383894594282272,
+          "2022": 6.9169207032242,
+          "2023": -1.0761682280092861,
+          "2024": 5.615276673868452,
+          "2025": 1.8331834235945985
+        }
+      },
+      "matched_spy_net_primary": {
+        "mean_net_minus_spy": 0.01133406846537671,
+        "clustered_t": 2.740341252350577,
+        "n": 10218,
+        "missing_windows": 0
+      },
+      "secondary_band_10m_gross_excess": {
+        "mean": 0.008325537322940852,
+        "clustered_t": 2.2356047706536364,
+        "n": 5454
+      }
+    },
+    "secondary_horizons": {
+      "h20": {
+        "gross_excess_mean": 0.007328324611500463,
+        "clustered_t": 4.725254241715216,
+        "n": 10218,
+        "incomplete": 0
+      },
+      "h120": {
+        "gross_excess_mean": 0.015308870820449667,
+        "clustered_t": 3.4582857379535716,
+        "n": 10073,
+        "incomplete": 145
+      }
+    },
+    "universe_baseline": {
+      "sessions_with_h60_mean": 4971,
+      "min_symbols_per_session": 1739,
+      "median_symbols_per_session": 2267.0
+    }
+  },
+  "gates": [
+    {
+      "id": "E1-power",
+      "passed": true,
+      "severity": "hard",
+      "reason": "MDS=0.010526 at realized n=10218 vs bar 0.0125"
+    },
+    {
+      "id": "E1-placebo-t",
+      "passed": "True",
+      "severity": "hard",
+      "reason": "placebo-differenced clustered t=5.4595 vs floor 3.0 (primary at 25.0 bps)"
+    },
+    {
+      "id": "E1-trimmed-t",
+      "passed": "True",
+      "severity": "hard",
+      "reason": "winsorized (1%/99%) clustered t=4.5193 vs floor 2.0"
+    },
+    {
+      "id": "E1-year-concentration",
+      "passed": "False",
+      "severity": "hard",
+      "reason": "max year contribution share=0.3103 vs cap 0.25"
+    },
+    {
+      "id": "E1-spy-beat",
+      "passed": true,
+      "severity": "hard",
+      "reason": "mean net return minus matched SPY window=0.011334 (must be > 0)"
+    },
+    {
+      "id": "E1-month-concentration",
+      "passed": true,
+      "severity": "info",
+      "reason": "max month contribution share=0.1166 (diagnostic; no month-share bound frozen in PRD #76)"
+    }
+  ],
+  "all_hard_gates_passed": false,
+  "mode": "sec-insider-tape-2006-present",
+  "notes": {
+    "cohort_cross_check": {
+      "published_d_f0_sha": "f188f90469bda9cbfd59b29182d53e70ae2efe0a",
+      "published_de_overlapped": 10394,
+      "re_derived_de_overlapped": 10394
+    },
+    "reference_source": "tickers-reference-cache",
+    "spy": {
+      "symbol": "SPY",
+      "sidecar_path": "fixtures/real-continuous/reports/spy-opens-cfob-sidecar.json",
+      "adjustment": "open * adjclose / close (matches SEP open_adj convention)",
+      "span_required": {
+        "start": "2006-01-01",
+        "end": "2026-07-18"
+      },
+      "source": "yahoo-chart-v8-fetch",
+      "session_count": 5166
+    },
+    "universe_filter_diagnostics": {
+      "measured_span": "2006-01-01..2025-12-31",
+      "secondary_10m_band_clusters": 6379
+    }
+  }
+}

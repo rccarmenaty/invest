@@ -13,13 +13,21 @@ from invest.application.cfob import (
     Verdict,
     amendment_collision_count,
     build_cfob_artifact,
+    build_cfob_e1_artifact,
     build_clusters,
+    contribution_shares,
     combine_stage_reports,
     de_overlap,
     dedupe_amendments,
     evaluate_d1_volume,
     evaluate_d2_year_spread,
     evaluate_d3_year_concentration,
+    evaluate_e1_month_concentration,
+    evaluate_e1_placebo_t,
+    evaluate_e1_power,
+    evaluate_e1_spy_beat,
+    evaluate_e1_trimmed_t,
+    evaluate_e1_year_concentration,
     evaluate_f1_mapping_rate,
     evaluate_f2_unmapped_composition,
     evaluate_f3_reconcile,
@@ -27,11 +35,16 @@ from invest.application.cfob import (
     evaluate_f5_derivative_exclusion,
     evaluate_f7_late_filing_share,
     evaluate_stage_d,
+    evaluate_stage_e1,
     evaluate_stage_f0,
     evaluate_universe_membership,
+    empirical_percentile,
+    h_open_to_open_return,
     min_detectable_size,
     qualifying_purchases,
     required_events,
+    run_placebo,
+    winsorize,
     year_shares,
 )
 from invest.domain.models import InsiderTransaction
@@ -124,9 +137,7 @@ def test_staleness_cap_is_inclusive_at_ten_days() -> None:
 
 
 def test_excludes_filings_dated_before_their_transaction() -> None:
-    kept, counts = qualifying_purchases(
-        [txn(trans=date(2024, 3, 4), filed=date(2024, 3, 1))]
-    )
+    kept, counts = qualifying_purchases([txn(trans=date(2024, 3, 4), filed=date(2024, 3, 1))])
 
     assert kept == ()
     assert counts.stale == 1
@@ -170,9 +181,7 @@ def test_amendment_keeps_the_original_filing_date_as_known_time() -> None:
 
 
 def test_distinct_trades_are_not_treated_as_amendments() -> None:
-    deduped, superseded = dedupe_amendments(
-        [txn(owner="owner-1"), txn(owner="owner-2")]
-    )
+    deduped, superseded = dedupe_amendments([txn(owner="owner-1"), txn(owner="owner-2")])
 
     assert superseded == 0
     assert len(deduped) == 2
@@ -636,9 +645,7 @@ def listing(
 
 def cik_txn(*, symbol: str = "SYMC", cik: str = "0000849399", **kwargs) -> InsiderTransaction:
     base = txn(symbol=symbol, **kwargs)
-    return InsiderTransaction(
-        **{**base.__dict__, "issuer_cik": cik, "trading_symbol": symbol}
-    )
+    return InsiderTransaction(**{**base.__dict__, "issuer_cik": cik, "trading_symbol": symbol})
 
 
 def test_normalize_cik_strips_leading_zeros_and_junk() -> None:
@@ -719,6 +726,7 @@ def test_symbol_alone_never_establishes_identity() -> None:
     assert result.mapped_count == 0
     assert result.reason_counts["cik_absent_from_reference"] == 1
 
+
 # --- Universe (habitat floor) ------------------------------------------------
 
 
@@ -778,9 +786,7 @@ def test_universe_price_floor_gates_when_protocol_says_so() -> None:
     bars = _bars(days=400, close=2.0, volume=2_000_000.0)
     gating = ProtocolConfig(gate_on_min_price=True)
 
-    decision = evaluate_universe_membership(
-        bars=bars, known_time=date(2020, 6, 1), config=gating
-    )
+    decision = evaluate_universe_membership(bars=bars, known_time=date(2020, 6, 1), config=gating)
 
     assert decision.eligible is False
     assert decision.reason == "below_price_floor"
@@ -823,3 +829,288 @@ def test_dedupe_propagates_source_table_provenance() -> None:
     deduped, _ = dedupe_amendments([original, amendment])
 
     assert all(t.source_table == "NONDERIV_TRANS" for t in deduped)
+
+
+# --- Stage E1: entry and forward return --------------------------------------
+
+
+def _sessions(n: int, start: date = date(2020, 1, 6)) -> list[date]:
+    out: list[date] = []
+    d = start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def test_e1_entry_is_first_session_strictly_after_known_time() -> None:
+    dates = _sessions(80)
+    opens = [100.0 + i for i in range(80)]
+
+    # Known-time ON a session: entry must be the NEXT session, not the same day.
+    result = h_open_to_open_return(dates=dates, opens=opens, known_time=dates[3], horizon=60)
+
+    assert result is not None
+    ret, entry_date, exit_date = result
+    assert entry_date == dates[4]
+    assert exit_date == dates[64]
+    assert ret == pytest.approx(opens[64] / opens[4] - 1.0)
+
+
+def test_e1_entry_skips_weekends_after_a_friday_filing() -> None:
+    dates = _sessions(80)
+    friday = date(2020, 1, 10)
+    assert friday in dates and friday.weekday() == 4
+
+    result = h_open_to_open_return(dates=dates, opens=[10.0] * 80, known_time=friday, horizon=60)
+
+    assert result is not None
+    assert result[1] == date(2020, 1, 13)  # Monday
+
+
+def test_e1_forward_return_is_none_when_horizon_extends_past_history() -> None:
+    dates = _sessions(50)
+
+    assert (
+        h_open_to_open_return(dates=dates, opens=[10.0] * 50, known_time=dates[0], horizon=60)
+        is None
+    )
+
+
+def test_e1_forward_return_is_none_when_no_session_follows_known_time() -> None:
+    dates = _sessions(10)
+
+    assert (
+        h_open_to_open_return(dates=dates, opens=[10.0] * 10, known_time=dates[-1], horizon=5)
+        is None
+    )
+
+
+def test_e1_forward_return_is_none_on_non_positive_open() -> None:
+    dates = _sessions(70)
+    opens = [10.0] * 70
+    opens[1] = 0.0
+
+    assert h_open_to_open_return(dates=dates, opens=opens, known_time=dates[0], horizon=60) is None
+
+
+# --- Stage E1: winsorization --------------------------------------------------
+
+
+def test_winsorize_clamps_tails_and_keeps_the_interior() -> None:
+    values = [float(v) for v in range(11)]  # 0..10
+
+    clamped = winsorize(values, tail=0.1)
+
+    assert min(clamped) == pytest.approx(1.0)
+    assert max(clamped) == pytest.approx(9.0)
+    assert clamped[5] == pytest.approx(5.0)
+    assert len(clamped) == len(values)
+
+
+def test_winsorize_rejects_a_nonsense_tail() -> None:
+    with pytest.raises(ValueError):
+        winsorize([1.0, 2.0], tail=0.5)
+    with pytest.raises(ValueError):
+        winsorize([1.0, 2.0], tail=0.0)
+
+
+# --- Stage E1: placebo null ---------------------------------------------------
+
+
+def test_placebo_is_deterministic_for_a_seed() -> None:
+    candidates = {"AAA": (0.01, 0.02, -0.03, 0.05), "BBB": (-0.01, 0.0, 0.04)}
+    events = ["AAA", "BBB", "AAA"]
+
+    first = run_placebo(candidates, events, draws=50, seed=7)
+    second = run_placebo(candidates, events, draws=50, seed=7)
+    other_seed = run_placebo(candidates, events, draws=50, seed=8)
+
+    assert first == second
+    assert first.per_event_mean != other_seed.per_event_mean
+
+
+def test_placebo_single_candidate_symbol_pins_the_event_mean() -> None:
+    candidates = {"AAA": (0.02,), "BBB": (0.02,)}
+
+    result = run_placebo(candidates, ["AAA", "BBB"], draws=25, seed=1)
+
+    assert result.per_event_mean == (pytest.approx(0.02), pytest.approx(0.02))
+    assert len(result.draw_cohort_means) == 25
+    assert all(m == pytest.approx(0.02) for m in result.draw_cohort_means)
+
+
+def test_placebo_fails_closed_when_a_symbol_has_no_candidates() -> None:
+    with pytest.raises(ValueError):
+        run_placebo({"AAA": ()}, ["AAA"], draws=10, seed=1)
+    with pytest.raises(ValueError):
+        run_placebo({}, ["MISSING"], draws=10, seed=1)
+
+
+def test_placebo_requires_positive_draws() -> None:
+    with pytest.raises(ValueError):
+        run_placebo({"AAA": (0.1,)}, ["AAA"], draws=0, seed=1)
+
+
+def test_empirical_percentile_is_the_share_of_draws_below_observed() -> None:
+    draws = [0.0, 0.01, 0.02, 0.03]
+
+    assert empirical_percentile(0.025, draws) == pytest.approx(0.75)
+    assert empirical_percentile(-1.0, draws) == pytest.approx(0.0)
+    assert empirical_percentile(1.0, draws) == pytest.approx(1.0)
+
+
+# --- Stage E1: contribution concentration -------------------------------------
+
+
+def test_contribution_shares_bind_on_the_positive_total_only() -> None:
+    dated = [
+        (date(2020, 3, 2), 3.0),
+        (date(2020, 7, 6), 1.0),
+        (date(2021, 3, 1), -2.0),
+        (date(2022, 3, 1), 1.0),
+    ]
+
+    shares = contribution_shares(dated)
+
+    # Positive total = 5.0; 2020 contributes 4.0 of it.
+    assert shares["max_year_share"] == pytest.approx(0.8)
+    assert shares["max_month_share"] == pytest.approx(0.6)
+
+
+def test_contribution_shares_are_zero_when_nothing_is_positive() -> None:
+    assert contribution_shares([(date(2020, 1, 2), -1.0)])["max_year_share"] == 0.0
+    assert contribution_shares([])["max_year_share"] == 0.0
+
+
+# --- Stage E1: gates ----------------------------------------------------------
+
+
+def test_e1_power_gate_binds_exactly_at_the_required_event_count() -> None:
+    boundary = required_events()  # 7,246 under the frozen protocol
+
+    assert evaluate_e1_power(realized_n=boundary).passed is True
+    assert evaluate_e1_power(realized_n=boundary - 1).passed is False
+    assert evaluate_e1_power(realized_n=0).passed is False
+
+
+def test_e1_placebo_t_gate_thresholds_at_three() -> None:
+    assert evaluate_e1_placebo_t(t=3.0).passed is True
+    assert evaluate_e1_placebo_t(t=2.99).passed is False
+    assert evaluate_e1_placebo_t(t=float("nan")).passed is False
+
+
+def test_e1_trimmed_t_gate_thresholds_at_two() -> None:
+    assert evaluate_e1_trimmed_t(t=2.0).passed is True
+    assert evaluate_e1_trimmed_t(t=1.99).passed is False
+    assert evaluate_e1_trimmed_t(t=float("nan")).passed is False
+
+
+def test_e1_year_concentration_gate_caps_contribution_at_a_quarter() -> None:
+    assert evaluate_e1_year_concentration(max_year_contribution_share=0.25).passed is True
+    assert evaluate_e1_year_concentration(max_year_contribution_share=0.2501).passed is False
+    assert evaluate_e1_year_concentration(max_year_contribution_share=None).passed is False
+
+
+def test_e1_spy_beat_requires_a_positive_mean_and_fails_closed_unmeasured() -> None:
+    assert evaluate_e1_spy_beat(mean_net_minus_spy=0.001).passed is True
+    assert evaluate_e1_spy_beat(mean_net_minus_spy=0.0).passed is False
+    assert evaluate_e1_spy_beat(mean_net_minus_spy=None).passed is False
+    assert evaluate_e1_spy_beat(mean_net_minus_spy=float("nan")).passed is False
+
+
+def test_e1_month_share_is_reported_not_gated() -> None:
+    gate = evaluate_e1_month_concentration(max_month_contribution_share=1.0)
+
+    assert gate.passed is True
+    assert gate.severity == "info"
+    assert "no month-share bound" in gate.reason
+
+
+# --- Stage E1: verdict precedence ----------------------------------------------
+
+
+def _e1_report(**overrides):
+    kwargs = dict(
+        realized_n=10_000,
+        placebo_t=4.0,
+        trimmed_t=3.0,
+        max_year_contribution_share=0.10,
+        mean_net_minus_spy=0.005,
+        max_month_contribution_share=0.05,
+    )
+    kwargs.update(overrides)
+    return evaluate_stage_e1(**kwargs)
+
+
+def test_e1_all_hard_gates_passing_is_stage_pass() -> None:
+    report = _e1_report()
+
+    assert report.verdict == str(Verdict.STAGE_PASS)
+    assert report.all_hard_gates_passed is True
+    assert report.capital_go is False
+
+
+def test_e1_underpowered_stop_takes_precedence_over_kill() -> None:
+    report = _e1_report(realized_n=100, placebo_t=0.5)
+
+    assert report.verdict == str(Verdict.UNDERPOWERED_STOP)
+
+
+def test_e1_any_hard_gate_failure_kills_the_line() -> None:
+    assert _e1_report(placebo_t=2.0).verdict == str(Verdict.KILL_LINE)
+    assert _e1_report(trimmed_t=0.0).verdict == str(Verdict.KILL_LINE)
+    assert _e1_report(max_year_contribution_share=0.60).verdict == str(Verdict.KILL_LINE)
+    assert _e1_report(mean_net_minus_spy=-0.001).verdict == str(Verdict.KILL_LINE)
+
+
+def test_e1_month_share_diagnostic_never_flips_the_verdict() -> None:
+    report = _e1_report(max_month_contribution_share=0.99)
+
+    assert report.verdict == str(Verdict.STAGE_PASS)
+
+
+# --- Stage E1: artifact ---------------------------------------------------------
+
+
+def test_e1_artifact_records_thresholds_seed_and_never_grants_capital() -> None:
+    report = _e1_report()
+
+    artifact = build_cfob_e1_artifact(
+        report=report,
+        measurements={"h60": {"placebo_differenced_net_25bps": {"mean": 0.01}}},
+        exclusions={"incomplete_horizon": 3},
+        mode="unit-test",
+        git_sha="deadbeef",
+        placebo_seed=20260722,
+        notes={"spy_source": "unit"},
+    )
+
+    assert artifact["stage"] == "E1"
+    assert artifact["capital_go"] is False
+    assert artifact["implementability_eligible"] is True  # stage_pass and only then
+    assert artifact["protocol"]["future_e1_bars"]["min_clustered_t"] == 3.0
+    assert artifact["protocol"]["e1"]["placebo_seed"] == 20260722
+    assert artifact["protocol"]["e1"]["cost_ladder_bps"] == [10.0, 25.0, 50.0]
+    assert artifact["protocol"]["e1"]["primary_cost_bps"] == 25.0
+    assert artifact["exclusions"] == {"incomplete_horizon": 3}
+    assert artifact["measurements"]["h60"]["placebo_differenced_net_25bps"]["mean"] == 0.01
+    assert artifact["git_sha"] == "deadbeef"
+
+
+def test_e1_artifact_denies_implementability_on_kill() -> None:
+    report = _e1_report(placebo_t=0.0)
+
+    artifact = build_cfob_e1_artifact(
+        report=report,
+        measurements={},
+        exclusions={},
+        mode="unit-test",
+        git_sha=None,
+        placebo_seed=1,
+    )
+
+    assert artifact["verdict"] == str(Verdict.KILL_LINE)
+    assert artifact["implementability_eligible"] is False
+    assert artifact["capital_go"] is False

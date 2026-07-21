@@ -10,13 +10,15 @@ Stage E1 (returns) is authorised separately and is not implemented here.
 
 from __future__ import annotations
 
+import random
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from math import sqrt
+from math import isfinite, sqrt
 from statistics import median
 
 from invest.domain.models import InsiderTransaction
@@ -236,9 +238,9 @@ def amendment_collision_count(transactions: Iterable[InsiderTransaction]) -> int
 
     kinds: dict[tuple[str, str, date, str], set[bool]] = defaultdict(set)
     for txn in transactions:
-        kinds[
-            (txn.owner_cik, txn.issuer_cik, txn.transaction_date, txn.transaction_code)
-        ].add(txn.is_amendment)
+        kinds[(txn.owner_cik, txn.issuer_cik, txn.transaction_date, txn.transaction_code)].add(
+            txn.is_amendment
+        )
     return sum(1 for seen in kinds.values() if len(seen) > 1)
 
 
@@ -693,28 +695,29 @@ def evaluate_d3_year_concentration(
         "D3-concentration",
         passed=passed,
         severity=GateSeverity.HARD,
-        reason=(
-            f"max year share={worst_share:.4f} ({worst_year}) vs cap {config.max_year_share}"
-        ),
+        reason=(f"max year share={worst_share:.4f} ({worst_year}) vs cap {config.max_year_share}"),
     )
 
 
 # --- Stage F0 gates ----------------------------------------------------------
 
 
-def evaluate_f0_protocol(
-    *, protocol_present: bool, trial_ledger_present: bool
-) -> CfobGateResult:
+def evaluate_f0_protocol(*, protocol_present: bool, trial_ledger_present: bool) -> CfobGateResult:
     missing = [
         name
-        for name, present in (("protocol", protocol_present), ("trial_ledger", trial_ledger_present))
+        for name, present in (
+            ("protocol", protocol_present),
+            ("trial_ledger", trial_ledger_present),
+        )
         if not present
     ]
     return _gate(
         "F0-protocol",
         passed=not missing,
         severity=GateSeverity.HARD,
-        reason="protocol freeze and trial ledger present" if not missing else f"missing: {', '.join(missing)}",
+        reason="protocol freeze and trial ledger present"
+        if not missing
+        else f"missing: {', '.join(missing)}",
     )
 
 
@@ -833,9 +836,7 @@ def evaluate_f4_parse_coverage(
         "F4-parse-coverage",
         passed=passed,
         severity=GateSeverity.HARD,
-        reason=(
-            f"archives parsed={archives_parsed} vs expected {archives_expected}"
-        ),
+        reason=(f"archives parsed={archives_parsed} vs expected {archives_expected}"),
     )
 
 
@@ -878,7 +879,9 @@ def evaluate_f6_amendment_dedupe(*, amendment_dedupe_measured: bool) -> CfobGate
     )
 
 
-def evaluate_f7_late_filing_share(*, late_filed: int | None, qualified: int | None) -> CfobGateResult:
+def evaluate_f7_late_filing_share(
+    *, late_filed: int | None, qualified: int | None
+) -> CfobGateResult:
     """Late-filing share must be measured. It is reported, not thresholded.
 
     No predeclared share cap was grilled; an unmeasured share fails closed so a
@@ -995,14 +998,10 @@ def evaluate_stage_f0(
         evaluate_f4_parse_coverage(
             archives_expected=archives_expected, archives_parsed=archives_parsed
         ),
-        evaluate_f5_derivative_exclusion(
-            derivative_rows_in_qualified=derivative_rows_in_qualified
-        ),
+        evaluate_f5_derivative_exclusion(derivative_rows_in_qualified=derivative_rows_in_qualified),
         evaluate_f6_amendment_dedupe(amendment_dedupe_measured=amendment_dedupe_measured),
         evaluate_f7_late_filing_share(late_filed=late_filed, qualified=qualified),
-        evaluate_f8_off_market_price(
-            off_market_share=off_market_share, reason=off_market_reason
-        ),
+        evaluate_f8_off_market_price(off_market_share=off_market_share, reason=off_market_reason),
     )
     return _report(gates, stage="F0")
 
@@ -1014,6 +1013,53 @@ def combine_stage_reports(*reports: CfobGateReport) -> CfobGateReport:
         raise ValueError("combine_stage_reports requires at least one report")
     gates = tuple(gate for report in reports for gate in report.gates)
     return _report(gates, stage="combined")
+
+
+def protocol_block(config: ProtocolConfig = PROTOCOL) -> dict:
+    """The frozen protocol exactly as every CFOB artifact must record it."""
+
+    return {
+        "transaction_code": config.transaction_code,
+        "min_gross_value": str(config.min_gross_value),
+        "staleness_cap_days": config.staleness_cap_days,
+        "cluster_window_days": config.cluster_window_days,
+        "secondary_cluster_window_days": config.secondary_cluster_window_days,
+        "min_distinct_insiders": config.min_distinct_insiders,
+        "min_price": str(config.min_price),
+        "gate_on_min_price": config.gate_on_min_price,
+        "min_price_role": (
+            "primary_habitat_gate" if config.gate_on_min_price else "diagnostic_on_adjusted_close"
+        ),
+        "min_dollar_volume": str(config.min_dollar_volume),
+        "min_dollar_volume_role": "primary_habitat_gate",
+        "dollar_volume_window": config.dollar_volume_window,
+        "min_history_bars": config.min_history_bars,
+        "secondary_min_dollar_volume": str(config.secondary_min_dollar_volume),
+        "min_clusters": config.min_clusters,
+        "min_contributing_years": config.min_contributing_years,
+        "min_year_share": config.min_year_share,
+        "max_year_share": config.max_year_share,
+        "mds_bar": config.mds_bar,
+        "excess_dispersion": config.excess_dispersion,
+        "power_z": config.power_z,
+        "horizon_sessions": config.horizon_sessions,
+        "min_mapping_rate": config.min_mapping_rate,
+        "max_unmapped_rate_ratio": config.max_unmapped_rate_ratio,
+        "min_year_weight_for_composition": config.min_year_weight_for_composition,
+        "future_e1_bars": {
+            "min_clustered_t": config.future_min_clustered_t,
+            "trimmed_min_t": config.future_trimmed_min_t,
+            "winsor_tail": config.future_winsor_tail,
+            "primary_cost_bps": config.future_primary_cost_bps,
+            "placebo_draws": config.future_placebo_draws,
+        },
+        "known_time_axis": "filing_date_day_granular",
+        "known_time_conservatism": (
+            "SEC Insider Transactions Data Sets carry no acceptance timestamp; "
+            "entry is the open of the first trading day strictly after filing_date"
+        ),
+        "entry_rule": "next_open_after_filing_date",
+    }
 
 
 def build_cfob_artifact(
@@ -1039,50 +1085,7 @@ def build_cfob_artifact(
         "verdict": report.verdict,
         "capital_go": False,
         "implementability_eligible": False,
-        "protocol": {
-            "transaction_code": config.transaction_code,
-            "min_gross_value": str(config.min_gross_value),
-            "staleness_cap_days": config.staleness_cap_days,
-            "cluster_window_days": config.cluster_window_days,
-            "secondary_cluster_window_days": config.secondary_cluster_window_days,
-            "min_distinct_insiders": config.min_distinct_insiders,
-            "min_price": str(config.min_price),
-            "gate_on_min_price": config.gate_on_min_price,
-            "min_price_role": (
-                "primary_habitat_gate"
-                if config.gate_on_min_price
-                else "diagnostic_on_adjusted_close"
-            ),
-            "min_dollar_volume": str(config.min_dollar_volume),
-            "min_dollar_volume_role": "primary_habitat_gate",
-            "dollar_volume_window": config.dollar_volume_window,
-            "min_history_bars": config.min_history_bars,
-            "secondary_min_dollar_volume": str(config.secondary_min_dollar_volume),
-            "min_clusters": config.min_clusters,
-            "min_contributing_years": config.min_contributing_years,
-            "min_year_share": config.min_year_share,
-            "max_year_share": config.max_year_share,
-            "mds_bar": config.mds_bar,
-            "excess_dispersion": config.excess_dispersion,
-            "power_z": config.power_z,
-            "horizon_sessions": config.horizon_sessions,
-            "min_mapping_rate": config.min_mapping_rate,
-            "max_unmapped_rate_ratio": config.max_unmapped_rate_ratio,
-            "min_year_weight_for_composition": config.min_year_weight_for_composition,
-            "future_e1_bars": {
-                "min_clustered_t": config.future_min_clustered_t,
-                "trimmed_min_t": config.future_trimmed_min_t,
-                "winsor_tail": config.future_winsor_tail,
-                "primary_cost_bps": config.future_primary_cost_bps,
-                "placebo_draws": config.future_placebo_draws,
-            },
-            "known_time_axis": "filing_date_day_granular",
-            "known_time_conservatism": (
-                "SEC Insider Transactions Data Sets carry no acceptance timestamp; "
-                "entry is the open of the first trading day strictly after filing_date"
-            ),
-            "entry_rule": "next_open_after_filing_date",
-        },
+        "protocol": protocol_block(config),
         "counts": counts.to_dict(),
         "clusters": {
             "raw": raw_clusters,
@@ -1093,6 +1096,367 @@ def build_cfob_artifact(
             ),
             "year_shares": {str(year): share for year, share in shares.items()},
         },
+        "gates": report.to_dict()["gates"],
+        "all_hard_gates_passed": report.all_hard_gates_passed,
+        "mode": mode,
+        "notes": dict(notes or {}),
+    }
+
+
+# --- Stage E1 (returns) -------------------------------------------------------
+#
+# Authorised separately (PRD #76 grill, session 2, Q3 = option 1). Everything
+# here consumes the SAME frozen ProtocolConfig; the E1 bars live in the
+# ``future_*`` fields recorded under ``protocol.future_e1_bars`` since D+F0.
+# ``capital_go`` remains false whatever these gates say.
+
+E1_COST_LADDER_BPS: tuple[float, ...] = (10.0, 25.0, 50.0)
+
+
+def h_open_to_open_return(
+    *,
+    dates: Sequence[date],
+    opens: Sequence[float],
+    known_time: date,
+    horizon: int,
+) -> tuple[float, date, date] | None:
+    """Open-to-open forward return entering strictly after ``known_time``.
+
+    Entry is the open of the first session strictly after the cluster
+    known-time (latest filing date); exit is the open ``horizon`` sessions
+    later in the SAME symbol's session series. Returns (return, entry_date,
+    exit_date), or None when the horizon is not fully covered — the caller
+    must count that exclusion, never silently shrink the cohort.
+    """
+
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    i = bisect_right(dates, known_time)
+    j = i + horizon
+    if i >= len(dates) or j >= len(dates):
+        return None
+    if opens[i] <= 0 or opens[j] <= 0:
+        return None
+    return (opens[j] / opens[i] - 1.0, dates[i], dates[j])
+
+
+def _quantile(sorted_values: Sequence[float], q: float) -> float:
+    """Linear-interpolation quantile over an ascending sequence."""
+
+    if not sorted_values:
+        raise ValueError("quantile of empty sequence")
+    position = q * (len(sorted_values) - 1)
+    low = int(position)
+    high = min(low + 1, len(sorted_values) - 1)
+    fraction = position - low
+    return sorted_values[low] * (1.0 - fraction) + sorted_values[high] * fraction
+
+
+def winsorize(values: Sequence[float], *, tail: float) -> list[float]:
+    """Clamp both tails at the empirical ``tail``/``1-tail`` quantiles.
+
+    The breadth guard: a handful of moonshots may not carry the verdict, and
+    winsorizing (rather than trimming rows) keeps every event in the sample.
+    """
+
+    if not 0.0 < tail < 0.5:
+        raise ValueError(f"winsor tail must be in (0, 0.5), got {tail}")
+    if len(values) < 2:
+        return list(values)
+    ordered = sorted(values)
+    low = _quantile(ordered, tail)
+    high = _quantile(ordered, 1.0 - tail)
+    return [min(max(v, low), high) for v in values]
+
+
+@dataclass(frozen=True)
+class PlaceboResult:
+    """Within-ticker date-shuffled null (CONTEXT.md: placebo null).
+
+    ``per_event_mean`` is each event's mean placebo excess across draws — the
+    quantity subtracted from the observed excess to form the primary statistic.
+    ``draw_cohort_means`` is the placebo distribution of the cohort mean, used
+    for the observed statistic's empirical percentile.
+    """
+
+    per_event_mean: tuple[float, ...]
+    draw_cohort_means: tuple[float, ...]
+    draws: int
+    seed: int
+
+
+def run_placebo(
+    candidates_by_symbol: Mapping[str, Sequence[float]],
+    event_symbols: Sequence[str],
+    *,
+    draws: int,
+    seed: int,
+) -> PlaceboResult:
+    """Sample each event's symbol at random dates, ``draws`` times, seeded.
+
+    Candidates are the symbol's placebo excesses (same excess definition as the
+    observed statistic) on its habitat-eligible sessions. Shuffling preserves
+    the firm and destroys only timing. Fails closed on a symbol with no
+    candidates — the driver must exclude and count such events beforehand.
+    """
+
+    if draws < 1:
+        raise ValueError("placebo draws must be >= 1")
+    if not event_symbols:
+        raise ValueError("placebo requires at least one event")
+    for symbol in event_symbols:
+        candidates = candidates_by_symbol.get(symbol)
+        if candidates is None or len(candidates) == 0:
+            raise ValueError(f"no placebo candidates for symbol {symbol!r} — fail closed")
+
+    rng = random.Random(seed)
+    n_events = len(event_symbols)
+    sums = [0.0] * n_events
+    draw_means: list[float] = []
+    for _ in range(draws):
+        total = 0.0
+        for index, symbol in enumerate(event_symbols):
+            candidates = candidates_by_symbol[symbol]
+            value = candidates[rng.randrange(len(candidates))]
+            sums[index] += value
+            total += value
+        draw_means.append(total / n_events)
+    return PlaceboResult(
+        per_event_mean=tuple(s / draws for s in sums),
+        draw_cohort_means=tuple(draw_means),
+        draws=draws,
+        seed=seed,
+    )
+
+
+def empirical_percentile(observed: float, draws: Sequence[float]) -> float:
+    """Share of placebo draws strictly below the observed statistic."""
+
+    if not draws:
+        raise ValueError("empirical percentile of empty draws")
+    return sum(1 for d in draws if d < observed) / len(draws)
+
+
+def contribution_shares(dated_values: Sequence[tuple[date, float]]) -> dict[str, float]:
+    """Max year/month share of the positive contribution total.
+
+    Same law as the prior lines' profit-share gates: shares bind on the
+    positive total only, so a losing year cannot mask a single carrying year.
+    """
+
+    by_year: dict[int, float] = defaultdict(float)
+    by_month: dict[tuple[int, int], float] = defaultdict(float)
+    for day, value in dated_values:
+        by_year[day.year] += value
+        by_month[(day.year, day.month)] += value
+
+    def max_share(totals: Mapping[object, float]) -> float:
+        positive_total = sum(v for v in totals.values() if v > 0)
+        if positive_total <= 0:
+            return 0.0
+        return max(v for v in totals.values() if v > 0) / positive_total
+
+    return {"max_year_share": max_share(by_year), "max_month_share": max_share(by_month)}
+
+
+# --- Stage E1 gates -----------------------------------------------------------
+
+
+def evaluate_e1_power(*, realized_n: int, config: ProtocolConfig = PROTOCOL) -> CfobGateResult:
+    """Power precheck at realized n: MDS must not exceed the frozen bar.
+
+    A failure is ``underpowered_stop``, not a kill — the tape did not refute
+    the hypothesis, it refused to test it.
+    """
+
+    mds = min_detectable_size(n_events=realized_n, config=config)
+    return _gate(
+        "E1-power",
+        passed=mds <= config.mds_bar,
+        severity=GateSeverity.HARD,
+        reason=f"MDS={mds:.6f} at realized n={realized_n} vs bar {config.mds_bar}",
+    )
+
+
+def evaluate_e1_placebo_t(*, t: float, config: ProtocolConfig = PROTOCOL) -> CfobGateResult:
+    """Primary: placebo-differenced clustered t at the 25 bps rung."""
+
+    passed = isfinite(t) and t >= config.future_min_clustered_t
+    return _gate(
+        "E1-placebo-t",
+        passed=passed,
+        severity=GateSeverity.HARD,
+        reason=(
+            f"placebo-differenced clustered t={t:.4f} vs floor "
+            f"{config.future_min_clustered_t} (primary at "
+            f"{config.future_primary_cost_bps} bps)"
+        ),
+    )
+
+
+def evaluate_e1_trimmed_t(*, t: float, config: ProtocolConfig = PROTOCOL) -> CfobGateResult:
+    """Breadth guard: winsorized (1/99) mean must clear its own t floor."""
+
+    passed = isfinite(t) and t >= config.future_trimmed_min_t
+    return _gate(
+        "E1-trimmed-t",
+        passed=passed,
+        severity=GateSeverity.HARD,
+        reason=(
+            f"winsorized ({config.future_winsor_tail:.0%}/{1 - config.future_winsor_tail:.0%}) "
+            f"clustered t={t:.4f} vs floor {config.future_trimmed_min_t}"
+        ),
+    )
+
+
+def evaluate_e1_year_concentration(
+    *, max_year_contribution_share: float | None, config: ProtocolConfig = PROTOCOL
+) -> CfobGateResult:
+    if max_year_contribution_share is None or not isfinite(max_year_contribution_share):
+        return _gate(
+            "E1-year-concentration",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="year contribution shares not measured — fail closed",
+        )
+    return _gate(
+        "E1-year-concentration",
+        passed=max_year_contribution_share <= config.max_year_share,
+        severity=GateSeverity.HARD,
+        reason=(
+            f"max year contribution share={max_year_contribution_share:.4f} "
+            f"vs cap {config.max_year_share}"
+        ),
+    )
+
+
+def evaluate_e1_spy_beat(*, mean_net_minus_spy: float | None) -> CfobGateResult:
+    """Matched-SPY trade-window beat: the long leg must out-earn matched
+    equity exposure on the same clock, net of the primary cost rung."""
+
+    if mean_net_minus_spy is None or not isfinite(mean_net_minus_spy):
+        return _gate(
+            "E1-spy-beat",
+            passed=False,
+            severity=GateSeverity.HARD,
+            reason="matched-SPY comparison not measured — fail closed",
+        )
+    return _gate(
+        "E1-spy-beat",
+        passed=mean_net_minus_spy > 0,
+        severity=GateSeverity.HARD,
+        reason=(f"mean net return minus matched SPY window={mean_net_minus_spy:.6f} (must be > 0)"),
+    )
+
+
+def evaluate_e1_month_concentration(
+    *, max_month_contribution_share: float | None
+) -> CfobGateResult:
+    """PRD #76 names 'a month-share bound' but froze no number; the E1
+    authorisation lists year-share only. Reported, never gated — inventing a
+    threshold mid-protocol is exactly what the grill forbade."""
+
+    if max_month_contribution_share is None:
+        reason = "month contribution share not measured (no month-share bound frozen)"
+    else:
+        reason = (
+            f"max month contribution share={max_month_contribution_share:.4f} "
+            "(diagnostic; no month-share bound frozen in PRD #76)"
+        )
+    return _gate(
+        "E1-month-concentration",
+        passed=True,
+        severity=GateSeverity.INFO,
+        reason=reason,
+    )
+
+
+def evaluate_stage_e1(
+    *,
+    realized_n: int,
+    placebo_t: float,
+    trimmed_t: float,
+    max_year_contribution_share: float | None,
+    mean_net_minus_spy: float | None,
+    max_month_contribution_share: float | None,
+    config: ProtocolConfig = PROTOCOL,
+) -> CfobGateReport:
+    """E1 verdict. Underpowered beats killed: a cohort too small to test the
+    claim publishes ``underpowered_stop`` even if other gates also failed."""
+
+    power = evaluate_e1_power(realized_n=realized_n, config=config)
+    gates = (
+        power,
+        evaluate_e1_placebo_t(t=placebo_t, config=config),
+        evaluate_e1_trimmed_t(t=trimmed_t, config=config),
+        evaluate_e1_year_concentration(
+            max_year_contribution_share=max_year_contribution_share, config=config
+        ),
+        evaluate_e1_spy_beat(mean_net_minus_spy=mean_net_minus_spy),
+        evaluate_e1_month_concentration(max_month_contribution_share=max_month_contribution_share),
+    )
+    hard_passed = all(g.passed for g in gates if g.severity == str(GateSeverity.HARD))
+    if not power.passed:
+        verdict = str(Verdict.UNDERPOWERED_STOP)
+    elif hard_passed:
+        verdict = str(Verdict.STAGE_PASS)
+    else:
+        verdict = str(Verdict.KILL_LINE)
+    return CfobGateReport(
+        gates=gates,
+        all_hard_gates_passed=hard_passed,
+        capital_go=False,
+        verdict=verdict,
+    )
+
+
+def build_cfob_e1_artifact(
+    *,
+    report: CfobGateReport,
+    measurements: Mapping[str, object],
+    exclusions: Mapping[str, int],
+    mode: str,
+    git_sha: str | None,
+    placebo_seed: int,
+    notes: Mapping[str, object] | None = None,
+    config: ProtocolConfig = PROTOCOL,
+) -> dict:
+    """E1 measurement artifact. ``capital_go`` is false by construction;
+    ``implementability_eligible`` is true only on a full stage_pass."""
+
+    protocol = protocol_block(config)
+    protocol["e1"] = {
+        "placebo_seed": placebo_seed,
+        "placebo_draws": config.future_placebo_draws,
+        "cost_ladder_bps": list(E1_COST_LADDER_BPS),
+        "primary_cost_bps": config.future_primary_cost_bps,
+        "cost_application": (
+            "round-trip 2x cost_bps subtracted from the traded (event) leg only; "
+            "the placebo leg stays gross — a cost-symmetric placebo would cancel "
+            "and make the frozen cost ladder vacuous"
+        ),
+        "excess_benchmark": (
+            "same-entry-date habitat-eligible-universe mean open-to-open forward "
+            "return (Gate-1a machinery, ADR 0002 universe floor)"
+        ),
+        "placebo_candidate_rule": (
+            "uniform over the event symbol's habitat-eligible sessions with full "
+            "forward-horizon coverage and a universe mean, within the measured span"
+        ),
+        "return_convention": "open_to_open_adjusted",
+        "long_leg_only": True,
+    }
+    return {
+        "stage": "E1",
+        "line": config.line,
+        "experiment_id": "cfob-e1",
+        "git_sha": git_sha,
+        "verdict": report.verdict,
+        "capital_go": False,
+        "implementability_eligible": report.verdict == str(Verdict.STAGE_PASS),
+        "protocol": protocol,
+        "exclusions": dict(exclusions),
+        "measurements": dict(measurements),
         "gates": report.to_dict()["gates"],
         "all_hard_gates_passed": report.all_hard_gates_passed,
         "mode": mode,

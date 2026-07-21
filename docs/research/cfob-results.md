@@ -1,5 +1,8 @@
 # CFOB Stage D + F0 results
 
+> **Stage E1 (returns) has since been measured** under its separate authorisation:
+> see `docs/research/cfob-e1-results.md` and `fixtures/real-continuous/reports/cfob-e1.json`.
+
 **Date:** 2026-07-21  
 **Git SHA:** `f188f90469bda9cbfd59b29182d53e70ae2efe0a`  
 **Driver:** `fixtures/real-continuous/reports/research_cfob.py`  
