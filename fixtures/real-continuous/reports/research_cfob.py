@@ -461,6 +461,8 @@ def main() -> int:
         mode="sec-insider-tape-2006-present",
         notes={
             "quarters_read": counts.get("quarters_read", 0),
+            "cross_quarter_superseded": counts.get("cross_quarter_superseded", 0),
+            "dropped_by_global_dedupe": counts.get("dropped_by_global_dedupe", 0),
             "universe_eligible_clusters": len(eligible),
             **diagnostics,
         },

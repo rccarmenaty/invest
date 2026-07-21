@@ -89,6 +89,8 @@
   "mode": "sec-insider-tape-2006-present",
   "notes": {
     "quarters_read": 81,
+    "cross_quarter_superseded": 72,
+    "dropped_by_global_dedupe": 72,
     "universe_eligible_clusters": 9645,
     "measured_span": "2006-01-01..2025-12-31",
     "clusters_out_of_price_span": 334,
