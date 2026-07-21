@@ -16,7 +16,7 @@
 | R2-1 xs-reversal | Settled **kill_line** (`docs/research/xs-reversal-results.md`) |
 | PEAD F0 | Settled **kill_line** (`docs/research/pead-f0-results.md`) |
 | CMFT Stage A | Event-only re-open #74 dual-exited **underpowered-stop** (`docs/research/cmft-results.md`); T1 not trained; **not** a tree-edge falsification |
-| Form-4 | No auto-start |
+| Form-4 (CFOB) | Event-only re-open #76 settled **kill_line** at E1 (`docs/research/cfob-e1-results.md`) |
 | Capital | **Honest liquid beta** only |
 | Allowed | **Non-claim engineering** only |
 | Forbidden | New CS alpha lines; PEAD tape-for-alpha; Form-4 F0; residual rescue / ranking / DAMB; CMFT T1 train or K0 retune on #74 artifact; curiosity re-runs; threshold retuning |
@@ -32,6 +32,7 @@ Two sequential funded lines after residual_hope DIE failed cleanly: R2-1 on sign
 | --- | --- | --- | --- |
 | Full-Stop seal | — | CS alpha budget ended | 2026-07-21 |
 | CMFT Stage A | #74 | **underpowered-stop** (full-depth SEP 1998–2025; K0 fail; T1 skipped); loop closed | 2026-07-21 |
+| CFOB E1 | #76 | **kill_line** — year-concentration hard gate (2009 carries 31.0% of positive contribution vs 25% cap; placebo t=5.46, trimmed t=4.52, SPY beat all passed); Full-Stop re-sealed | 2026-07-22 |
 
 After a dual-exit on an event-only re-open, **Full-Stop default resumes** until the next new PRD + grill. Settled non-claims on #74: do not narrate “trees have no edge.”
 
