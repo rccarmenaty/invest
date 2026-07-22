@@ -1,0 +1,365 @@
+{
+  "stage": "C+D",
+  "line": "cmp-opportunistic-form4-baseline",
+  "experiment_id": "cmp-b-c-d",
+  "git_sha": "16932c4c8637a96fa0bc2e3673bec79e7ddfd5d6-dirty",
+  "verdict": "underpowered_stop",
+  "capital_go": false,
+  "implementability_eligible": false,
+  "protocol": {
+    "transaction_code": "P",
+    "min_gross_value": "10000",
+    "staleness_cap_days": 10,
+    "history_years": 3,
+    "cmp_primary_class": "opportunistic",
+    "cmp_negative_control": "routine",
+    "cluster_object_primary": false,
+    "min_price": "5",
+    "gate_on_min_price": false,
+    "min_price_role": "diagnostic_on_adjusted_close",
+    "min_dollar_volume": "2000000",
+    "min_dollar_volume_role": "primary_habitat_gate",
+    "dollar_volume_window": 20,
+    "min_history_bars": 252,
+    "secondary_min_dollar_volume": "10000000",
+    "min_events": 7500,
+    "min_contributing_years": 12,
+    "min_year_share": 0.02,
+    "max_year_share": 0.25,
+    "mds_bar": 0.0125,
+    "excess_dispersion": 0.38,
+    "power_z": 2.8,
+    "horizon_sessions": 60,
+    "min_mapping_rate": 0.9,
+    "future_e1_bars": {
+      "min_clustered_t": 3.0,
+      "trimmed_min_t": 2.0,
+      "winsor_tail": 0.01,
+      "primary_cost_bps": 25.0,
+      "placebo_draws": 100,
+      "placebo_seed": 7920260722
+    },
+    "known_time_axis": "filing_date_day_granular",
+    "known_time_conservatism": "SEC Insider Transactions Data Sets carry no acceptance timestamp; entry is the open of the first trading day strictly after filing_date",
+    "entry_rule": "next_open_after_filing_date",
+    "classification_rule": "activity in each of prior 3 calendar years using only known_time < evaluation; same calendar month in all three years \u2192 routine; else opportunistic; else unclassified"
+  },
+  "counts": {
+    "total_rows": 6852440,
+    "qualified": 375332,
+    "wrong_code": 6001837,
+    "disposals": 3625,
+    "below_size_floor": 404819,
+    "stale": 28228,
+    "amendment_superseded": 27487,
+    "unparseable_value": 11112,
+    "late_filed": 9,
+    "indirect_ownership": 156768
+  },
+  "classification": {
+    "total_purchases": 338518,
+    "opportunistic": 42934,
+    "routine": 83343,
+    "unclassified": 212241,
+    "opportunistic_events": 26328,
+    "routine_events": 52443
+  },
+  "events": {
+    "raw_opportunistic": 26328,
+    "universe_eligible_opportunistic": 10307,
+    "de_overlapped_opportunistic": 5842,
+    "required_for_mds_bar": 7246,
+    "mds_at_measured_n": 0.013920692864661915,
+    "year_shares": {
+      "2007": 0.0017117425539198905,
+      "2008": 0.03663129065388566,
+      "2009": 0.06299212598425197,
+      "2010": 0.051181102362204724,
+      "2011": 0.0641903457719959,
+      "2012": 0.048099965765148925,
+      "2013": 0.04655939746662102,
+      "2014": 0.04827114002054091,
+      "2015": 0.06641561109209175,
+      "2016": 0.051181102362204724,
+      "2017": 0.05511811023622047,
+      "2018": 0.0657309140705238,
+      "2019": 0.053919890448476546,
+      "2020": 0.07292023279698734,
+      "2021": 0.05066757959602876,
+      "2022": 0.06607326258130777,
+      "2023": 0.05700102704553235,
+      "2024": 0.0484423142759329,
+      "2025": 0.052892844916124615
+    }
+  },
+  "gates": [
+    {
+      "id": "C1-parse",
+      "passed": true,
+      "severity": "hard",
+      "reason": "archives parsed=81/81; reconcile ok"
+    },
+    {
+      "id": "C2-map",
+      "passed": true,
+      "severity": "hard",
+      "reason": "mapping rate=0.9019 (338518/375332) vs floor 0.9"
+    },
+    {
+      "id": "C3-class",
+      "passed": true,
+      "severity": "hard",
+      "reason": "opportunistic=42934 (events=26328); routine=83343 (events=52443); unclassified=212241; primary=opportunistic only"
+    },
+    {
+      "id": "C4-protocol",
+      "passed": true,
+      "severity": "hard",
+      "reason": "protocol freeze and trial ledger present; primary=CMP opportunistic"
+    },
+    {
+      "id": "D1-volume",
+      "passed": false,
+      "severity": "hard",
+      "reason": "de-overlapped opportunistic events=5842 vs floor 7500 (MDS=0.0139 vs bar 0.0125)"
+    },
+    {
+      "id": "D2-spread",
+      "passed": true,
+      "severity": "hard",
+      "reason": "years contributing >=2%: 18 vs floor 12"
+    },
+    {
+      "id": "D3-year-mass",
+      "passed": true,
+      "severity": "hard",
+      "reason": "max year event share=0.0729 (2020) vs cap 0.25"
+    },
+    {
+      "id": "D4-mds",
+      "passed": false,
+      "severity": "hard",
+      "reason": "MDS=0.0139 at n=5842 vs bar 0.0125"
+    }
+  ],
+  "all_hard_gates_passed": false,
+  "mode": "sec-insider-tape-2006-present",
+  "notes": {
+    "quarters_read": 81,
+    "reference_source": "tickers-reference-cache",
+    "mapped_purchases": 338518,
+    "total_purchases": 375332,
+    "ambiguous_purchases": 4950,
+    "derivative_rows_in_qualified": 0,
+    "amendment_collisions": 0,
+    "reconcile_sample": [
+      {
+        "quarter": "2006Q2",
+        "dataset_form4_submissions": 63467,
+        "edgar_index_form4_unique_accessions": 63467,
+        "edgar_index_form4_lines": 130379,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2009Q4",
+        "dataset_form4_submissions": 42912,
+        "edgar_index_form4_unique_accessions": 42912,
+        "edgar_index_form4_lines": 89984,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2012Q3",
+        "dataset_form4_submissions": 39034,
+        "edgar_index_form4_unique_accessions": 39034,
+        "edgar_index_form4_lines": 81363,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2015Q1",
+        "dataset_form4_submissions": 65957,
+        "edgar_index_form4_unique_accessions": 65957,
+        "edgar_index_form4_lines": 135156,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2018Q2",
+        "dataset_form4_submissions": 49467,
+        "edgar_index_form4_unique_accessions": 49467,
+        "edgar_index_form4_lines": 102941,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2021Q4",
+        "dataset_form4_submissions": 40731,
+        "edgar_index_form4_unique_accessions": 40731,
+        "edgar_index_form4_lines": 86397,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      },
+      {
+        "quarter": "2024Q3",
+        "dataset_form4_submissions": 33050,
+        "edgar_index_form4_unique_accessions": 33050,
+        "edgar_index_form4_lines": 69502,
+        "relative_delta": 0.0,
+        "within_tolerance": true
+      }
+    ],
+    "stage_c": {
+      "verdict": "stage_pass",
+      "all_hard_gates_passed": true,
+      "gates": [
+        {
+          "id": "C1-parse",
+          "passed": true,
+          "severity": "hard",
+          "reason": "archives parsed=81/81; reconcile ok"
+        },
+        {
+          "id": "C2-map",
+          "passed": true,
+          "severity": "hard",
+          "reason": "mapping rate=0.9019 (338518/375332) vs floor 0.9"
+        },
+        {
+          "id": "C3-class",
+          "passed": true,
+          "severity": "hard",
+          "reason": "opportunistic=42934 (events=26328); routine=83343 (events=52443); unclassified=212241; primary=opportunistic only"
+        },
+        {
+          "id": "C4-protocol",
+          "passed": true,
+          "severity": "hard",
+          "reason": "protocol freeze and trial ledger present; primary=CMP opportunistic"
+        }
+      ]
+    },
+    "stage_d": {
+      "verdict": "underpowered_stop",
+      "all_hard_gates_passed": false,
+      "gates": [
+        {
+          "id": "D1-volume",
+          "passed": false,
+          "severity": "hard",
+          "reason": "de-overlapped opportunistic events=5842 vs floor 7500 (MDS=0.0139 vs bar 0.0125)"
+        },
+        {
+          "id": "D2-spread",
+          "passed": true,
+          "severity": "hard",
+          "reason": "years contributing >=2%: 18 vs floor 12"
+        },
+        {
+          "id": "D3-year-mass",
+          "passed": true,
+          "severity": "hard",
+          "reason": "max year event share=0.0729 (2020) vs cap 0.25"
+        },
+        {
+          "id": "D4-mds",
+          "passed": false,
+          "severity": "hard",
+          "reason": "MDS=0.0139 at n=5842 vs bar 0.0125"
+        }
+      ]
+    },
+    "routine_events_diagnostic": 52443,
+    "e1_status": "refused_until_human_go",
+    "measured_span": "2006-01-01..2025-12-31",
+    "events_out_of_price_span": 225,
+    "secondary_10m_band_events": 5489,
+    "adjusted_price_below_5_count": 1158,
+    "price_floor_role": "diagnostic_on_adjusted_close",
+    "no_price_history_by_year": {
+      "2007": 3,
+      "2008": 81,
+      "2009": 186,
+      "2010": 169,
+      "2011": 158,
+      "2012": 164,
+      "2013": 247,
+      "2014": 254,
+      "2015": 217,
+      "2016": 170,
+      "2017": 149,
+      "2018": 131,
+      "2019": 89,
+      "2020": 141,
+      "2021": 98,
+      "2022": 124,
+      "2023": 111,
+      "2024": 96,
+      "2025": 84
+    },
+    "insufficient_history_by_year": {
+      "2007": 1,
+      "2008": 21,
+      "2009": 20,
+      "2010": 42,
+      "2011": 90,
+      "2012": 75,
+      "2013": 87,
+      "2014": 112,
+      "2015": 102,
+      "2016": 75,
+      "2017": 70,
+      "2018": 121,
+      "2019": 70,
+      "2020": 120,
+      "2021": 217,
+      "2022": 100,
+      "2023": 19,
+      "2024": 44,
+      "2025": 46
+    },
+    "below_dollar_volume_by_year": {
+      "2007": 4,
+      "2008": 294,
+      "2009": 999,
+      "2010": 840,
+      "2011": 967,
+      "2012": 820,
+      "2013": 506,
+      "2014": 559,
+      "2015": 785,
+      "2016": 709,
+      "2017": 548,
+      "2018": 626,
+      "2019": 591,
+      "2020": 664,
+      "2021": 495,
+      "2022": 666,
+      "2023": 774,
+      "2024": 456,
+      "2025": 389
+    },
+    "universe_total_by_year": {
+      "2007": 21,
+      "2008": 824,
+      "2009": 1798,
+      "2010": 1555,
+      "2011": 1915,
+      "2012": 1504,
+      "2013": 1282,
+      "2014": 1382,
+      "2015": 1710,
+      "2016": 1497,
+      "2017": 1321,
+      "2018": 1597,
+      "2019": 1347,
+      "2020": 1748,
+      "2021": 1412,
+      "2022": 1599,
+      "2023": 1467,
+      "2024": 1103,
+      "2025": 1021
+    }
+  }
+}
