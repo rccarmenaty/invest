@@ -2,7 +2,7 @@
   "stage": "C+D",
   "line": "cmp-opportunistic-form4-baseline",
   "experiment_id": "cmp-b-c-d",
-  "git_sha": "d2c0ea7107ec811774d4cc4e08abecb5c0bbfe36-dirty",
+  "git_sha": "16932c4c8637a96fa0bc2e3673bec79e7ddfd5d6-dirty",
   "verdict": "underpowered_stop",
   "capital_go": false,
   "implementability_eligible": false,

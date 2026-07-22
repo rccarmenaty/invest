@@ -1,7 +1,7 @@
 # CMP opportunistic Form-4 baseline — Stage C+D results
 
 **Date:** 2026-07-22  
-**Git SHA:** `d2c0ea7107ec811774d4cc4e08abecb5c0bbfe36-dirty`  
+**Git SHA:** `16932c4c8637a96fa0bc2e3673bec79e7ddfd5d6-dirty`  
 **Driver:** `fixtures/real-continuous/reports/research_cmp.py`  
 **Artifact:** `fixtures/real-continuous/reports/cmp-structure.json`  
 **Parent PRD:** #79 (grilled 2026-07-22)  
