@@ -3,6 +3,24 @@
 Fixture: continuous 2019-01-02 → 2025-12-31 pull (market-context-v2, generation_span
 2019-01-02..2025-12-31, 6477 symbols; bars.json 1.3GB). Pulled 2026-07-18 on main @ 0eeb903.
 
+## EVENTS-22 F0 sealed feasibility driver
+
+`research_events22_f0.py` consumes a strict JSON manifest containing only
+EVENTS rows, point-in-time listing and eligibility facts, session dates,
+integrity evidence, input hashes, and an optional pre-existing power basis. It
+emits a deterministic self-hashed F0 artifact. The manifest rejects unknown
+fields; reaction values and forward returns are outside this implementation.
+
+```sh
+uv run python fixtures/real-continuous/reports/research_events22_f0.py \
+  --input /path/to/events22-f0-input.json \
+  --out fixtures/real-continuous/reports/events22-f0.json
+```
+
+D+2/h60 is recorded as the future primary design and D+1/h60 as the future
+secondary design. Neither is measured in F0. Even `f0_pass` stops at human E1
+approval and always records `capital_go=false`.
+
 ## backtest-baseline.json
 
 Produced 2026-07-18, code main @ 0eeb903 (via worktree src):

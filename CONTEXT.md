@@ -32,6 +32,31 @@ _Avoid_: curiosity re-runs, threshold retuning, “just one more” gate rescue
 
 ### Experiments
 
+**Sealed F0**:
+A feasibility and integrity stage that may inspect identities, dates, universe
+facts, counts, and pre-existing power inputs, but cannot inspect or expose the
+research line's reaction or forward-return outcomes. A pass stops for explicit
+human approval; it does not silently begin return evaluation.
+_Avoid_: dry-run E1, preliminary backtest, outcome smoke test
+
+**EVENTS-22 event**:
+One issuer × normalized known date for a SHARADAR/EVENTS code-22 Results of
+Operations / Item 2.02 row set. Raw duplicate/co-filing rows remain linked in
+the audit ledger before first-wins issuer de-overlap.
+_Avoid_: one provider row (raw input), earnings timestamp (the tape is date-only)
+
+**Normalized known date (EVENTS-22)**:
+The first exchange session on or after the provider's date-only event value.
+Same-day execution is forbidden; D+2 open is the frozen future primary entry
+and D+1 open is secondary only.
+_Avoid_: filing acceptance time, announcement timestamp, same-day entry
+
+**Underpowered stop**:
+An F0 terminal outcome when a sealed pre-existing variance/dependence basis
+cannot establish the frozen target power without viewing line outcomes. It is
+not an integrity failure and does not authorize E1.
+_Avoid_: program kill, weak result, permission to estimate variance from the line
+
 **Structure test**:
 Portfolio experiment that fixes entry event and varies hold/exit/admission only — not ranking science. Phase 2 is a structure test.
 _Avoid_: strategy backtest (ambiguous), ranking test
