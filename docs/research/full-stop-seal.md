@@ -16,11 +16,12 @@
 | R2-1 xs-reversal | Settled **kill_line** (`docs/research/xs-reversal-results.md`) |
 | PEAD F0 | Settled **kill_line** (`docs/research/pead-f0-results.md`) |
 | CMFT Stage A | Event-only re-open #74 dual-exited **underpowered-stop** (`docs/research/cmft-results.md`); T1 not trained; **not** a tree-edge falsification |
-| Form-4 | No auto-start |
-| Capital | **Honest liquid beta** only |
-| Allowed | **Non-claim engineering** only |
-| Forbidden | New CS alpha lines; PEAD tape-for-alpha; Form-4 F0; residual rescue / ranking / DAMB; CMFT T1 train or K0 retune on #74 artifact; curiosity re-runs; threshold retuning |
-| End condition | **Event-only re-open** — new PRD + grill + named hypothesis |
+| Form-4 clusters (CFOB) | Event-only re-open #76 settled **kill_line** at E1 on year-concentration (PR #78); cluster object frozen dead |
+| Form-4 CMP opportunistic | **Event-only re-open authorised** 2026-07-22 — baseline only, SEC tape, no SF1/SF2; see ADR `0003` + active PRD issue; GP deferred |
+| Capital | **Honest liquid beta** only while no implementability_eligible line exists |
+| Allowed | Active authorised re-open work; otherwise **non-claim engineering** only |
+| Forbidden | Cluster E1 rescue; PEAD tape-for-alpha; residual rescue / ranking / DAMB; CMFT T1 on #74; GP on real Form-4 targets before CMP baseline stage_pass; curiosity re-runs; threshold retuning; SF1/SF2 required framing for CMP |
+| End condition | Dual-exit on active re-open → Full-Stop default resumes; else new PRD + grill |
 
 ## Why (short)
 
@@ -32,8 +33,10 @@ Two sequential funded lines after residual_hope DIE failed cleanly: R2-1 on sign
 | --- | --- | --- | --- |
 | Full-Stop seal | — | CS alpha budget ended | 2026-07-21 |
 | CMFT Stage A | #74 | **underpowered-stop** (full-depth SEP 1998–2025; K0 fail; T1 skipped); loop closed | 2026-07-21 |
+| CFOB E1 (clusters) | #76 | **kill_line** — year-concentration (2009 ≈ 31% of positive contribution); placebo/trimmed/SPY passed; PR #78 | 2026-07-22 |
+| CMP opportunistic baseline | **#79** | **re-open authorised** — SEC tape only; CMP baseline before GP; ADR 0003 | 2026-07-22 |
 
-After a dual-exit on an event-only re-open, **Full-Stop default resumes** until the next new PRD + grill. Settled non-claims on #74: do not narrate “trees have no edge.”
+After a dual-exit on an event-only re-open, **Full-Stop default resumes** until the next new PRD + grill. Settled non-claims on #74: do not narrate “trees have no edge.” Settled on #76: do not re-litigate purchase **clusters** or retune E1 year-share.
 
 ## Not decided here
 

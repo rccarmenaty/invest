@@ -103,3 +103,21 @@ _Avoid_: program-wide freeze as a synonym for residual freeze; Full-Stop (budget
 **Event-only re-open**:
 Hard freeze, Full-Stop, or a line program kill ends only on an explicit human decision (new PRD + grill, or written re-open with named hypothesis). No calendar review, no auto-start from new data entitlement alone, no silent agent restart.
 _Avoid_: check-back-Friday, silent agent restart, “we have SF1 now”
+
+### Form-4 / CMP
+
+**Purchase cluster**:
+≥2 distinct insiders of one issuer with qualifying open-market purchases whose trade dates fall inside a frozen window (CFOB primary object on #76). Settled **kill_line** at E1 on year-concentration; not the CMP baseline object.
+_Avoid_: opportunistic purchase (different object), “Form-4 signal” (ambiguous)
+
+**Opportunistic purchase**:
+A point-in-time CMP-classified non-routine open-market (code P) non-derivative insider purchase that clears frozen size, staleness, and habitat filters. Primary event object for the CMP baseline re-open.
+_Avoid_: purchase cluster, all Form-4 buys, routine purchase as primary
+
+**Routine insider (CMP)**:
+An insider who traded in each of the prior three years and traded in the same calendar month in those three years; classification uses only history available before the evaluation trade. Routine purchases are a **negative-control diagnostic**, not the primary claim.
+_Avoid_: “scheduled 10b5-1 only”, silent primary flip when routine share is high
+
+**CMP baseline**:
+Unconditional event study on opportunistic purchases with frozen entry, horizon, costs, placebo, and year-share gates — **before** any ranking, GP, or symbolic search over features.
+_Avoid_: GP-rescued Form-4, cluster E1 re-cut, implementability as research verdict
