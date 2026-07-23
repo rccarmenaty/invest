@@ -33,11 +33,15 @@ class Verdict(StrEnum):
     KILL_LINE = "kill_line"
     UNDERPOWERED_STOP = "underpowered_stop"
     STAGE_PASS = "stage_pass"
+    # A red E1 or E2 gate: the line is held at the current stage, not killed.
+    PROMOTION_BLOCK = "promotion_block"
 
 
 @dataclass(frozen=True)
 class ProtocolConfig:
-    """Frozen CFOB protocol. Every threshold here was set in the PRD #76 grill.
+    """Frozen CFOB protocol. Stage-D/F0 thresholds were set in the PRD #76 grill;
+    the E1/E2 returns-gate constants (``estage_*``) were set in the ADR 0003 grill
+    (2026-07-23).
 
     Changing any field is a new trial and must be recorded as such.
     """
@@ -84,12 +88,42 @@ class ProtocolConfig:
     max_unmapped_rate_ratio: float = 3.0
     min_year_weight_for_composition: float = 0.01
 
-    # E1 bars (frozen now, evaluated only under a separate authorisation)
+    # E1 bars (placeholder t-thresholds serialized in the frozen D/F0 artifact;
+    # retained as diagnostics — the live E1/E2 gate uses the estage_* fields below)
     future_min_clustered_t: float = 3.0
     future_trimmed_min_t: float = 2.0
     future_winsor_tail: float = 0.01
     future_primary_cost_bps: float = 25.0
     future_placebo_draws: int = 100
+
+    # E1/E2 returns gates (ADR 0003, grilled 2026-07-23). Frozen constants for the
+    # two-gate conjunctive funnel on one common cohort. Changing any is a new trial.
+    # Return / cost (§1): open-to-open 60-session net; 25 bps round-trip primary,
+    # 10/50 bps non-gating ladder.
+    estage_cost_bps: float = 25.0
+    estage_cost_ladder_bps: tuple[float, ...] = (10.0, 25.0, 50.0)
+    # Cohort estimator T(d) (§3): two-sided 1% winsorized equal-weight mean;
+    # below 2,000 clusters both gates return underpowered_stop.
+    estage_winsor_tail: float = 0.01
+    estage_min_cohort: int = 2000
+    # Block bootstrap gate (§2): null-imposed circular Politis–Romano over calendar
+    # months, geometric restart q=1/6 (expected 6 months), one-sided α=0.005,
+    # p=(1+K)/(B+1) with B=99,999 valid replications.
+    estage_bootstrap_replications: int = 99_999
+    estage_bootstrap_alpha: float = 0.005
+    estage_block_expected_months: int = 6
+    estage_block_restart_q: float = 1.0 / 6.0
+    # Placebo (§5): exactly 100 admissible dates, uniform without replacement.
+    estage_placebo_draws: int = 100
+    # E2 beta / benchmark (§4): 252-session pre-event OLS beta, ≥200 valid pairs;
+    # LOO habitat factor needs ≥50 distinct non-focal names per day.
+    estage_beta_window_sessions: int = 252
+    estage_beta_min_pairs: int = 200
+    estage_factor_breadth_floor: int = 50
+    # Reproducibility contract (§6): PCG64 streams seeded from SHA-256 of
+    # (master seed, spec version, gate tag[, cluster id]).
+    estage_master_seed: int = 0xCF0B_E1E2
+    estage_spec_version: str = "cfob-e1-e2-1"
 
 
 PROTOCOL = ProtocolConfig()
@@ -571,7 +605,7 @@ class UniverseDecision:
 
 def evaluate_universe_membership(
     *,
-    bars: Sequence[tuple[date, float, float]],
+    bars: Sequence[tuple[date, float, float, float]],
     known_time: date,
     config: ProtocolConfig = PROTOCOL,
 ) -> UniverseDecision:
@@ -580,7 +614,8 @@ def evaluate_universe_membership(
     adjusted closes unless ``gate_on_min_price`` is set; the $10M house band is
     reported as a secondary.
 
-    ``bars`` are (session date, adjusted close, volume) sorted ascending.
+    ``bars`` are (session date, adjusted open, adjusted close, volume) sorted
+    ascending — the canonical CFOB bar shape (open carried for the E1/E2 gates).
     """
 
     if not bars:
@@ -589,8 +624,8 @@ def evaluate_universe_membership(
     if len(prior) < config.min_history_bars:
         return UniverseDecision(False, "insufficient_history", None, False, False)
     window = prior[-config.dollar_volume_window :]
-    dollar_volume = median(close * volume for _, close, volume in window)
-    below_floor = prior[-1][1] < float(config.min_price)
+    dollar_volume = median(close * volume for _, _open, close, volume in window)
+    below_floor = prior[-1][2] < float(config.min_price)
     if dollar_volume < float(config.min_dollar_volume):
         return UniverseDecision(False, "below_dollar_volume", dollar_volume, below_floor, False)
     if below_floor and config.gate_on_min_price:
