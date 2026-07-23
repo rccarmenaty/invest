@@ -167,8 +167,14 @@ def load_purchases(*, through: date, verbose: bool = True) -> tuple[list[Insider
     return list(purchases), totals
 
 
-def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, float, float]]]:
-    """Read one SEP year parquet, keeping only symbols with clusters."""
+def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, float, float, float]]]:
+    """Read one SEP year parquet, keeping only symbols with clusters.
+
+    Bars are the canonical ``(date, open_adj, close_adj, volume)`` shape: the
+    opening price is carried because the E1/E2 returns gates measure open-to-open
+    returns (ADR 0003 §1). ``open_adj`` is a hard requirement — a parquet without
+    it fails closed here, it is never synthesized.
+    """
 
     import pyarrow.parquet as pq
 
@@ -177,7 +183,7 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
         if FIRST_YEAR - 1 <= year <= date.today().year:
             raise SystemExit(f"fail-closed: SEP year parquet missing for {year}: {path}")
         return {}
-    wanted = ["symbol", "date", "close_adj", "volume"]
+    wanted = ["symbol", "date", "open_adj", "close_adj", "volume"]
     available = set(pq.ParquetFile(path).schema_arrow.names)
     missing = [column for column in wanted if column not in available]
     if missing:
@@ -185,17 +191,20 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
     table = pq.read_table(path, columns=wanted)
     tickers = table.column("symbol").to_pylist()
     dates = table.column("date").to_pylist()
+    opens = table.column("open_adj").to_pylist()
     closes = table.column("close_adj").to_pylist()
     volumes = table.column("volume").to_pylist()
 
-    out: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
-    for ticker, day, close, volume in zip(tickers, dates, closes, volumes, strict=False):
+    out: dict[str, list[tuple[date, float, float, float]]] = defaultdict(list)
+    for ticker, day, open_, close, volume in zip(
+        tickers, dates, opens, closes, volumes, strict=False
+    ):
         if ticker not in symbols:
             continue
-        if close is None or volume is None:
+        if open_ is None or close is None or volume is None:
             continue
         day = day.date() if hasattr(day, "date") else day
-        out[ticker].append((day, float(close), float(volume)))
+        out[ticker].append((day, float(open_), float(close), float(volume)))
     return out
 
 
@@ -346,7 +355,7 @@ def apply_universe_filter(
                 continue
             for symbol, bars in _load_sep_year(load_year, symbols).items():
                 history[symbol].extend(bars)
-                market_sessions.update(day for day, _, _ in bars)
+                market_sessions.update(day for day, *_ in bars)
         for symbol in list(history):
             history[symbol] = sorted(set(history[symbol]))[-600:]
 
