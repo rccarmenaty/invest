@@ -186,7 +186,7 @@ def test_bootstrap_is_reproducible_for_a_fixed_seed() -> None:
 
 from datetime import date, timedelta  # noqa: E402
 
-from invest.application.cfob import ProtocolConfig  # noqa: E402
+from invest.application.cfob import PROTOCOL, ProtocolConfig  # noqa: E402
 from invest.application.cfob_returns import (  # noqa: E402
     ClusterReturnInputs,
     E1Cohort,
@@ -346,3 +346,244 @@ def test_evaluate_e1_gate_passes_on_a_planted_positive_effect() -> None:
     assert result.p is not None and result.p < 0.005
     assert result.drop_counts == {"x": 3}  # ledger propagated
     assert result.month_span == 200
+
+
+# --- E2 gate: habitat LOO factor, pre-event beta, benchmark residual (§4) -----
+
+from invest.application.cfob_returns import (  # noqa: E402
+    ClusterE2Inputs,
+    E2Cohort,
+    assemble_e2_cohort,
+    beta_benchmark,
+    date_e2_residual,
+    evaluate_e2_gate,
+    factor_daily_returns,
+    loo_factor,
+    ols_beta,
+)
+
+
+def test_loo_factor_excludes_the_focal_name() -> None:
+    # sum over 4 names incl focal = 0.40, focal = 0.10 → non-focal mean = 0.30/3.
+    assert loo_factor(sum_r=0.40, count=4, r_focal=0.10) == pytest.approx(0.10)
+
+
+def test_loo_factor_requires_a_non_focal_name() -> None:
+    with pytest.raises(ValueError):
+        loo_factor(sum_r=0.05, count=1, r_focal=0.05)
+
+
+def test_factor_daily_returns_match_loo_factor_and_floor_marks_missing() -> None:
+    # 4 sessions → 3 daily returns. Counts chosen around the ≥50 non-focal floor:
+    # count-1 = 51, 50, 49 → the third day is below the floor and is NaN.
+    opens = [100.0, 110.0, 121.0, 133.1]  # +10% each session
+    habitat_sum = [5.0, 6.0, 7.0]
+    habitat_count = [52, 51, 50]
+    factor = factor_daily_returns(opens, habitat_sum, habitat_count, breadth_floor=50)
+    assert factor.shape == (3,)
+    # Days 0 and 1 clear the floor and equal the scalar loo_factor exactly.
+    assert factor[0] == pytest.approx(loo_factor(5.0, 52, 0.10))
+    assert factor[1] == pytest.approx(loo_factor(6.0, 51, 0.10))
+    assert np.isnan(factor[2])  # count-1 = 49 < 50 → missing, never zero-filled
+
+
+def test_ols_beta_matches_numpy_polyfit() -> None:
+    rng = np.random.default_rng(11)
+    x = rng.normal(size=300)
+    y = 1.7 * x + 0.3 + rng.normal(scale=0.1, size=300)
+    beta = ols_beta(y, x, min_pairs=200)
+    assert beta is not None
+    assert beta == pytest.approx(float(np.polyfit(x, y, 1)[0]))
+
+
+def test_ols_beta_drops_nan_pairs_and_the_200_pair_rule_governs() -> None:
+    # Asymmetric handling: below-floor days show up as NaN in the factor window
+    # and are simply dropped; the fit survives while ≥200 finite pairs remain.
+    rng = np.random.default_rng(12)
+    x = 2.0 * rng.normal(size=252)
+    y = 0.9 * x + rng.normal(scale=0.05, size=252)
+    holed = x.copy()
+    holed[:50] = np.nan  # 50 missing → 202 valid pairs, still ≥ 200
+    beta = ols_beta(y, holed, min_pairs=200)
+    assert beta is not None
+    holed[:53] = np.nan  # 199 valid pairs → below the floor, no beta
+    assert ols_beta(y, holed, min_pairs=200) is None
+
+
+def test_ols_beta_does_not_extend_backward_below_min_pairs() -> None:
+    # A window with fewer than min_pairs sessions returns None — no back-extension.
+    rng = np.random.default_rng(13)
+    x = rng.normal(size=150)
+    y = x + rng.normal(scale=0.1, size=150)
+    assert ols_beta(y, x, min_pairs=200) is None
+
+
+def test_beta_benchmark_compounds_per_day_not_the_naive_approximation() -> None:
+    beta = 1.3
+    h = [0.02, -0.01, 0.03, 0.015, -0.02]
+    per_day = beta_benchmark(beta, h)
+    naive = beta * (float(np.prod([1 + x for x in h])) - 1.0)
+    # The per-daily-compounded benchmark is provably different from β·[∏(1+h)−1].
+    assert per_day != pytest.approx(naive)
+    assert per_day == pytest.approx(float(np.prod([1 + beta * x for x in h])) - 1.0)
+
+
+def test_beta_benchmark_has_no_intercept_beta_zero_is_flat() -> None:
+    # With no estimated intercept, beta=0 makes the benchmark exactly 0 — the
+    # residual is then the raw net return (alpha handled by the placebo, not here).
+    assert beta_benchmark(0.0, [0.05, -0.03, 0.10]) == pytest.approx(0.0)
+
+
+def _e2_opens_and_habitat(
+    n: int, *, count: int = 60, drift: float = 0.0
+) -> tuple[list[float], list[float], list[int]]:
+    """A flat-ish price series plus a focal-inclusive habitat aggregate wide enough
+    to clear the breadth floor on every session."""
+    opens = [100.0 * (1.0 + drift) ** i for i in range(n)]
+    # habitat_sum is arbitrary but finite; count clears count-1 >= 50.
+    habitat_sum = [0.001 * (i % 7) for i in range(n - 1)]
+    habitat_count = [count] * (n - 1)
+    return opens, habitat_sum, habitat_count
+
+
+def test_date_e2_residual_is_none_when_a_forward_day_is_below_breadth() -> None:
+    n = 400
+    opens, hsum, hcount = _e2_opens_and_habitat(n)
+    hcount = list(hcount)
+    hcount[300] = 40  # one forward session below the floor → factor NaN there
+    focal_daily = np.asarray(opens[1:], float) / np.asarray(opens[:-1], float) - 1.0
+    factor = factor_daily_returns(opens, hsum, hcount, breadth_floor=50)
+    # entry at 260 → forward window 260..319 includes the holed session 300.
+    r = date_e2_residual(
+        opens, focal_daily, factor, 260, horizon=60, cost_bps=25.0, beta_window=252, min_pairs=200
+    )
+    assert r is None
+
+
+def test_date_e2_residual_is_finite_with_full_support() -> None:
+    n = 400
+    opens, hsum, hcount = _e2_opens_and_habitat(n)
+    focal_daily = np.asarray(opens[1:], float) / np.asarray(opens[:-1], float) - 1.0
+    factor = factor_daily_returns(opens, hsum, hcount, breadth_floor=50)
+    r = date_e2_residual(
+        opens, focal_daily, factor, 300, horizon=60, cost_bps=25.0, beta_window=252, min_pairs=200
+    )
+    assert r is not None and np.isfinite(r)
+
+
+def test_beta_window_excludes_the_entry_straddling_return() -> None:
+    # The beta window must end *before* the entry open — the daily return ending
+    # at the entry open (index entry-1) spans the filing reaction and is excluded,
+    # while the return before it (index entry-2) is the last one included.
+    n, entry = 400, 300
+    rng = np.random.default_rng(7)
+    steps = rng.normal(scale=0.01, size=n - 1)
+    opens = [100.0]
+    for step in steps:
+        opens.append(opens[-1] * (1.0 + step))
+    focal_daily = np.asarray(opens[1:]) / np.asarray(opens[:-1]) - 1.0
+    factor = 0.5 * focal_daily + rng.normal(scale=0.001, size=n - 1)  # identifiable beta
+
+    kw = dict(horizon=60, cost_bps=0.0, beta_window=252, min_pairs=200)
+    base = date_e2_residual(opens, focal_daily, factor, entry, **kw)
+    assert base is not None
+
+    straddle = factor.copy()
+    straddle[entry - 1] += 5.0  # the excluded straddling return — residual unchanged
+    assert date_e2_residual(opens, focal_daily, straddle, entry, **kw) == pytest.approx(base)
+
+    included = factor.copy()
+    included[entry - 2] += 5.0  # the last included return — residual must move
+    assert date_e2_residual(opens, focal_daily, included, entry, **kw) != pytest.approx(base)
+
+
+def test_assemble_e2_cohort_counts_e2_support_drops() -> None:
+    cfg = ProtocolConfig(
+        estage_placebo_draws=5,
+        horizon_sessions=10,
+        estage_beta_window_sessions=30,
+        estage_beta_min_pairs=20,
+        estage_factor_breadth_floor=50,
+    )
+    base = date(2015, 1, 2)
+    n = 200
+    opens, hsum, hcount = _e2_opens_and_habitat(n, count=60, drift=0.001)
+    opens_t = tuple(opens)
+    hsum_t = tuple(hsum)
+    hcount_full = tuple(hcount)
+    # 1) full E2 support → kept. A real event at index 9 embargoes placebo indices
+    # 0..19, so every drawn placebo has a full pre-event beta window (E1's placebo
+    # admissibility does not itself pre-require the beta window — a placebo landing
+    # in the first `beta_window` sessions would otherwise drop as placebo_e2_support).
+    kept = ClusterE2Inputs("KEEP:1", base, opens_t, hsum_t, hcount_full, 40, (9,))
+    # 2) no entry session
+    no_entry = ClusterE2Inputs("NOENT:1", base, opens_t, hsum_t, hcount_full, None, ())
+    # 3) focal_e2_support: entry too early → beta window has < min_pairs sessions.
+    early = ClusterE2Inputs("EARLY:1", base, opens_t, hsum_t, hcount_full, 5, ())
+    cohort = assemble_e2_cohort([kept, no_entry, early], config=cfg)
+    assert cohort.size == 1
+    assert cohort.drop_counts["no_entry_session"] == 1
+    assert cohort.drop_counts["focal_e2_support"] == 1
+
+
+def test_assemble_e2_cohort_uses_the_same_placebo_dates_as_e1() -> None:
+    # E2 draws placebo indices with the same admissibility + per-cluster seed as
+    # E1, so the two cohorts share identical placebo dates for the same cluster.
+    cfg = ProtocolConfig(estage_placebo_draws=5, horizon_sessions=10)
+    base = date(2015, 1, 2)
+    n = 200
+    opens, hsum, hcount = _e2_opens_and_habitat(n, drift=0.001)
+    item_e1 = ClusterReturnInputs("SHARE:1", base, tuple(opens), 40, ())
+    from invest.application.cfob_returns import derive_seed as _derive
+    from invest.application.cfob_returns import (
+        admissible_placebo_indices as _adm,
+    )
+    from invest.application.cfob_returns import (
+        sample_placebo_indices as _samp,
+    )
+
+    adm = _adm(session_count=n, real_event_entry_indices=(), horizon=cfg.horizon_sessions)
+    seed = _derive(cfg.estage_master_seed, cfg.estage_spec_version, "placebo", "SHARE:1")
+    draw = _samp(adm, draws=cfg.estage_placebo_draws, seed=seed)
+    assert draw is not None  # the shared draw both gates resolve to
+    assert item_e1.entry_index == 40
+
+
+def test_evaluate_e2_gate_stops_under_the_cohort_floor() -> None:
+    cfg = ProtocolConfig(estage_min_cohort=2000)
+    cohort = E2Cohort(
+        d_values=tuple(0.01 for _ in range(10)),
+        month_keys=tuple((2015, 1 + i % 12) for i in range(10)),
+        drop_counts={"placebo_e2_support": 4},
+    )
+    result = evaluate_e2_gate(cohort, config=cfg)
+    assert result.underpowered is True
+    assert result.passed is False
+    assert result.p is None
+    assert result.drop_counts == {"placebo_e2_support": 4}
+
+
+def test_evaluate_e2_gate_passes_on_a_planted_positive_residual() -> None:
+    cfg = ProtocolConfig(
+        estage_min_cohort=2000,
+        estage_bootstrap_replications=999,
+        estage_bootstrap_alpha=0.005,
+    )
+    rng = np.random.default_rng(2)
+    n = 2400
+    d_values = tuple(float(x) for x in rng.normal(loc=0.5, scale=0.05, size=n))
+    month_keys = tuple((2000 + i // 12, 1 + i % 12) for i in range(n // 12) for _ in range(12))
+    cohort = E2Cohort(d_values=d_values, month_keys=month_keys, drop_counts={})
+    result = evaluate_e2_gate(cohort, config=cfg)
+    assert result.underpowered is False
+    assert result.passed is True
+    assert result.p is not None and result.p < 0.005
+
+
+def test_e2_gate_uses_a_separate_rng_stream_from_e1() -> None:
+    # The E1 and E2 gates must not share a bootstrap seed (gate-tag separation).
+    from invest.application.cfob_returns import derive_seed as _derive
+
+    e1 = _derive(PROTOCOL.estage_master_seed, PROTOCOL.estage_spec_version, "E1")
+    e2 = _derive(PROTOCOL.estage_master_seed, PROTOCOL.estage_spec_version, "E2")
+    assert e1 != e2

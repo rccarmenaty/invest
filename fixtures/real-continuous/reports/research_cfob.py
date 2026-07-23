@@ -54,9 +54,13 @@ from invest.application.cfob import (
 )
 from invest.application.cfob_returns import (
     E1GateResult,
+    E2GateResult,
     assemble_e1_cohort,
+    assemble_e2_cohort,
+    build_cluster_e2_inputs,
     build_cluster_return_inputs,
     evaluate_e1_gate,
+    evaluate_e2_gate,
 )
 from invest.domain.models import InsiderTransaction
 
@@ -70,6 +74,10 @@ REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
 REFERENCE_CACHE = TAPE_DIR / "tickers_reference_v2.json"
+# Daily habitat aggregate (ADR 0003 §4): per market session, the focal-inclusive
+# sum of open-to-open daily returns and the PIT-eligible name count. Built once
+# from the SEP panel and cached to parquet so E2 re-measures are cheap.
+HABITAT_CACHE = REPORTS_DIR / "cfob-habitat-daily.parquet"
 
 BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
 USER_AGENT = "invest-research ramoncarmenaty@gmail.com"
@@ -378,6 +386,149 @@ def measure_e1_gate(
     return result
 
 
+def _load_symbol_bars(symbols: set[str]) -> dict[str, list[tuple[date, float, float, float]]]:
+    """Per-symbol ascending ``(date, open, close, volume)`` bars, deduped across
+    year parquets. E2 needs close+volume (not just open) to evaluate point-in-time
+    habitat membership when building the daily aggregate."""
+
+    available_years = sorted(
+        int(path.stem.split("_")[1]) for path in SEP_DIR.glob("sep_*.parquet")
+    )
+    merged: dict[str, dict[date, tuple[float, float, float]]] = defaultdict(dict)
+    for year in available_years:
+        for symbol, bars in _load_sep_year(year, symbols).items():
+            for day, open_, close, volume in bars:
+                merged[symbol][day] = (open_, close, volume)
+    return {
+        symbol: [(day, *ocv) for day, ocv in sorted(day_bar.items())]
+        for symbol, day_bar in merged.items()
+    }
+
+
+def build_habitat_daily_aggregate(
+    bars_by_symbol: dict[str, list[tuple[date, float, float, float]]],
+) -> dict[date, tuple[float, int]]:
+    """The daily habitat aggregate (ADR 0003 §4): for each market session, the
+    focal-inclusive sum of open-to-open daily returns and the count of PIT-eligible
+    habitat names contributing them.
+
+    Membership is resolved per (symbol, session) with the frozen habitat floor
+    (``evaluate_universe_membership`` — 20-bar median dollar volume ≥ $2M, 252-bar
+    history) using only information available *at* that session, over a bounded
+    trailing window so the pass stays linear in sessions. Every eligible name
+    contributes its own return; the per-cluster leave-one-out removes the focal
+    downstream — so this single aggregate is reused across all cohort clusters.
+
+    Caveat (ADR 0003 §4 frozen formula): the LOO ``(sum_r − r_focal)/(count − 1)``
+    presumes the focal is one of the ``count`` eligible names on that session. That
+    holds across the focal's own qualifying window (it cleared the same floor); a
+    focal that *loses* eligibility mid-forward-window would be subtracted from a sum
+    that no longer contains it — a small bias flagged for the data-integrity review,
+    not corrected here (the frozen formula is not edited)."""
+
+    window = PROTOCOL.min_history_bars + PROTOCOL.dollar_volume_window + 8
+    daily_sum: dict[date, float] = defaultdict(float)
+    daily_count: dict[date, int] = defaultdict(int)
+    for bars in bars_by_symbol.values():
+        for s in range(len(bars) - 1):
+            day, open_, _close, _volume = bars[s]
+            decision = evaluate_universe_membership(
+                bars=bars[max(0, s - window) : s + 1], known_time=day
+            )
+            if not decision.eligible:
+                continue
+            daily_sum[day] += bars[s + 1][1] / open_ - 1.0  # open-to-open daily return
+            daily_count[day] += 1
+    return {day: (daily_sum[day], daily_count[day]) for day in daily_sum}
+
+
+def load_or_build_habitat_aggregate(
+    universe_symbols: set[str], *, verbose: bool = True
+) -> dict[date, tuple[float, int]]:
+    """Read the cached daily habitat aggregate, or build it once and cache to
+    parquet (ADR 0003 §4 — re-measures reuse the cache). The cache is keyed only
+    by the frozen habitat floor, so it is valid for any cohort drawn from it."""
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if HABITAT_CACHE.is_file():
+        table = pq.read_table(HABITAT_CACHE)
+        days = table.column("date").to_pylist()
+        sums = table.column("sum_r").to_pylist()
+        counts = table.column("count").to_pylist()
+        aggregate = {
+            (day.date() if hasattr(day, "date") else day): (float(s), int(c))
+            for day, s, c in zip(days, sums, counts, strict=True)
+        }
+        if verbose:
+            print(f"  habitat aggregate from cache: {len(aggregate):,} sessions")
+        return aggregate
+
+    if verbose:
+        print(f"  building daily habitat aggregate over {len(universe_symbols):,} symbols...")
+    bars = _load_symbol_bars(universe_symbols)
+    aggregate = build_habitat_daily_aggregate(bars)
+    ordered = sorted(aggregate.items())
+    table = pa.table(
+        {
+            "date": [day for day, _ in ordered],
+            "sum_r": [sc[0] for _, sc in ordered],
+            "count": [sc[1] for _, sc in ordered],
+        }
+    )
+    HABITAT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, HABITAT_CACHE)
+    if verbose:
+        print(f"  cached habitat aggregate: {len(aggregate):,} sessions → {HABITAT_CACHE}")
+    return aggregate
+
+
+def measure_e2_gate(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    universe_symbols: set[str],
+    *,
+    verbose: bool = True,
+) -> E2GateResult:
+    """Wire the frozen E2 gate end-to-end on the same common frozen cohort as E1
+    (ADR 0003 §4, §5).
+
+    ``cohort_clusters`` and ``embargo_events`` are exactly as handed to E1, so the
+    E2 cohort's clusters and per-cluster placebo dates are identical. The reused
+    daily habitat aggregate is built over the full habitat ``universe_symbols`` (not
+    just the cohort symbols) — the leave-one-out factor is the market-wide habitat,
+    focal excluded. All statistics live in the tested pure ``cfob_returns`` layer."""
+
+    aggregate = load_or_build_habitat_aggregate(universe_symbols, verbose=verbose)
+    session_bars = _load_symbol_opens({c.trading_symbol for c in cohort_clusters})
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_e2_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+        habitat_daily_by_date=aggregate,
+    )
+    cohort = assemble_e2_cohort(inputs, config=PROTOCOL)
+    result = evaluate_e2_gate(cohort, config=PROTOCOL)
+    if verbose:
+        if result.underpowered:
+            print(
+                f"  E2: underpowered_stop "
+                f"(cohort {result.cohort_n:,} < {PROTOCOL.estage_min_cohort:,})"
+            )
+        else:
+            print(
+                f"  E2 cohort {result.cohort_n:,} over {result.month_span} months → "
+                f"p={result.p:.5f} ({'pass' if result.passed else 'block'})"
+            )
+        for reason, count in sorted(result.drop_counts.items(), key=lambda kv: -kv[1]):
+            print(f"    dropped {reason}: {count:,}")
+    return result
+
+
 def apply_universe_filter(
     clusters: list[PurchaseCluster], *, verbose: bool = True
 ) -> tuple[list[PurchaseCluster], dict[str, list[date]], dict]:
@@ -676,6 +827,12 @@ def main() -> int:
         help="after cohort formation, run the E1 returns gate and print its p-value",
     )
     parser.add_argument(
+        "--measure-e2",
+        action="store_true",
+        help="after cohort formation, run the E2 returns gate (habitat-adjusted) "
+        "on the same frozen cohort and print its p-value",
+    )
+    parser.add_argument(
         "--skip-reconcile",
         action="store_true",
         help="skip EDGAR form.idx reconcile (fail-closed unless synthetic)",
@@ -780,6 +937,15 @@ def main() -> int:
         # universe-eligible event window; the cohort is the de-overlapped set.
         print("\nRunning E1 returns gate (open-to-open h60, placebo block bootstrap)...")
         measure_e1_gate(eligible, deoverlapped)
+        return 0
+
+    if args.measure_e2:
+        # E2 returns gate (ADR 0003 §4) on the *same* frozen cohort as E1. The
+        # habitat aggregate is built over the universe-eligible symbols (focal
+        # excluded per cluster via the leave-one-out factor) and cached.
+        print("\nRunning E2 returns gate (habitat LOO factor, pre-event beta benchmark)...")
+        habitat_universe = {cluster.trading_symbol for cluster in eligible}
+        measure_e2_gate(eligible, deoverlapped, habitat_universe)
         return 0
 
     shares = year_shares(deoverlapped)

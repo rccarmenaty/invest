@@ -15,6 +15,11 @@ Two layers:
   counted drop-reason ledger, and the E1 gate itself (block bootstrap on the
   cohort, ``underpowered_stop`` below the 2,000-cluster floor). This layer reads
   the frozen ``ProtocolConfig`` constants; the primitives above stay config-free.
+- **E2 gate orchestration** (§4, §5): the habitat leave-one-out daily factor,
+  the date-specific pre-event OLS beta (252 sessions, ≥200 pairs), the
+  per-daily-compounded beta benchmark, the benchmark residual ``e``, per-cluster
+  ``d_i^E2`` collapse, and the E2 gate — the *same* null-imposed block bootstrap
+  on the *same* frozen cohort as E1, with E2-specific support drops counted.
 
 This module is research-only (needs the ``research-ml`` extra for numpy) and is
 never imported by the production scan/backtest path.
@@ -496,6 +501,397 @@ def evaluate_e1_gate(cohort: E1Cohort, *, config: ProtocolConfig = PROTOCOL) -> 
         seed=seed,
     )
     return E1GateResult(
+        passed=boot.p <= config.estage_bootstrap_alpha,
+        underpowered=False,
+        cohort_n=cohort.size,
+        month_span=len(buckets),
+        bootstrap=boot,
+        drop_counts=cohort.drop_counts,
+    )
+
+
+# --- E2 gate: habitat LOO factor, pre-event beta, benchmark residual (§4) -----
+
+
+def loo_factor(sum_r: float, count: int, r_focal: float) -> float:
+    """The daily leave-one-out equal-weight habitat return with the focal name
+    removed (ADR 0003 §4): ``(sum_r − r_focal) / (count − 1)``.
+
+    ``sum_r`` is the sum of that session's daily returns over the ``count``
+    point-in-time-eligible habitat names *including* the focal, so removing the
+    focal's own return ``r_focal`` and averaging over the remaining ``count − 1``
+    names gives a control that never includes the ticker being tested (no
+    self-inclusion). Requires ``count ≥ 2`` — a single-name habitat has no
+    non-focal average.
+    """
+
+    if count < 2:
+        raise ValueError("loo_factor requires count >= 2 (at least one non-focal name)")
+    return (sum_r - r_focal) / (count - 1)
+
+
+def _daily_open_returns(session_opens: Sequence[float]) -> NDArray[np.float64]:
+    """Per-session open-to-open daily simple returns ``open[s+1]/open[s] − 1``
+    (length ``n − 1``, indexed by the starting session ``s``)."""
+
+    o = np.asarray(session_opens, dtype=np.float64)
+    return o[1:] / o[:-1] - 1.0
+
+
+def factor_daily_returns(
+    session_opens: Sequence[float],
+    habitat_sum: Sequence[float],
+    habitat_count: Sequence[int],
+    *,
+    breadth_floor: int,
+) -> NDArray[np.float64]:
+    """The per-session habitat LOO daily factor for one focal (ADR 0003 §4, §5),
+    aligned to the daily-return index ``s`` (session ``s → s+1``), ``NaN`` where
+    the breadth floor is not met.
+
+    ``habitat_sum[s]`` / ``habitat_count[s]`` are the focal-inclusive habitat
+    daily-return sum and PIT-eligible name count for session ``s``. A session is
+    factor-valid only when it carries **≥ ``breadth_floor`` distinct non-focal
+    names** — i.e. ``count − 1 ≥ breadth_floor`` (ADR 0002/0003: "≥50 distinct
+    PIT-eligible non-focal names"); below that the observation is **missing**
+    (``NaN``), never zero-filled or imputed. This is the asymmetric handling: a
+    missing day inside the beta window simply drops that pair (the ≥200-pair rule
+    governs), while every forward session must be non-missing for a date to be
+    admissible.
+    """
+
+    o = np.asarray(session_opens, dtype=np.float64)
+    n = o.size
+    if n < 2:
+        return np.empty(0, dtype=np.float64)
+    s = np.asarray(habitat_sum, dtype=np.float64)[: n - 1]
+    c = np.asarray(habitat_count, dtype=np.int64)[: n - 1]
+    r_focal = o[1:] / o[:-1] - 1.0
+    non_focal = c - 1  # focal excluded from the average — no self-inclusion
+    valid = non_focal >= breadth_floor
+    out = np.full(n - 1, np.nan, dtype=np.float64)
+    # Same arithmetic as loo_factor, vectorized; only evaluated where valid so a
+    # below-floor count (which could be 0 or 1) never divides by zero.
+    idx = np.flatnonzero(valid)
+    out[idx] = (s[idx] - r_focal[idx]) / (c[idx] - 1)
+    return out
+
+
+def ols_beta(
+    focal_returns: Sequence[float] | NDArray[np.float64],
+    factor_returns: Sequence[float] | NDArray[np.float64],
+    *,
+    min_pairs: int,
+) -> float | None:
+    """Single-factor OLS slope **with intercept** of focal on factor daily returns
+    (ADR 0003 §4) — the frozen pre-event beta.
+
+    Non-finite pairs (a factor ``NaN`` from a below-breadth day, or a missing
+    focal return) are dropped; the fit needs **≥ ``min_pairs`` valid pairs**
+    (frozen 200) or it returns ``None`` (no imputation, no backward extension —
+    the caller passes exactly the 252-session window). Returns ``None`` on a
+    degenerate zero-variance factor (beta unidentified). The closed-form slope
+    ``cov(x, y) / var(x)`` equals ``numpy.polyfit(x, y, 1)[0]``.
+    """
+
+    y = np.asarray(focal_returns, dtype=np.float64)
+    x = np.asarray(factor_returns, dtype=np.float64)
+    if x.shape != y.shape:
+        raise ValueError("focal and factor return series must have the same length")
+    mask = np.isfinite(x) & np.isfinite(y)
+    if int(mask.sum()) < min_pairs:
+        return None
+    xm = x[mask]
+    ym = y[mask]
+    xc = xm - xm.mean()
+    denom = float(xc @ xc)
+    if denom == 0.0:
+        return None
+    return float((xc @ (ym - ym.mean())) / denom)
+
+
+def beta_benchmark(beta: float, h_forward: Sequence[float] | NDArray[np.float64]) -> float:
+    """The habitat benchmark ``∏_{s} (1 + β·h_s) − 1`` (ADR 0003 §4): beta is
+    applied to **each daily habitat return before compounding**, *not* the naive
+    ``β·[∏(1+h_s) − 1]`` approximation. **No intercept** in the primary benchmark
+    (the within-ticker observed-minus-placebo construction removes the ticker's
+    unconditional drift/alpha; subtracting α̂ too would double-count)."""
+
+    factors = 1.0 + beta * np.asarray(h_forward, dtype=np.float64)
+    return float(np.prod(factors) - 1.0)
+
+
+def date_e2_residual(
+    session_opens: Sequence[float],
+    focal_daily: NDArray[np.float64],
+    factor: NDArray[np.float64],
+    entry_index: int,
+    *,
+    horizon: int,
+    cost_bps: float,
+    beta_window: int,
+    min_pairs: int,
+) -> float | None:
+    """The benchmark residual ``e = R^net − B^β`` for one entry date (ADR 0003
+    §4). ``None`` — the date is **inadmissible** for E2 — when the focal forward
+    window is incomplete, any of the ``horizon`` forward factor days is missing
+    (below breadth), or the pre-event beta cannot be estimated (< ``min_pairs``
+    valid pairs in the 252-session window)."""
+
+    focal_net = focal_net_return(session_opens, entry_index, horizon=horizon, cost_bps=cost_bps)
+    if focal_net is None:
+        return None
+    forward = factor[entry_index : entry_index + horizon]
+    if forward.size < horizon or not bool(np.all(np.isfinite(forward))):
+        # Every one of the 60 forward sessions must clear the breadth floor.
+        return None
+    # The beta window ends at the last daily return completed *before* the entry
+    # open (ADR 0003 §4 — the window "ends on the previous session" for a filing
+    # date). The return ending at the entry open (index ``entry_index - 1``) spans
+    # the filing-reaction gap, so it is excluded; ``beta_end`` is its exclusive
+    # upper bound and the 252-session window is the returns immediately before it.
+    beta_end = max(0, entry_index - 1)
+    lo = max(0, beta_end - beta_window)  # no backward extension past the panel
+    beta = ols_beta(focal_daily[lo:beta_end], factor[lo:beta_end], min_pairs=min_pairs)
+    if beta is None:
+        return None
+    return focal_net - beta_benchmark(beta, forward)
+
+
+@dataclass(frozen=True)
+class ClusterE2Inputs:
+    """One cluster's resolved inputs for the E2 gate: the E1 price/entry inputs
+    plus the aligned focal-inclusive habitat daily aggregate (``habitat_sum`` /
+    ``habitat_count`` indexed by daily-return start session ``s``)."""
+
+    cluster_id: str
+    known_time: date
+    session_opens: tuple[float, ...]
+    habitat_sum: tuple[float, ...]
+    habitat_count: tuple[int, ...]
+    entry_index: int | None
+    real_event_entry_indices: tuple[int, ...]
+
+
+def build_cluster_e2_inputs(
+    clusters: Sequence[tuple[str, date]],
+    *,
+    session_bars_by_symbol: Mapping[str, Sequence[tuple[date, float]]],
+    real_event_known_times_by_symbol: Mapping[str, Sequence[date]],
+    habitat_daily_by_date: Mapping[date, tuple[float, int]],
+) -> list[ClusterE2Inputs]:
+    """Map loaded price bars + the per-ticker real-event catalogue + the cached
+    daily habitat aggregate into the pure ``ClusterE2Inputs`` the E2 gate consumes
+    (ADR 0003 §4, §5).
+
+    ``habitat_daily_by_date`` is the reused per-session ``date → (sum_r, count)``
+    focal-inclusive aggregate; a cluster's ``habitat_sum`` / ``habitat_count`` are
+    it, aligned by the symbol's own session dates (missing sessions default to
+    ``(0.0, 0)`` → below the breadth floor → a ``NaN`` factor day). The
+    ``cluster_id`` matches ``build_cluster_return_inputs`` so the per-cluster
+    placebo seed — and therefore the drawn placebo dates — are identical to E1's."""
+
+    out: list[ClusterE2Inputs] = []
+    for symbol, known_time in clusters:
+        bars = session_bars_by_symbol.get(symbol, ())
+        session_dates = [b[0] for b in bars]
+        session_opens = tuple(float(b[1]) for b in bars)
+        entry_index = resolve_entry_index(session_dates, known_time)
+        real_events = real_event_known_times_by_symbol.get(symbol, ())
+        real_indices = sorted(
+            i
+            for i in (resolve_entry_index(session_dates, t) for t in real_events)
+            if i is not None
+        )
+        aggregate = [habitat_daily_by_date.get(day, (0.0, 0)) for day in session_dates]
+        out.append(
+            ClusterE2Inputs(
+                cluster_id=f"{symbol}:{known_time.isoformat()}",
+                known_time=known_time,
+                session_opens=session_opens,
+                habitat_sum=tuple(float(a[0]) for a in aggregate),
+                habitat_count=tuple(int(a[1]) for a in aggregate),
+                entry_index=entry_index,
+                real_event_entry_indices=tuple(real_indices),
+            )
+        )
+    return out
+
+
+@dataclass(frozen=True)
+class E2Cohort:
+    """The common frozen cohort as seen by E2 (ADR 0003 §4, §5). Same clusters and
+    same placebo draws as E1; the ledger adds E2-specific support drops.
+
+    E2 support (beta ≥200 pairs, all 60 forward breadth days present) is a
+    numerical data-support requirement resolved on the E1 cohort — not survivor
+    selection or reranking between gates. In the frozen design these drops would
+    be resolved jointly at cohort formation; they are counted here so the E2
+    cohort is auditable against E1's."""
+
+    d_values: tuple[float, ...]
+    month_keys: tuple[tuple[int, int], ...]
+    drop_counts: Mapping[str, int]
+
+    @property
+    def size(self) -> int:
+        return len(self.d_values)
+
+
+def assemble_e2_cohort(
+    inputs: Sequence[ClusterE2Inputs],
+    *,
+    config: ProtocolConfig = PROTOCOL,
+) -> E2Cohort:
+    """Resolve E2 support on the common frozen cohort and collapse each cluster to
+    ``d_i^E2 = e_obs − mean(e_placebo)`` (ADR 0003 §4, §5).
+
+    The placebo dates are drawn with the *same* admissibility and *same* per-cluster
+    seed as E1, so the E2 cohort's placebo dates are identical to E1's. Drop
+    reasons: the three E1 support reasons (``no_entry_session`` /
+    ``insufficient_placebo`` / ``focal_window_incomplete``) plus two E2-specific
+    ones — ``focal_e2_support`` (observed date has no beta or a broken forward
+    breadth window) and ``placebo_e2_support`` (some placebo date lacks E2
+    support)."""
+
+    horizon = config.horizon_sessions
+    cost_bps = config.estage_cost_bps
+    draws = config.estage_placebo_draws
+    beta_window = config.estage_beta_window_sessions
+    min_pairs = config.estage_beta_min_pairs
+    breadth_floor = config.estage_factor_breadth_floor
+    drop_counts: dict[str, int] = defaultdict(int)
+    d_values: list[float] = []
+    month_keys: list[tuple[int, int]] = []
+
+    for item in inputs:
+        if item.entry_index is None:
+            drop_counts["no_entry_session"] += 1
+            continue
+        admissible = admissible_placebo_indices(
+            session_count=len(item.session_opens),
+            real_event_entry_indices=item.real_event_entry_indices,
+            horizon=horizon,
+        )
+        seed = derive_seed(
+            config.estage_master_seed, config.estage_spec_version, "placebo", item.cluster_id
+        )
+        placebo = sample_placebo_indices(admissible, draws=draws, seed=seed)
+        if placebo is None:
+            drop_counts["insufficient_placebo"] += 1
+            continue
+
+        focal_daily = _daily_open_returns(item.session_opens)
+        factor = factor_daily_returns(
+            item.session_opens,
+            item.habitat_sum,
+            item.habitat_count,
+            breadth_floor=breadth_floor,
+        )
+
+        # Observed-date focal window (E1's admissibility) then E2 support.
+        e_obs = date_e2_residual(
+            item.session_opens,
+            focal_daily,
+            factor,
+            item.entry_index,
+            horizon=horizon,
+            cost_bps=cost_bps,
+            beta_window=beta_window,
+            min_pairs=min_pairs,
+        )
+        if e_obs is None:
+            # Distinguish "focal forward window runs off the panel" (an E1 drop
+            # reason) from "E2 beta/breadth support missing".
+            if focal_net_return(
+                item.session_opens, item.entry_index, horizon=horizon, cost_bps=cost_bps
+            ) is None:
+                drop_counts["focal_window_incomplete"] += 1
+            else:
+                drop_counts["focal_e2_support"] += 1
+            continue
+
+        placebo_residuals = [
+            date_e2_residual(
+                item.session_opens,
+                focal_daily,
+                factor,
+                i,
+                horizon=horizon,
+                cost_bps=cost_bps,
+                beta_window=beta_window,
+                min_pairs=min_pairs,
+            )
+            for i in placebo
+        ]
+        if any(r is None for r in placebo_residuals):
+            drop_counts["placebo_e2_support"] += 1
+            continue
+
+        d = e_obs - float(np.mean(placebo_residuals))
+        d_values.append(d)
+        month_keys.append((item.known_time.year, item.known_time.month))
+
+    return E2Cohort(
+        d_values=tuple(d_values),
+        month_keys=tuple(month_keys),
+        drop_counts=dict(drop_counts),
+    )
+
+
+@dataclass(frozen=True)
+class E2GateResult:
+    """E2 gate outcome (ADR 0003 §4). E2 is the acceptance gate: a green E1 **and**
+    green E2 on the same cohort accept the line (ticket #5 wires the conjunctive
+    verdict). ``underpowered`` marks the sub-2,000-cluster operational floor."""
+
+    passed: bool
+    underpowered: bool
+    cohort_n: int
+    month_span: int
+    bootstrap: BootstrapResult | None
+    drop_counts: Mapping[str, int]
+
+    @property
+    def p(self) -> float | None:
+        return None if self.bootstrap is None else self.bootstrap.p
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "passed": self.passed,
+            "underpowered": self.underpowered,
+            "cohort_n": self.cohort_n,
+            "month_span": self.month_span,
+            "p": self.p,
+            "bootstrap": None if self.bootstrap is None else self.bootstrap.to_dict(),
+            "drop_counts": dict(self.drop_counts),
+        }
+
+
+def evaluate_e2_gate(cohort: E2Cohort, *, config: ProtocolConfig = PROTOCOL) -> E2GateResult:
+    """Run the E2 gate on the frozen cohort (ADR 0003 §4) — the **same** null-imposed
+    circular block bootstrap as E1, on its own separated RNG stream (gate tag
+    ``"E2"``). Below the ``estage_min_cohort`` floor it returns ``underpowered_stop``
+    and attempts no statistic; otherwise it passes when ``p ≤ estage_bootstrap_alpha``."""
+
+    buckets = ordered_month_buckets(cohort.month_keys, cohort.d_values)
+    if cohort.size < config.estage_min_cohort:
+        return E2GateResult(
+            passed=False,
+            underpowered=True,
+            cohort_n=cohort.size,
+            month_span=len(buckets),
+            bootstrap=None,
+            drop_counts=cohort.drop_counts,
+        )
+    seed = derive_seed(config.estage_master_seed, config.estage_spec_version, "E2")
+    boot = stationary_block_bootstrap_p(
+        buckets,
+        q=config.estage_block_restart_q,
+        replications=config.estage_bootstrap_replications,
+        seed=seed,
+    )
+    return E2GateResult(
         passed=boot.p <= config.estage_bootstrap_alpha,
         underpowered=False,
         cohort_n=cohort.size,
