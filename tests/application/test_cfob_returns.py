@@ -180,3 +180,169 @@ def test_bootstrap_is_reproducible_for_a_fixed_seed() -> None:
     assert r1.p == r2.p
     assert r1.k == r2.k
     assert r1.discards == r2.discards
+
+
+# --- E1 gate orchestration (ADR 0003 §1, §5) ---------------------------------
+
+from datetime import date, timedelta  # noqa: E402
+
+from invest.application.cfob import ProtocolConfig  # noqa: E402
+from invest.application.cfob_returns import (  # noqa: E402
+    ClusterReturnInputs,
+    E1Cohort,
+    admissible_placebo_indices,
+    assemble_e1_cohort,
+    build_cluster_return_inputs,
+    cluster_d_statistic,
+    evaluate_e1_gate,
+    focal_net_return,
+    ordered_month_buckets,
+    resolve_entry_index,
+    sample_placebo_indices,
+)
+
+
+def test_resolve_entry_index_is_the_first_session_strictly_after_known_time() -> None:
+    dates = [date(2020, 1, d) for d in (2, 3, 6, 7, 8)]
+    assert resolve_entry_index(dates, date(2020, 1, 3)) == 2  # not the 3rd itself
+    assert resolve_entry_index(dates, date(2020, 1, 1)) == 0
+    assert resolve_entry_index(dates, date(2020, 1, 8)) is None  # nothing after
+
+
+def test_focal_net_return_is_open_to_open_less_round_trip_cost() -> None:
+    opens = [10.0] * 100
+    opens[0] = 100.0
+    opens[60] = 110.0
+    r = focal_net_return(opens, 0, horizon=60, cost_bps=25.0)
+    assert r == pytest.approx(0.10 - 0.0025)
+
+
+def test_focal_net_return_is_none_when_forward_window_is_incomplete() -> None:
+    opens = [10.0] * 40  # only 40 sessions, horizon 60 runs off the end
+    assert focal_net_return(opens, 0, horizon=60, cost_bps=25.0) is None
+
+
+def test_admissible_placebo_excludes_the_full_forward_window_intersection() -> None:
+    # 200 sessions, horizon 5, one real event entry at index 100. Candidates run
+    # 0..194 (complete window); the embargo removes 95..105 inclusive.
+    adm = admissible_placebo_indices(
+        session_count=200, real_event_entry_indices=[100], horizon=5
+    )
+    assert max(adm) == 194  # no candidate without a complete forward window
+    assert all(not (95 <= c <= 105) for c in adm)
+    assert 94 in adm and 106 in adm
+
+
+def test_admissible_placebo_honours_events_dropped_by_de_overlap() -> None:
+    # The caller passes the full pre-de-overlap set; every one embargoes.
+    adm = admissible_placebo_indices(
+        session_count=300, real_event_entry_indices=[50, 120, 121], horizon=5
+    )
+    for r in (50, 120, 121):
+        assert all(not (r - 5 <= c <= r + 5) for c in adm)
+
+
+def test_sample_placebo_is_exactly_draws_unique_and_deterministic() -> None:
+    admissible = list(range(500))
+    a = sample_placebo_indices(admissible, draws=100, seed=7)
+    b = sample_placebo_indices(admissible, draws=100, seed=7)
+    assert a is not None and len(a) == 100 == len(set(a))
+    assert a == b  # deterministic for a fixed seed
+    assert sample_placebo_indices(list(range(99)), draws=100, seed=7) is None
+
+
+def test_cluster_d_statistic_is_focal_minus_placebo_mean() -> None:
+    opens = [10.0] * 200
+    opens[0] = 100.0
+    opens[60] = 110.0  # focal: +10% at index 0
+    # placebo entries all on flat stretch → placebo returns are -cost each
+    d = cluster_d_statistic(opens, 0, [70, 80, 90], horizon=60, cost_bps=0.0)
+    assert d == pytest.approx(0.10)  # focal +10%, placebo mean 0
+
+
+def test_ordered_month_buckets_fills_empty_calendar_months() -> None:
+    keys = [(2020, 1), (2020, 1), (2020, 3)]  # Feb is empty
+    buckets = ordered_month_buckets(keys, [1.0, 2.0, 3.0])
+    assert len(buckets) == 3  # Jan, Feb, Mar
+    assert buckets[0] == [1.0, 2.0]
+    assert buckets[1] == []  # empty February preserved
+    assert buckets[2] == [3.0]
+
+
+def test_ordered_month_buckets_spans_a_year_boundary() -> None:
+    keys = [(2019, 11), (2020, 2)]
+    buckets = ordered_month_buckets(keys, [1.0, 2.0])
+    assert len(buckets) == 4  # Nov, Dec, Jan, Feb
+
+
+def _flat_bars(n: int, symbol_start: date = date(2015, 1, 2)) -> list[tuple[date, float]]:
+    return [(symbol_start + timedelta(days=i), 10.0) for i in range(n)]
+
+
+def test_build_cluster_return_inputs_resolves_entries_and_real_events() -> None:
+    bars = _flat_bars(300)
+    dates = [b[0] for b in bars]
+    clusters = [("ACME", dates[100])]
+    inputs = build_cluster_return_inputs(
+        clusters,
+        session_bars_by_symbol={"ACME": bars},
+        real_event_known_times_by_symbol={"ACME": [dates[100], dates[200]]},
+    )
+    assert len(inputs) == 1
+    item = inputs[0]
+    assert item.cluster_id == f"ACME:{dates[100].isoformat()}"
+    assert item.entry_index == 101  # first session strictly after known_time
+    assert item.real_event_entry_indices == (101, 201)
+
+
+def test_assemble_e1_cohort_counts_every_drop_reason() -> None:
+    cfg = ProtocolConfig(estage_placebo_draws=5, horizon_sessions=10)
+    base = date(2015, 1, 2)
+    opens_full = tuple(10.0 for _ in range(400))
+    # 1) kept: complete window + enough placebo
+    kept = ClusterReturnInputs("KEEP:1", base, opens_full, 0, ())
+    # 2) no entry session
+    no_entry = ClusterReturnInputs("NOENT:1", base, opens_full, None, ())
+    # 3) insufficient placebo: only ~a handful of admissible dates
+    tiny = ClusterReturnInputs("TINY:1", base, tuple(10.0 for _ in range(14)), 0, ())
+    # 4) focal window incomplete: entry too close to the end
+    late = ClusterReturnInputs("LATE:1", base, opens_full, 395, ())
+    cohort = assemble_e1_cohort([kept, no_entry, tiny, late], config=cfg)
+    assert cohort.size == 1
+    assert cohort.drop_counts["no_entry_session"] == 1
+    assert cohort.drop_counts["insufficient_placebo"] == 1
+    assert cohort.drop_counts["focal_window_incomplete"] == 1
+
+
+def test_evaluate_e1_gate_stops_under_the_cohort_floor() -> None:
+    cfg = ProtocolConfig(estage_min_cohort=2000)
+    cohort = E1Cohort(
+        d_values=tuple(0.01 for _ in range(1999)),
+        month_keys=tuple((2015 + i // 12, 1 + i % 12) for i in range(1999)),
+        drop_counts={},
+    )
+    result = evaluate_e1_gate(cohort, config=cfg)
+    assert result.underpowered is True
+    assert result.passed is False
+    assert result.p is None
+    assert result.cohort_n == 1999
+
+
+def test_evaluate_e1_gate_passes_on_a_planted_positive_effect() -> None:
+    cfg = ProtocolConfig(
+        estage_min_cohort=2000,
+        estage_bootstrap_replications=999,
+        estage_bootstrap_alpha=0.005,
+    )
+    rng = np.random.default_rng(0)
+    n = 2400
+    # 200 months, ~12 clusters each, all shifted strongly positive.
+    d_values = tuple(float(x) for x in rng.normal(loc=0.5, scale=0.05, size=n))
+    month_keys = tuple((2000 + i // 12, 1 + i % 12) for i in range(n // 12) for _ in range(12))
+    cohort = E1Cohort(d_values=d_values, month_keys=month_keys, drop_counts={"x": 3})
+    result = evaluate_e1_gate(cohort, config=cfg)
+    assert result.underpowered is False
+    assert result.passed is True
+    assert result.p is not None and result.p < 0.005
+    assert result.drop_counts == {"x": 3}  # ledger propagated
+    assert result.month_span == 200

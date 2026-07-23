@@ -52,6 +52,12 @@ from invest.application.cfob import (
     qualifying_purchases,
     year_shares,
 )
+from invest.application.cfob_returns import (
+    E1GateResult,
+    assemble_e1_cohort,
+    build_cluster_return_inputs,
+    evaluate_e1_gate,
+)
 from invest.domain.models import InsiderTransaction
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -314,6 +320,64 @@ def load_reference_listings(*, verbose: bool = True) -> tuple[list[ReferenceList
     return listings, "tickers-reference-api"
 
 
+def _load_symbol_opens(symbols: set[str]) -> dict[str, list[tuple[date, float]]]:
+    """Per-symbol ascending ``(session date, adjusted open)`` bars for the given
+    symbols, deduped across year parquets. Open-to-open E1 returns need each
+    symbol's own price series, not the shared trading calendar."""
+
+    available_years = sorted(
+        int(path.stem.split("_")[1]) for path in SEP_DIR.glob("sep_*.parquet")
+    )
+    merged: dict[str, dict[date, float]] = defaultdict(dict)
+    for year in available_years:
+        for symbol, bars in _load_sep_year(year, symbols).items():
+            for day, open_, _close, _volume in bars:
+                merged[symbol][day] = open_
+    return {symbol: sorted(day_open.items()) for symbol, day_open in merged.items()}
+
+
+def measure_e1_gate(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    *,
+    verbose: bool = True,
+) -> E1GateResult:
+    """Wire the frozen E1 gate end-to-end (ADR 0003 §1-5).
+
+    ``cohort_clusters`` are the de-overlapped clusters that form the common cohort;
+    ``embargo_events`` are the full pre-de-overlap qualifying code-P events per
+    ticker whose forward windows the placebo embargo must avoid. All statistical
+    logic lives in the tested pure ``cfob_returns`` layer — this only supplies the
+    price panel and the per-ticker real-event catalogue."""
+
+    symbols = {c.trading_symbol for c in cohort_clusters}
+    session_bars = _load_symbol_opens(symbols)
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_return_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+    )
+    cohort = assemble_e1_cohort(inputs, config=PROTOCOL)
+    result = evaluate_e1_gate(cohort, config=PROTOCOL)
+    if verbose:
+        if result.underpowered:
+            print(
+                f"  E1: underpowered_stop "
+                f"(cohort {result.cohort_n:,} < {PROTOCOL.estage_min_cohort:,})"
+            )
+        else:
+            print(
+                f"  E1 cohort {result.cohort_n:,} over {result.month_span} months → "
+                f"p={result.p:.5f} ({'pass' if result.passed else 'block'})"
+            )
+        for reason, count in sorted(result.drop_counts.items(), key=lambda kv: -kv[1]):
+            print(f"    dropped {reason}: {count:,}")
+    return result
+
+
 def apply_universe_filter(
     clusters: list[PurchaseCluster], *, verbose: bool = True
 ) -> tuple[list[PurchaseCluster], dict[str, list[date]], dict]:
@@ -335,7 +399,7 @@ def apply_universe_filter(
 
     symbols = {cluster.trading_symbol for cluster in clusters}
     years = sorted({cluster.year for cluster in clusters})
-    history: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
+    history: dict[str, list[tuple[date, float, float, float]]] = defaultdict(list)
     kept: list[PurchaseCluster] = []
     secondary_kept = 0
     price_floor_excluded = 0
@@ -607,6 +671,11 @@ def main() -> int:
     parser.add_argument("--synthetic", action="store_true", help="smoke mode, claims nothing")
     parser.add_argument("--write-docs", action="store_true", help="write the results doc")
     parser.add_argument(
+        "--measure-e1",
+        action="store_true",
+        help="after cohort formation, run the E1 returns gate and print its p-value",
+    )
+    parser.add_argument(
         "--skip-reconcile",
         action="store_true",
         help="skip EDGAR form.idx reconcile (fail-closed unless synthetic)",
@@ -705,6 +774,13 @@ def main() -> int:
     print("De-overlapping (first-wins, h60)...")
     deoverlapped = list(de_overlap(eligible, sessions_by_symbol=sessions))
     print(f"  de-overlapped clusters: {len(deoverlapped):,}")
+
+    if args.measure_e1:
+        # E1 returns gate (ADR 0003). Embargo avoids every pre-de-overlap
+        # universe-eligible event window; the cohort is the de-overlapped set.
+        print("\nRunning E1 returns gate (open-to-open h60, placebo block bootstrap)...")
+        measure_e1_gate(eligible, deoverlapped)
+        return 0
 
     shares = year_shares(deoverlapped)
     d_report = evaluate_stage_d(de_overlapped_clusters=len(deoverlapped), shares=shares)
