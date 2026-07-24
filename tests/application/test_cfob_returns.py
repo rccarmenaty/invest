@@ -159,8 +159,9 @@ def test_bootstrap_result_serializes_for_the_manifest() -> None:
     buckets = _months_from_flat([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], per_month=3)
     result = stationary_block_bootstrap_p(buckets, q=1 / 6, replications=99, seed=1)
     d = result.to_dict()
-    assert set(d) == {"p", "observed", "k", "replications", "discards"}
+    assert set(d) == {"p", "observed", "k", "replications", "discards", "index_hash"}
     assert d["p"] == result.p
+    assert isinstance(d["index_hash"], str) and len(d["index_hash"]) == 64
 
 
 def test_bootstrap_discards_and_regenerates_zero_cluster_paths() -> None:
@@ -180,6 +181,30 @@ def test_bootstrap_is_reproducible_for_a_fixed_seed() -> None:
     assert r1.p == r2.p
     assert r1.k == r2.k
     assert r1.discards == r2.discards
+
+
+def test_bootstrap_index_hash_pins_the_resample() -> None:
+    # The index hash is a 64-hex SHA-256, reproducible for a fixed seed and
+    # sensitive to the drawn resample (a different seed → a different hash).
+    buckets = _months_from_flat(list(np.random.default_rng(5).normal(size=400)), per_month=5)
+    a = stationary_block_bootstrap_p(buckets, q=1 / 6, replications=500, seed=99)
+    b = stationary_block_bootstrap_p(buckets, q=1 / 6, replications=500, seed=99)
+    c = stationary_block_bootstrap_p(buckets, q=1 / 6, replications=500, seed=100)
+    assert len(a.index_hash) == 64
+    assert a.index_hash == b.index_hash  # same seed → same resample
+    assert a.index_hash != c.index_hash  # different seed → different resample
+
+
+def test_non_circular_blocks_change_the_resample_but_stay_valid() -> None:
+    # circular vs non-circular draw different resamples (different index hash) yet
+    # both yield a valid one-sided p in (0, 1].
+    buckets = _months_from_flat(list(np.random.default_rng(6).normal(size=400)), per_month=5)
+    circ = stationary_block_bootstrap_p(buckets, q=1 / 6, replications=500, seed=3)
+    noncirc = stationary_block_bootstrap_p(
+        buckets, q=1 / 6, replications=500, seed=3, circular=False
+    )
+    assert circ.index_hash != noncirc.index_hash
+    assert 0.0 < noncirc.p <= 1.0
 
 
 # --- E1 gate orchestration (ADR 0003 §1, §5) ---------------------------------
@@ -587,3 +612,185 @@ def test_e2_gate_uses_a_separate_rng_stream_from_e1() -> None:
     e1 = _derive(PROTOCOL.estage_master_seed, PROTOCOL.estage_spec_version, "E1")
     e2 = _derive(PROTOCOL.estage_master_seed, PROTOCOL.estage_spec_version, "E2")
     assert e1 != e2
+
+
+# --- Common cohort + conjunctive verdict + manifest (ticket #93) --------------
+
+from invest.application.cfob import Verdict  # noqa: E402
+from invest.application.cfob_returns import (  # noqa: E402
+    CommonCohort,
+    E1GateResult,
+    E2GateResult,
+    assemble_common_cohort,
+    cohort_fingerprint,
+    conjunctive_verdict,
+    evaluate_returns_line,
+    reproducibility_manifest,
+    returns_diagnostics,
+)
+
+
+def _gate(passed: bool, underpowered: bool, p: float | None) -> tuple:
+    from invest.application.cfob_returns import BootstrapResult
+
+    boot = None if p is None else BootstrapResult(p=p, observed=0.1, k=0, replications=999, discards=2)
+    return passed, underpowered, boot
+
+
+def _e1(passed: bool, underpowered: bool = False, p: float | None = 0.001) -> E1GateResult:
+    pa, un, boot = _gate(passed, underpowered, p)
+    return E1GateResult(pa, un, cohort_n=2400, month_span=200, bootstrap=boot, drop_counts={})
+
+
+def _e2(passed: bool, underpowered: bool = False, p: float | None = 0.001) -> E2GateResult:
+    pa, un, boot = _gate(passed, underpowered, p)
+    return E2GateResult(pa, un, cohort_n=2400, month_span=200, bootstrap=boot, drop_counts={})
+
+
+def test_conjunctive_verdict_stage_pass_needs_both_gates() -> None:
+    verdict, failing = conjunctive_verdict(_e1(True), _e2(True))
+    assert verdict == str(Verdict.STAGE_PASS)
+    assert failing == ()
+
+
+def test_conjunctive_verdict_blocks_and_names_the_failing_gate() -> None:
+    v1, f1 = conjunctive_verdict(_e1(True), _e2(False, p=0.20))
+    assert v1 == str(Verdict.PROMOTION_BLOCK) and f1 == ("E2",)
+    v2, f2 = conjunctive_verdict(_e1(False, p=0.30), _e2(True))
+    assert v2 == str(Verdict.PROMOTION_BLOCK) and f2 == ("E1",)
+    v3, f3 = conjunctive_verdict(_e1(False, p=0.3), _e2(False, p=0.4))
+    assert v3 == str(Verdict.PROMOTION_BLOCK) and f3 == ("E1", "E2")
+
+
+def test_conjunctive_verdict_underpowered_when_either_gate_is() -> None:
+    verdict, failing = conjunctive_verdict(
+        _e1(False, underpowered=True, p=None), _e2(False, underpowered=True, p=None)
+    )
+    assert verdict == str(Verdict.UNDERPOWERED_STOP)
+    assert failing == ()
+
+
+def _e2_cluster(cid: str, entry: int, *, n: int = 400) -> ClusterE2Inputs:
+    opens, hsum, hcount = _e2_opens_and_habitat(n, count=60, drift=0.001)
+    return ClusterE2Inputs(
+        cluster_id=cid,
+        known_time=date(2015, 1, 2),
+        session_opens=tuple(opens),
+        habitat_sum=tuple(hsum),
+        habitat_count=tuple(hcount),
+        entry_index=entry,
+        real_event_entry_indices=(9,),  # embargo the sub-beta-window placebo indices
+    )
+
+
+def test_assemble_common_cohort_aligns_e1_e2_on_identical_clusters() -> None:
+    cfg = ProtocolConfig(
+        estage_placebo_draws=5, horizon_sessions=10,
+        estage_beta_window_sessions=30, estage_beta_min_pairs=20,
+    )
+    kept = _e2_cluster("SYM1:2015-01-02", 300)
+    no_entry = ClusterE2Inputs("SYM2:x", date(2015, 1, 2), kept.session_opens,
+                               kept.habitat_sum, kept.habitat_count, None, ())
+    cohort = assemble_common_cohort([kept, no_entry], config=cfg)
+    assert cohort.size == 1
+    # E1 and E2 statistics are aligned on the SAME single cluster.
+    assert len(cohort.d_e1_values) == len(cohort.d_e2_values) == 1
+    assert cohort.cluster_ids == ("SYM1:2015-01-02",)
+    assert cohort.drop_counts["no_entry_session"] == 1
+
+
+def test_evaluate_returns_line_runs_both_gates_on_one_cohort() -> None:
+    cfg = ProtocolConfig(
+        estage_min_cohort=2000, estage_bootstrap_replications=299, estage_bootstrap_alpha=0.005,
+    )
+    rng = np.random.default_rng(0)
+    n = 2400
+    e1_vals = tuple(float(x) for x in rng.normal(loc=0.5, scale=0.05, size=n))
+    e2_vals = tuple(float(x) for x in rng.normal(loc=0.5, scale=0.05, size=n))
+    mk = tuple((2000 + i // 12, 1 + i % 12) for i in range(n // 12) for _ in range(12))
+    cids = tuple(f"T{i}:2015-01-02" for i in range(n))
+    cohort = CommonCohort(cids, e1_vals, e2_vals, mk, {})
+    result = evaluate_returns_line(cohort, config=cfg)
+    assert result.verdict == str(Verdict.STAGE_PASS)
+    assert result.capital_go is False
+    assert result.cohort_n == 2400 and result.month_span == 200
+
+
+def test_returns_diagnostics_present_and_cost_invariant() -> None:
+    cfg = ProtocolConfig(estage_min_cohort=5, estage_bootstrap_replications=99)
+    rng = np.random.default_rng(1)
+    n = 60
+    cohort = CommonCohort(
+        tuple(f"T{i%7}:2015-01-02" for i in range(n)),
+        tuple(float(x) for x in rng.normal(size=n)),
+        tuple(float(x) for x in rng.normal(size=n)),
+        tuple((2015 + i // 12, 1 + i % 12) for i in range(n)),
+        {},
+    )
+    result = evaluate_returns_line(cohort, config=cfg)
+    diag = returns_diagnostics(cohort, result, config=cfg, block_diagnostic_replications=99)
+    # Every named diagnostic family present.
+    for key in ("parametric_t", "block_length_sensitivity", "cost_ladder_bps",
+                "power_context", "deferred"):
+        assert key in diag
+    assert diag["cost_ladder_bps"]["d_statistic_cost_invariant"] is True
+    assert set(diag["parametric_t"]["E1"]) == {"iid_t", "month_clustered_t", "ticker_clustered_t"}
+    assert set(diag["block_length_sensitivity"]["E1"]) == {
+        "block_1m_p", "block_3m_p", "block_6m_p", "block_12m_p", "block_6m_noncircular_p"
+    }
+    # non_circular is now a computed value, not a deferred label.
+    assert "non_circular_blocks" not in diag["deferred"]
+    # Deferred estimator/data diagnostics are present with a reason.
+    assert diag["deferred"]["spy_specs"]["status"] == "deferred_non_gating"
+
+
+def test_reproducibility_manifest_is_deterministic_and_fingerprints_the_cohort() -> None:
+    cohort = CommonCohort(
+        ("A:2015-01-02", "B:2016-02-03"),
+        (0.01, -0.02), (0.03, 0.04), ((2015, 1), (2016, 2)), {},
+    )
+    cfg = ProtocolConfig(estage_min_cohort=1, estage_bootstrap_replications=49)
+    result = evaluate_returns_line(cohort, config=cfg)
+    m1 = reproducibility_manifest(cohort, result, config=cfg)
+    m2 = reproducibility_manifest(cohort, result, config=cfg)
+    assert m1 == m2  # nothing wall-clock in the manifest itself
+    assert m1["generator"] == "PCG64"
+    assert m1["numpy_major_minor"] == ".".join(np.__version__.split(".")[:2])
+    assert m1["data_fingerprint"] == cohort_fingerprint(cohort)
+    # A changed cohort changes the fingerprint.
+    other = CommonCohort(
+        ("A:2015-01-02", "B:2016-02-03"),
+        (0.99, -0.02), (0.03, 0.04), ((2015, 1), (2016, 2)), {},
+    )
+    assert cohort_fingerprint(other) != cohort_fingerprint(cohort)
+
+
+def test_manifest_data_fingerprint_prefers_the_input_panel() -> None:
+    from invest.application.cfob_returns import inputs_fingerprint
+
+    cohort = CommonCohort(
+        ("A:2015-01-02",), (0.01,), (0.02,), ((2015, 1),), {},
+    )
+    cfg = ProtocolConfig(estage_min_cohort=1, estage_bootstrap_replications=49)
+    result = evaluate_returns_line(cohort, config=cfg)
+    inp = _e2_cluster("A:2015-01-02", 300)
+    fp = inputs_fingerprint([inp])
+    m = reproducibility_manifest(cohort, result, config=cfg, data_fingerprint=fp)
+    assert m["data_fingerprint"] == fp  # input panel wins over the cohort fallback
+    assert m["data_fingerprint_source"] == "input_panel"
+    assert m["cohort_fingerprint"] == cohort_fingerprint(cohort)
+    # Without an input fingerprint it falls back and says so.
+    m2 = reproducibility_manifest(cohort, result, config=cfg)
+    assert m2["data_fingerprint_source"] == "cohort_derived_fallback"
+
+
+def test_inputs_fingerprint_tracks_raw_inputs() -> None:
+    from invest.application.cfob_returns import inputs_fingerprint
+
+    a = _e2_cluster("A:2015-01-02", 300)
+    assert inputs_fingerprint([a]) == inputs_fingerprint([a])  # deterministic
+    b = ClusterE2Inputs(
+        a.cluster_id, a.known_time, a.session_opens, a.habitat_sum, a.habitat_count,
+        301, a.real_event_entry_indices,  # entry index moved
+    )
+    assert inputs_fingerprint([a]) != inputs_fingerprint([b])

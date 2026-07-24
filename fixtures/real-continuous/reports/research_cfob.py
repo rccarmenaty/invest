@@ -52,15 +52,24 @@ from invest.application.cfob import (
     qualifying_purchases,
     year_shares,
 )
+from invest.application.cfob import Verdict
 from invest.application.cfob_returns import (
+    ClusterE2Inputs,
+    CommonCohort,
     E1GateResult,
     E2GateResult,
+    ReturnsLineResult,
+    assemble_common_cohort,
     assemble_e1_cohort,
     assemble_e2_cohort,
     build_cluster_e2_inputs,
     build_cluster_return_inputs,
     evaluate_e1_gate,
     evaluate_e2_gate,
+    evaluate_returns_line,
+    inputs_fingerprint,
+    reproducibility_manifest,
+    returns_diagnostics,
 )
 from invest.domain.models import InsiderTransaction
 
@@ -73,6 +82,11 @@ SEP_DIR = Path(os.environ.get("CFOB_SEP_DIR", REPO_ROOT / "fixtures" / "full-dep
 REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
+# The E1/E2 returns artifact + results doc are SEPARATE from the immutable D/F0
+# artifact (cfob-structure.json / cfob-results.md); the returns stage never
+# overwrites the structure stage (ADR 0003; ticket #93).
+RETURNS_ARTIFACT_PATH = REPORTS_DIR / "cfob-returns.json"
+RETURNS_DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-e1-e2-results.md"
 REFERENCE_CACHE = TAPE_DIR / "tickers_reference_v2.json"
 # Daily habitat aggregate (ADR 0003 §4): per market session, the focal-inclusive
 # sum of open-to-open daily returns and the PIT-eligible name count. Built once
@@ -529,6 +543,244 @@ def measure_e2_gate(
     return result
 
 
+def measure_returns_line(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    universe_symbols: set[str],
+    *,
+    verbose: bool = True,
+) -> tuple[ReturnsLineResult, CommonCohort, str]:
+    """Wire the full E1/E2 returns line end-to-end on the one common frozen cohort
+    (ADR 0003 §Roles, §5; ticket #93). Returns the conjunctive result, the common
+    cohort, and the input-panel fingerprint (§6) for the artifact/manifest."""
+
+    aggregate = load_or_build_habitat_aggregate(universe_symbols, verbose=verbose)
+    session_bars = _load_symbol_opens({c.trading_symbol for c in cohort_clusters})
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_e2_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+        habitat_daily_by_date=aggregate,
+    )
+    cohort = assemble_common_cohort(inputs, config=PROTOCOL)
+    result = evaluate_returns_line(cohort, config=PROTOCOL)
+    if verbose:
+        _print_returns_result(result)
+    return result, cohort, inputs_fingerprint(inputs)
+
+
+def _print_returns_result(result: ReturnsLineResult) -> None:
+    if result.verdict == str(Verdict.UNDERPOWERED_STOP):
+        print(f"  verdict: underpowered_stop (cohort {result.cohort_n:,} < "
+              f"{PROTOCOL.estage_min_cohort:,})")
+    else:
+        e1p = result.e1.p
+        e2p = result.e2.p
+        print(f"  common cohort {result.cohort_n:,} over {result.month_span} months")
+        print(f"  E1 p={e1p:.5f}  E2 p={e2p:.5f}  →  verdict: {result.verdict}"
+              + (f" (failing {', '.join(result.failing_gates)})" if result.failing_gates else ""))
+    for reason, count in sorted(result.e1.drop_counts.items(), key=lambda kv: -kv[1]):
+        print(f"    dropped {reason}: {count:,}")
+
+
+def build_returns_artifact(
+    result: ReturnsLineResult,
+    cohort: CommonCohort,
+    *,
+    mode: str,
+    git_sha: str | None,
+    data_fingerprint: str | None = None,
+) -> dict:
+    """The E1/E2 returns artifact (``cfob-returns.json``). Separate from the D/F0
+    ``cfob-structure.json`` and never overwrites it (ticket #93). ``capital_go`` is
+    false by construction."""
+
+    manifest = reproducibility_manifest(
+        cohort, result, config=PROTOCOL, data_fingerprint=data_fingerprint
+    )
+    diagnostics = returns_diagnostics(cohort, result, config=PROTOCOL)
+    return {
+        "stage": "E1+E2",
+        "line": PROTOCOL.line,
+        "experiment_id": "cfob-e1-e2",
+        "git_sha": git_sha,
+        "mode": mode,
+        "verdict": result.verdict,
+        "failing_gates": list(result.failing_gates),
+        "capital_go": False,
+        "implementability_eligible": False,
+        "cohort": {
+            "common_cohort_n": result.cohort_n,
+            "month_span": result.month_span,
+            "drop_counts": dict(result.e1.drop_counts),
+        },
+        "gates": {
+            "E1": result.e1.to_dict(),
+            "E2": result.e2.to_dict(),
+            "alpha": PROTOCOL.estage_bootstrap_alpha,
+            "cost_bps": PROTOCOL.estage_cost_bps,
+            "conjunctive": "stage_pass iff E1 p<=alpha AND E2 p<=alpha on the same cohort",
+        },
+        "protocol": {
+            "horizon_sessions": PROTOCOL.horizon_sessions,
+            "cost_bps": PROTOCOL.estage_cost_bps,
+            "cost_ladder_bps": list(PROTOCOL.estage_cost_ladder_bps),
+            "winsor_tail": PROTOCOL.estage_winsor_tail,
+            "min_cohort": PROTOCOL.estage_min_cohort,
+            "bootstrap_replications": PROTOCOL.estage_bootstrap_replications,
+            "bootstrap_alpha": PROTOCOL.estage_bootstrap_alpha,
+            "block_expected_months": PROTOCOL.estage_block_expected_months,
+            "block_restart_q": PROTOCOL.estage_block_restart_q,
+            "placebo_draws": PROTOCOL.estage_placebo_draws,
+            "beta_window_sessions": PROTOCOL.estage_beta_window_sessions,
+            "beta_min_pairs": PROTOCOL.estage_beta_min_pairs,
+            "factor_breadth_floor": PROTOCOL.estage_factor_breadth_floor,
+            "spec_version": PROTOCOL.estage_spec_version,
+            "entry_rule": "next_open_after_filing_date",
+        },
+        "diagnostics": diagnostics,
+        "reproducibility": manifest,
+        "claims": [
+            "E1 is provisional timing evidence; a green E1 is not alpha.",
+            f"stage_pass requires BOTH E1 and E2 p<={PROTOCOL.estage_bootstrap_alpha} on the "
+            f"same common frozen cohort at {PROTOCOL.estage_cost_bps:g} bps round-trip.",
+            "E2 is a habitat-factor-adjusted timing test, not asset-pricing alpha and "
+            "not an investable return.",
+        ],
+        "non_claims": [
+            "Not capital permission; capital_go is false by construction.",
+            "Not comparable gate-by-gate to R2-1 / CMFT / Phase 2 or CFOB Stage D.",
+            "Does not reopen residual, R2-1, PEAD, or CMFT.",
+            "The habitat factor is gross; cost applies only to the focal traded leg.",
+        ],
+    }
+
+
+def write_returns_docs(artifact: dict) -> None:
+    """The E1/E2 results doc (``docs/research/cfob-e1-e2-results.md``), mirroring the
+    D/F0 results-doc shape: verdict, cohort counts, both gate p-values, drop ledger,
+    protocol block, claims/non-claims, manifest (ticket #93)."""
+
+    gates = artifact["gates"]
+    e1 = gates["E1"]
+    e2 = gates["E2"]
+    cohort = artifact["cohort"]
+    repro = artifact["reproducibility"]
+    lines = [
+        "# CFOB E1/E2 returns gates — results",
+        "",
+        f"**Verdict:** `{artifact['verdict']}`"
+        + (f" (failing: {', '.join(artifact['failing_gates'])})" if artifact["failing_gates"] else "")
+        + f" · `capital_go` = {str(artifact['capital_go']).lower()}",
+        "",
+        f"- Mode: `{artifact['mode']}` · git `{artifact['git_sha']}`",
+        f"- Common frozen cohort: **{cohort['common_cohort_n']:,}** clusters over "
+        f"{cohort['month_span']} known-time months",
+        f"- E1 p = `{e1['p']}` · E2 p = `{e2['p']}` · α = `{gates['alpha']}` · "
+        f"cost = {gates['cost_bps']} bps round-trip",
+        "",
+        "## Conjunctive gate",
+        "",
+        f"`stage_pass` iff E1 `p ≤ {gates['alpha']}` **and** E2 `p ≤ {gates['alpha']}` on the "
+        f"*same* common frozen cohort; else `promotion_block` naming the failing gate; "
+        f"`underpowered_stop` below the {PROTOCOL.estage_min_cohort:,}-cluster floor. "
+        f"`capital_go` stays a separate human decision even on a green E2.",
+        "",
+        "## Drop-reason ledger",
+        "",
+        "Every cluster excluded from the common cohort is counted (resolved before "
+        "inference, no post-hoc exclusion):",
+        "",
+    ]
+    drops = cohort["drop_counts"]
+    if drops:
+        for reason, count in sorted(drops.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{reason}`: {count:,}")
+    else:
+        lines.append("- (none)")
+    lines += [
+        "",
+        "## Non-gating diagnostics",
+        "",
+        "The block bootstrap is the gate; the diagnostics below are reported, never "
+        "gated. Parametric iid / month-clustered / ticker-clustered t **under-state** "
+        "the calendar-overlap dependence. The round-trip cost **cancels** in the "
+        "placebo-differenced `d_i`, so the 10/25/50 bps ladder does not move the gate "
+        "statistic. Estimator/data variants outside this build (non-circular blocks, "
+        "Politis–White selector, intercept-inclusive / log-return / unit-beta / SPY "
+        "benchmarks, universe-excess) are recorded as `deferred_non_gating`.",
+        "",
+        "## Reproducibility",
+        "",
+        f"- NumPy `{repro['numpy_version']}` · generator `{repro['generator']}`",
+        f"- Master seed `{repro['master_seed']}` · spec `{repro['spec_version']}`",
+        f"- Data fingerprint `{repro['data_fingerprint']}`",
+        "- Seeds, bootstrap-index hashes, and the SHA-256 length-prefixed "
+        "serialization contract are in `cfob-returns.json` — a second same-seed / "
+        "same-data run reproduces every p-value bit-for-bit.",
+        "",
+        "## Claims",
+        "",
+        *[f"- {c}" for c in artifact["claims"]],
+        "",
+        "### Non-claims",
+        "",
+        *[f"- {c}" for c in artifact["non_claims"]],
+        "",
+        "## How to re-run",
+        "",
+        "```bash",
+        "CFOB_SEP_DIR=fixtures/full-depth-sep \\",
+        "  uv run python fixtures/real-continuous/reports/research_cfob.py "
+        "--measure-returns --write-docs",
+        "```",
+        "",
+        "Frozen design: `docs/adr/0003-cfob-e1-e2-returns-gate.md`.",
+        "",
+    ]
+    RETURNS_DOCS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RETURNS_DOCS_PATH.write_text("\n".join(lines))
+
+
+def synthetic_returns_inputs() -> list[ClusterE2Inputs]:
+    """A tiny synthetic common-cohort input set for the ``--measure-returns
+    --synthetic`` smoke path — exercises assemble → gates → verdict → artifact →
+    doc end-to-end without the SEP panel. Claims nothing."""
+
+    import numpy as np
+
+    rng = np.random.default_rng(0xC0B)
+    inputs: list[ClusterE2Inputs] = []
+    # Deep enough that every drawn placebo clears the frozen 252-session beta window
+    # and the 60-session forward window: real events at 60/180/300 embargo indices
+    # 0..360, so admissible placebo dates all sit above the beta-window floor.
+    n = 700
+    for i in range(24):
+        steps = rng.normal(scale=0.01, size=n - 1)
+        opens = [100.0]
+        for step in steps:
+            opens.append(opens[-1] * (1.0 + step))
+        focal_daily = np.asarray(opens[1:]) / np.asarray(opens[:-1]) - 1.0
+        # Habitat: wide enough to clear the breadth floor every session.
+        habitat_sum = list(0.4 * focal_daily + rng.normal(scale=0.001, size=n - 1))
+        habitat_count = [60] * (n - 1)
+        inputs.append(
+            ClusterE2Inputs(
+                cluster_id=f"SYN{i}:2015-01-02",
+                known_time=date(2015, 1, 2 + (i % 20)),
+                session_opens=tuple(opens),
+                habitat_sum=tuple(float(x) for x in habitat_sum),
+                habitat_count=tuple(habitat_count),
+                entry_index=500,
+                real_event_entry_indices=(60, 180, 300),
+            )
+        )
+    return inputs
+
+
 def apply_universe_filter(
     clusters: list[PurchaseCluster], *, verbose: bool = True
 ) -> tuple[list[PurchaseCluster], dict[str, list[date]], dict]:
@@ -833,6 +1085,12 @@ def main() -> int:
         "on the same frozen cohort and print its p-value",
     )
     parser.add_argument(
+        "--measure-returns",
+        action="store_true",
+        help="run the full E1/E2 returns line (conjunctive verdict) on the one common "
+        "frozen cohort and write cfob-returns.json + the results doc",
+    )
+    parser.add_argument(
         "--skip-reconcile",
         action="store_true",
         help="skip EDGAR form.idx reconcile (fail-closed unless synthetic)",
@@ -840,6 +1098,24 @@ def main() -> int:
     args = parser.parse_args()
 
     through = date.today()
+
+    if args.synthetic and args.measure_returns:
+        # Full E1/E2 returns line on a synthetic common cohort — exercises
+        # assemble -> gates -> conjunctive verdict -> artifact -> doc without SEP.
+        print("Running E1/E2 returns line on synthetic common cohort (claims nothing)...")
+        syn_inputs = synthetic_returns_inputs()
+        cohort = assemble_common_cohort(syn_inputs, config=PROTOCOL)
+        result = evaluate_returns_line(cohort, config=PROTOCOL)
+        _print_returns_result(result)
+        artifact = build_returns_artifact(
+            result, cohort, mode="synthetic", git_sha=current_git_sha(),
+            data_fingerprint=inputs_fingerprint(syn_inputs),
+        )
+        RETURNS_ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
+        if args.write_docs:
+            write_returns_docs(artifact)
+        print(f"synthetic returns verdict: {artifact['verdict']}")
+        return 0
 
     if args.synthetic:
         raw = synthetic_clusters()
@@ -946,6 +1222,22 @@ def main() -> int:
         print("\nRunning E2 returns gate (habitat LOO factor, pre-event beta benchmark)...")
         habitat_universe = {cluster.trading_symbol for cluster in eligible}
         measure_e2_gate(eligible, deoverlapped, habitat_universe)
+        return 0
+
+    if args.measure_returns:
+        # Full E1/E2 returns line -> conjunctive verdict on the one common frozen
+        # cohort, plus the separate cfob-returns.json artifact + results doc
+        # (ADR 0003 §Roles, §5; ticket #93). cfob-structure.json is left untouched.
+        print("\nRunning E1/E2 returns line (conjunctive verdict on the common cohort)...")
+        habitat_universe = {cluster.trading_symbol for cluster in eligible}
+        result, cohort, data_fp = measure_returns_line(eligible, deoverlapped, habitat_universe)
+        artifact = build_returns_artifact(
+            result, cohort, mode="measured", git_sha=current_git_sha(), data_fingerprint=data_fp
+        )
+        RETURNS_ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
+        if args.write_docs:
+            write_returns_docs(artifact)
+        print(f"  wrote {RETURNS_ARTIFACT_PATH}")
         return 0
 
     shares = year_shares(deoverlapped)
