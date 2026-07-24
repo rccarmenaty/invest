@@ -2,7 +2,7 @@
   "stage": "E1+E2",
   "line": "cfob-insider-purchase-clusters",
   "experiment_id": "cfob-e1-e2",
-  "git_sha": "a03a8917d9ea675a079ba03d3cb01e3b61f68bba-dirty",
+  "git_sha": "03c2f72f305e84a0206b1aaa8be459243ba87e71",
   "mode": "measured",
   "verdict": "promotion_block",
   "failing_gates": [
@@ -117,6 +117,47 @@
         "block_6m_noncircular_p": 0.97
       }
     },
+    "bootstrap_ci": {
+      "replications": 9999,
+      "method": "non-null stationary-block percentile (post-hoc, non-gating)",
+      "E1": {
+        "point": 0.008617266685136094,
+        "ci_low": -0.029587100956095045,
+        "ci_high": 0.05584391652315609,
+        "ci_alpha": 0.05,
+        "method": "stationary-block percentile (non-null, post-hoc)",
+        "replications": 9999,
+        "discards": 0
+      },
+      "E2": {
+        "point": -0.00843074829854608,
+        "ci_low": -0.017022167718146963,
+        "ci_high": 0.0011892025888598163,
+        "ci_alpha": 0.05,
+        "method": "stationary-block percentile (non-null, post-hoc)",
+        "replications": 9999,
+        "discards": 0
+      },
+      "note": "percentile CI for \u03b8\u0302=T(d) from the observed (un-recentered) block resample; the one-sided null-imposed p-value is the gate, this only shows the point estimate's sampling spread."
+    },
+    "paired_e1_minus_e2_posthoc": {
+      "post_hoc": true,
+      "label": "EXPLORATORY / POST-HOC \u2014 not a pre-registered gate; decides nothing",
+      "statistic": "delta_i = d_i^E1 - d_i^E2 (matched per cluster)",
+      "winsorized_mean": 0.017370290098722714,
+      "std": 0.17861794334196865,
+      "block_bootstrap_ci": {
+        "point": 0.017370290098722714,
+        "ci_low": -0.02200971495004478,
+        "ci_high": 0.0677975011984336,
+        "ci_alpha": 0.05,
+        "method": "stationary-block percentile (non-null, post-hoc)",
+        "replications": 9999,
+        "discards": 0
+      },
+      "ci_excludes_zero": false,
+      "note": "reported for the line-close archive; the conjunctive E1/E2 gate, not this paired contrast, is the frozen decision."
+    },
     "cost_ladder_bps": {
       "ladder": [
         10.0,
@@ -125,7 +166,7 @@
       ],
       "primary": 25.0,
       "d_statistic_cost_invariant": true,
-      "note": "the round-trip cost is applied to the observed and every placebo leg alike, so it cancels in d_i = obs_net \u2212 mean(placebo_net); the ladder moves only the raw return level, not the gate statistic."
+      "note": "a fixed symmetric round-trip cost is applied to the observed and every placebo leg alike, so it cancels exactly in d_i = obs_net \u2212 mean(placebo_net); the 10/25/50 bps ladder moves only absolute profitability reporting, never the E1/E2 inferential statistics."
     },
     "power_context": {
       "cohort_n": 10663,
@@ -180,6 +221,7 @@
     "generator": "PCG64",
     "master_seed": 3473662434,
     "spec_version": "cfob-e1-e2-1",
+    "config_fingerprint": "4304e6d00faae1fe0055ef6eb7fc96c41d6f7906f4a9879c320c34c9898ed6b5",
     "derived_seeds": {
       "E1": 16676391261169839765562031527106116543767217903885735535852811580491225681945,
       "E2": 109257815450598552617161806356301063175197340169984114872094602234684756309186,
@@ -204,5 +246,36 @@
     "Not comparable gate-by-gate to R2-1 / CMFT / Phase 2 or CFOB Stage D.",
     "Does not reopen residual, R2-1, PEAD, or CMFT.",
     "The habitat factor is gross; cost applies only to the focal traded leg."
-  ]
+  ],
+  "archival": {
+    "status": "line-closed",
+    "config_fingerprint": "4304e6d00faae1fe0055ef6eb7fc96c41d6f7906f4a9879c320c34c9898ed6b5",
+    "beta_breadth_distribution": {
+      "observed_beta": {
+        "n": 10663,
+        "mean": 1.047177971110623,
+        "min": -16.60908855060859,
+        "p5": 0.4087934169199073,
+        "p25": 0.726816890333698,
+        "median": 0.9879601099159382,
+        "p75": 1.3055382048425068,
+        "p95": 1.8934033000497468,
+        "max": 6.6406921523146245
+      },
+      "habitat_breadth_nonfocal": {
+        "n": 10663,
+        "mean": 1638.708759260996,
+        "min": 1281.0,
+        "p5": 1370.5,
+        "p25": 1517.5,
+        "median": 1705.0,
+        "p75": 1742.0,
+        "p95": 1844.0,
+        "max": 1933.5
+      },
+      "note": "observed-date pre-event OLS beta and forward-window non-focal habitat breadth (count-1) over the kept cohort; recomputed with the frozen estimator."
+    },
+    "note": "Line archived at this record. Do NOT retune any frozen constant against the same data \u2014 a changed config_fingerprint is a new trial under the deflated-Sharpe standard, not an edit to this result."
+  },
+  "artifact_sha256": "119546a0551ed058169d793e99e3fb79c74d82a48b64cd9c83ca034fd908e8ae"
 }
