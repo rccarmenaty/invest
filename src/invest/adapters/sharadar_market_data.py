@@ -108,6 +108,24 @@ class SharadarMarketDataReader:
             bars.extend(self._fetch_chunk(chunk, start, end))
         return self._validate_and_finalize(bars, universe, start, end)
 
+    def fetch_available(
+        self, symbols: tuple[str, ...], start: date, end: date
+    ) -> list[DailyBar]:
+        """Pull whatever adjusted SEP bars exist for ``symbols`` in ``[start, end]``.
+
+        Unlike ``fetch_range``, this does not require every symbol to be present or
+        every XNYS session to be covered — it is for bulk panel materialization,
+        where delistings, mid-range IPOs, and trading halts are expected and are
+        not data errors. Bars carry the closeadj/close ratio on the open
+        (``open`` = adjusted open) with ``close`` = closeadj, and are returned
+        sorted by ``(symbol, date)`` so per-year grouping downstream is
+        deterministic. Malformed responses still fail closed inside ``_fetch_chunk``.
+        """
+        bars: list[DailyBar] = []
+        for chunk in self._chunk_symbols(symbols):
+            bars.extend(self._fetch_chunk(chunk, start, end))
+        return sorted(bars, key=lambda bar: (bar.symbol, bar.date))
+
     def _fetch_chunk(self, symbols: tuple[str, ...], start: date, end: date) -> list[DailyBar]:
         bars: list[DailyBar] = []
         bar_keys: set[tuple[str, date]] = set()

@@ -28,6 +28,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from invest.adapters.sec_insider_tape import (
     InsiderTapeError,
@@ -71,7 +72,19 @@ from invest.application.cfob_returns import (
     reproducibility_manifest,
     returns_diagnostics,
 )
-from invest.domain.models import InsiderTransaction
+from invest.domain.models import DailyBar, InsiderTransaction
+
+if TYPE_CHECKING:
+    from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+
+# The SEP pull reads NASDAQ_DATA_LINK_API_KEY; load .env so a real --pull-sep /
+# --measure-* run does not need the key exported in the shell (mirrors research_cmft).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ModuleNotFoundError:  # dotenv is optional; the env var may be set directly
+    pass
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TAPE_DIR = REPO_ROOT / "fixtures" / "sec-insider-tape"
@@ -417,6 +430,64 @@ def _load_symbol_bars(symbols: set[str]) -> dict[str, list[tuple[date, float, fl
         symbol: [(day, *ocv) for day, ocv in sorted(day_bar.items())]
         for symbol, day_bar in merged.items()
     }
+
+
+def materialize_sep_panel(
+    symbols: set[str],
+    start: date,
+    end: date,
+    out_dir: Path,
+    *,
+    reader: "SharadarMarketDataReader | None" = None,
+    verbose: bool = True,
+) -> list[Path]:
+    """Pull the adjusted SEP panel for ``symbols`` over ``[start, end]`` and write it
+    as the ``sep_<year>.parquet`` files this driver consumes (ADR 0003 §1).
+
+    The Sharadar adapter already applies the ``closeadj/close`` split/dividend ratio
+    on the way in, so ``DailyBar.open`` is the adjusted open (``open_adj``) and
+    ``DailyBar.close`` is ``closeadj`` (``close_adj``) — no adjustment is redone
+    here. Bars are grouped by calendar year and written with the canonical
+    ``symbol, date, open_adj, close_adj, volume`` columns. Missing symbols, mid-range
+    IPOs, and halts are tolerated by ``fetch_available`` (a bulk panel is not a
+    point-in-time universe), so this fails closed only on a malformed response.
+    """
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+
+    reader = reader or SharadarMarketDataReader()
+    if verbose:
+        print(
+            f"  pulling SEP for {len(symbols):,} symbols "
+            f"{start.isoformat()}..{end.isoformat()}..."
+        )
+    bars = reader.fetch_available(tuple(sorted(symbols)), start, end)
+
+    by_year: dict[int, list[DailyBar]] = defaultdict(list)
+    for bar in bars:
+        by_year[bar.date.year].append(bar)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for year, year_bars in sorted(by_year.items()):
+        path = out_dir / f"sep_{year}.parquet"
+        table = pa.table(
+            {
+                "symbol": [bar.symbol for bar in year_bars],
+                "date": [bar.date for bar in year_bars],
+                "open_adj": [float(bar.open) for bar in year_bars],
+                "close_adj": [float(bar.close) for bar in year_bars],
+                "volume": [float(bar.volume) for bar in year_bars],
+            }
+        )
+        pq.write_table(table, path)
+        written.append(path)
+        if verbose:
+            print(f"  wrote {path} ({len(year_bars):,} bars)")
+    return written
 
 
 def build_habitat_daily_aggregate(
@@ -1091,6 +1162,12 @@ def main() -> int:
         "frozen cohort and write cfob-returns.json + the results doc",
     )
     parser.add_argument(
+        "--pull-sep",
+        action="store_true",
+        help="materialize the SEP year parquets for the cluster symbols into "
+        "CFOB_SEP_DIR (needs NASDAQ_DATA_LINK_API_KEY), then exit",
+    )
+    parser.add_argument(
         "--skip-reconcile",
         action="store_true",
         help="skip EDGAR form.idx reconcile (fail-closed unless synthetic)",
@@ -1167,10 +1244,11 @@ def main() -> int:
         raise SystemExit("fail-closed: no qualifying purchases parsed")
     print(f"  qualifying purchases: {len(purchases):,}")
 
-    if not SEP_DIR.is_dir():
+    if not args.pull_sep and not SEP_DIR.is_dir():
         raise SystemExit(
             f"fail-closed: SEP panel not found at {SEP_DIR}. "
-            "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory."
+            "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory, "
+            "or run --pull-sep to materialize it."
         )
 
     print("Loading TICKERS reference for CIK-primary mapping...")
@@ -1194,6 +1272,18 @@ def main() -> int:
     ]
     raw = list(build_clusters(canonical_purchases))
     print(f"  raw clusters: {len(raw):,}")
+
+    if args.pull_sep:
+        # Materialize the SEP price panel for every raw cluster symbol (a superset
+        # of the universe-eligible set) from FIRST_YEAR-2 so the habitat floor's
+        # trailing history is covered. The subsequent measure run reads it back.
+        print(f"Materializing SEP price panel into {SEP_DIR}...")
+        symbols = {cluster.trading_symbol for cluster in raw}
+        written = materialize_sep_panel(
+            symbols, date(FIRST_YEAR - 2, 1, 1), through, SEP_DIR
+        )
+        print(f"  wrote {len(written):,} year parquet(s)")
+        return 0
 
     print(f"Applying habitat universe filter from SEP ({SEP_DIR})...")
     eligible, sessions, diagnostics = apply_universe_filter(raw)
