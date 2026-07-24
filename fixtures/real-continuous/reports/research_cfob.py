@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -28,6 +29,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from invest.adapters.sec_insider_tape import (
     InsiderTapeError,
@@ -52,7 +54,40 @@ from invest.application.cfob import (
     qualifying_purchases,
     year_shares,
 )
-from invest.domain.models import InsiderTransaction
+from invest.application.cfob import Verdict
+from invest.application.cfob_returns import (
+    ClusterE2Inputs,
+    CommonCohort,
+    E1GateResult,
+    E2GateResult,
+    ReturnsLineResult,
+    assemble_common_cohort,
+    assemble_e1_cohort,
+    assemble_e2_cohort,
+    build_cluster_e2_inputs,
+    build_cluster_return_inputs,
+    beta_breadth_distribution,
+    config_fingerprint,
+    evaluate_e1_gate,
+    evaluate_e2_gate,
+    evaluate_returns_line,
+    inputs_fingerprint,
+    reproducibility_manifest,
+    returns_diagnostics,
+)
+from invest.domain.models import DailyBar, InsiderTransaction
+
+if TYPE_CHECKING:
+    from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+
+# The SEP pull reads NASDAQ_DATA_LINK_API_KEY; load .env so a real --pull-sep /
+# --measure-* run does not need the key exported in the shell (mirrors research_cmft).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ModuleNotFoundError:  # dotenv is optional; the env var may be set directly
+    pass
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TAPE_DIR = REPO_ROOT / "fixtures" / "sec-insider-tape"
@@ -63,11 +98,26 @@ SEP_DIR = Path(os.environ.get("CFOB_SEP_DIR", REPO_ROOT / "fixtures" / "full-dep
 REPORTS_DIR = REPO_ROOT / "fixtures" / "real-continuous" / "reports"
 DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-results.md"
 ARTIFACT_PATH = REPORTS_DIR / "cfob-structure.json"
+# The E1/E2 returns artifact + results doc are SEPARATE from the immutable D/F0
+# artifact (cfob-structure.json / cfob-results.md); the returns stage never
+# overwrites the structure stage (ADR 0003; ticket #93).
+RETURNS_ARTIFACT_PATH = REPORTS_DIR / "cfob-returns.json"
+RETURNS_DOCS_PATH = REPO_ROOT / "docs" / "research" / "cfob-e1-e2-results.md"
 REFERENCE_CACHE = TAPE_DIR / "tickers_reference_v2.json"
+# Daily habitat aggregate (ADR 0003 §4): per market session, the focal-inclusive
+# sum of open-to-open daily returns and the PIT-eligible name count. Built once
+# from the SEP panel and cached to parquet so E2 re-measures are cheap.
+HABITAT_CACHE = REPORTS_DIR / "cfob-habitat-daily.parquet"
 
 BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
 USER_AGENT = "invest-research ramoncarmenaty@gmail.com"
 FIRST_YEAR = 2006
+# SEP price warm-up: the E2 habitat factor needs the 252-bar habitat floor and the
+# date-specific 252-session beta both fully constructible *before* the first research
+# date. That is ~2 trading years of warm-up (252 floor + 252 beta); pull from
+# FIRST_YEAR-4 so the first research year (2006) is fully supported with margin and
+# the shared E2-supported placebo pool can reach back to ~2004 (ADR 0003 §4 amended).
+SEP_WARMUP_START = date(FIRST_YEAR - 4, 1, 1)
 REQUEST_PAUSE_SECONDS = 0.4
 RECONCILE_TOLERANCE = 0.02
 RECONCILE_SAMPLE = ((2006, 2), (2009, 4), (2012, 3), (2015, 1), (2018, 2), (2021, 4), (2024, 3))
@@ -167,8 +217,14 @@ def load_purchases(*, through: date, verbose: bool = True) -> tuple[list[Insider
     return list(purchases), totals
 
 
-def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, float, float]]]:
-    """Read one SEP year parquet, keeping only symbols with clusters."""
+def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, float, float, float]]]:
+    """Read one SEP year parquet, keeping only symbols with clusters.
+
+    Bars are the canonical ``(date, open_adj, close_adj, volume)`` shape: the
+    opening price is carried because the E1/E2 returns gates measure open-to-open
+    returns (ADR 0003 §1). ``open_adj`` is a hard requirement — a parquet without
+    it fails closed here, it is never synthesized.
+    """
 
     import pyarrow.parquet as pq
 
@@ -177,7 +233,7 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
         if FIRST_YEAR - 1 <= year <= date.today().year:
             raise SystemExit(f"fail-closed: SEP year parquet missing for {year}: {path}")
         return {}
-    wanted = ["symbol", "date", "close_adj", "volume"]
+    wanted = ["symbol", "date", "open_adj", "close_adj", "volume"]
     available = set(pq.ParquetFile(path).schema_arrow.names)
     missing = [column for column in wanted if column not in available]
     if missing:
@@ -185,17 +241,20 @@ def _load_sep_year(year: int, symbols: set[str]) -> dict[str, list[tuple[date, f
     table = pq.read_table(path, columns=wanted)
     tickers = table.column("symbol").to_pylist()
     dates = table.column("date").to_pylist()
+    opens = table.column("open_adj").to_pylist()
     closes = table.column("close_adj").to_pylist()
     volumes = table.column("volume").to_pylist()
 
-    out: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
-    for ticker, day, close, volume in zip(tickers, dates, closes, volumes, strict=False):
+    out: dict[str, list[tuple[date, float, float, float]]] = defaultdict(list)
+    for ticker, day, open_, close, volume in zip(
+        tickers, dates, opens, closes, volumes, strict=False
+    ):
         if ticker not in symbols:
             continue
-        if close is None or volume is None:
+        if open_ is None or close is None or volume is None:
             continue
         day = day.date() if hasattr(day, "date") else day
-        out[ticker].append((day, float(close), float(volume)))
+        out[ticker].append((day, float(open_), float(close), float(volume)))
     return out
 
 
@@ -305,6 +364,603 @@ def load_reference_listings(*, verbose: bool = True) -> tuple[list[ReferenceList
     return listings, "tickers-reference-api"
 
 
+def _load_symbol_opens(symbols: set[str]) -> dict[str, list[tuple[date, float]]]:
+    """Per-symbol ascending ``(session date, adjusted open)`` bars for the given
+    symbols, deduped across year parquets. Open-to-open E1 returns need each
+    symbol's own price series, not the shared trading calendar."""
+
+    available_years = sorted(
+        int(path.stem.split("_")[1]) for path in SEP_DIR.glob("sep_*.parquet")
+    )
+    merged: dict[str, dict[date, float]] = defaultdict(dict)
+    for year in available_years:
+        for symbol, bars in _load_sep_year(year, symbols).items():
+            for day, open_, _close, _volume in bars:
+                merged[symbol][day] = open_
+    return {symbol: sorted(day_open.items()) for symbol, day_open in merged.items()}
+
+
+def measure_e1_gate(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    *,
+    verbose: bool = True,
+) -> E1GateResult:
+    """Wire the frozen E1 gate end-to-end (ADR 0003 §1-5).
+
+    ``cohort_clusters`` are the de-overlapped clusters that form the common cohort;
+    ``embargo_events`` are the full pre-de-overlap qualifying code-P events per
+    ticker whose forward windows the placebo embargo must avoid. All statistical
+    logic lives in the tested pure ``cfob_returns`` layer — this only supplies the
+    price panel and the per-ticker real-event catalogue."""
+
+    symbols = {c.trading_symbol for c in cohort_clusters}
+    session_bars = _load_symbol_opens(symbols)
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_return_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+    )
+    cohort = assemble_e1_cohort(inputs, config=PROTOCOL)
+    result = evaluate_e1_gate(cohort, config=PROTOCOL)
+    if verbose:
+        if result.underpowered:
+            print(
+                f"  E1: underpowered_stop "
+                f"(cohort {result.cohort_n:,} < {PROTOCOL.estage_min_cohort:,})"
+            )
+        else:
+            print(
+                f"  E1 cohort {result.cohort_n:,} over {result.month_span} months → "
+                f"p={result.p:.5f} ({'pass' if result.passed else 'block'})"
+            )
+        for reason, count in sorted(result.drop_counts.items(), key=lambda kv: -kv[1]):
+            print(f"    dropped {reason}: {count:,}")
+    return result
+
+
+def _load_symbol_bars(symbols: set[str]) -> dict[str, list[tuple[date, float, float, float]]]:
+    """Per-symbol ascending ``(date, open, close, volume)`` bars, deduped across
+    year parquets. E2 needs close+volume (not just open) to evaluate point-in-time
+    habitat membership when building the daily aggregate."""
+
+    available_years = sorted(
+        int(path.stem.split("_")[1]) for path in SEP_DIR.glob("sep_*.parquet")
+    )
+    merged: dict[str, dict[date, tuple[float, float, float]]] = defaultdict(dict)
+    for year in available_years:
+        for symbol, bars in _load_sep_year(year, symbols).items():
+            for day, open_, close, volume in bars:
+                merged[symbol][day] = (open_, close, volume)
+    return {
+        symbol: [(day, *ocv) for day, ocv in sorted(day_bar.items())]
+        for symbol, day_bar in merged.items()
+    }
+
+
+def materialize_sep_panel(
+    symbols: set[str],
+    start: date,
+    end: date,
+    out_dir: Path,
+    *,
+    reader: "SharadarMarketDataReader | None" = None,
+    verbose: bool = True,
+) -> list[Path]:
+    """Pull the adjusted SEP panel for ``symbols`` over ``[start, end]`` and write it
+    as the ``sep_<year>.parquet`` files this driver consumes (ADR 0003 §1).
+
+    The Sharadar adapter already applies the ``closeadj/close`` split/dividend ratio
+    on the way in, so ``DailyBar.open`` is the adjusted open (``open_adj``) and
+    ``DailyBar.close`` is ``closeadj`` (``close_adj``) — no adjustment is redone
+    here. Bars are grouped by calendar year and written with the canonical
+    ``symbol, date, open_adj, close_adj, volume`` columns. Missing symbols, mid-range
+    IPOs, and halts are tolerated by ``fetch_available`` (a bulk panel is not a
+    point-in-time universe), so this fails closed only on a malformed response.
+    """
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from invest.adapters.sharadar_market_data import SharadarMarketDataReader
+
+    reader = reader or SharadarMarketDataReader()
+    if verbose:
+        print(
+            f"  pulling SEP for {len(symbols):,} symbols "
+            f"{start.isoformat()}..{end.isoformat()}..."
+        )
+    bars = reader.fetch_available(tuple(sorted(symbols)), start, end)
+
+    by_year: dict[int, list[DailyBar]] = defaultdict(list)
+    for bar in bars:
+        by_year[bar.date.year].append(bar)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for year, year_bars in sorted(by_year.items()):
+        path = out_dir / f"sep_{year}.parquet"
+        table = pa.table(
+            {
+                "symbol": [bar.symbol for bar in year_bars],
+                "date": [bar.date for bar in year_bars],
+                "open_adj": [float(bar.open) for bar in year_bars],
+                "close_adj": [float(bar.close) for bar in year_bars],
+                "volume": [float(bar.volume) for bar in year_bars],
+            }
+        )
+        pq.write_table(table, path)
+        written.append(path)
+        if verbose:
+            print(f"  wrote {path} ({len(year_bars):,} bars)")
+    return written
+
+
+def build_habitat_daily_aggregate(
+    bars_by_symbol: dict[str, list[tuple[date, float, float, float]]],
+) -> dict[date, tuple[float, int]]:
+    """The daily habitat aggregate (ADR 0003 §4): for each market session, the
+    focal-inclusive sum of open-to-open daily returns and the count of PIT-eligible
+    habitat names contributing them.
+
+    Membership is resolved per (symbol, session) with the frozen habitat floor
+    (``evaluate_universe_membership`` — 20-bar median dollar volume ≥ $2M, 252-bar
+    history) using only information available *at* that session, over a bounded
+    trailing window so the pass stays linear in sessions. Every eligible name
+    contributes its own return; the per-cluster leave-one-out removes the focal
+    downstream — so this single aggregate is reused across all cohort clusters.
+
+    Caveat (ADR 0003 §4 frozen formula): the LOO ``(sum_r − r_focal)/(count − 1)``
+    presumes the focal is one of the ``count`` eligible names on that session. That
+    holds across the focal's own qualifying window (it cleared the same floor); a
+    focal that *loses* eligibility mid-forward-window would be subtracted from a sum
+    that no longer contains it — a small bias flagged for the data-integrity review,
+    not corrected here (the frozen formula is not edited)."""
+
+    window = PROTOCOL.min_history_bars + PROTOCOL.dollar_volume_window + 8
+    daily_sum: dict[date, float] = defaultdict(float)
+    daily_count: dict[date, int] = defaultdict(int)
+    for bars in bars_by_symbol.values():
+        for s in range(len(bars) - 1):
+            day, open_, _close, _volume = bars[s]
+            decision = evaluate_universe_membership(
+                bars=bars[max(0, s - window) : s + 1], known_time=day
+            )
+            if not decision.eligible:
+                continue
+            daily_sum[day] += bars[s + 1][1] / open_ - 1.0  # open-to-open daily return
+            daily_count[day] += 1
+    return {day: (daily_sum[day], daily_count[day]) for day in daily_sum}
+
+
+def load_or_build_habitat_aggregate(
+    universe_symbols: set[str], *, verbose: bool = True
+) -> dict[date, tuple[float, int]]:
+    """Read the cached daily habitat aggregate, or build it once and cache to
+    parquet (ADR 0003 §4 — re-measures reuse the cache). The cache is keyed only
+    by the frozen habitat floor, so it is valid for any cohort drawn from it."""
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if HABITAT_CACHE.is_file():
+        table = pq.read_table(HABITAT_CACHE)
+        days = table.column("date").to_pylist()
+        sums = table.column("sum_r").to_pylist()
+        counts = table.column("count").to_pylist()
+        aggregate = {
+            (day.date() if hasattr(day, "date") else day): (float(s), int(c))
+            for day, s, c in zip(days, sums, counts, strict=True)
+        }
+        if verbose:
+            print(f"  habitat aggregate from cache: {len(aggregate):,} sessions")
+        return aggregate
+
+    if verbose:
+        print(f"  building daily habitat aggregate over {len(universe_symbols):,} symbols...")
+    bars = _load_symbol_bars(universe_symbols)
+    aggregate = build_habitat_daily_aggregate(bars)
+    ordered = sorted(aggregate.items())
+    table = pa.table(
+        {
+            "date": [day for day, _ in ordered],
+            "sum_r": [sc[0] for _, sc in ordered],
+            "count": [sc[1] for _, sc in ordered],
+        }
+    )
+    HABITAT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, HABITAT_CACHE)
+    if verbose:
+        print(f"  cached habitat aggregate: {len(aggregate):,} sessions → {HABITAT_CACHE}")
+    return aggregate
+
+
+def measure_e2_gate(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    universe_symbols: set[str],
+    *,
+    verbose: bool = True,
+) -> E2GateResult:
+    """Wire the frozen E2 gate end-to-end on the same common frozen cohort as E1
+    (ADR 0003 §4, §5).
+
+    ``cohort_clusters`` and ``embargo_events`` are exactly as handed to E1, so the
+    E2 cohort's clusters and per-cluster placebo dates are identical. The reused
+    daily habitat aggregate is built over the full habitat ``universe_symbols`` (not
+    just the cohort symbols) — the leave-one-out factor is the market-wide habitat,
+    focal excluded. All statistics live in the tested pure ``cfob_returns`` layer."""
+
+    aggregate = load_or_build_habitat_aggregate(universe_symbols, verbose=verbose)
+    session_bars = _load_symbol_opens({c.trading_symbol for c in cohort_clusters})
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_e2_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+        habitat_daily_by_date=aggregate,
+    )
+    cohort = assemble_e2_cohort(inputs, config=PROTOCOL)
+    result = evaluate_e2_gate(cohort, config=PROTOCOL)
+    if verbose:
+        if result.underpowered:
+            print(
+                f"  E2: underpowered_stop "
+                f"(cohort {result.cohort_n:,} < {PROTOCOL.estage_min_cohort:,})"
+            )
+        else:
+            print(
+                f"  E2 cohort {result.cohort_n:,} over {result.month_span} months → "
+                f"p={result.p:.5f} ({'pass' if result.passed else 'block'})"
+            )
+        for reason, count in sorted(result.drop_counts.items(), key=lambda kv: -kv[1]):
+            print(f"    dropped {reason}: {count:,}")
+    return result
+
+
+def measure_returns_line(
+    embargo_events: list[PurchaseCluster],
+    cohort_clusters: list[PurchaseCluster],
+    universe_symbols: set[str],
+    *,
+    verbose: bool = True,
+) -> tuple[ReturnsLineResult, CommonCohort, str, dict]:
+    """Wire the full E1/E2 returns line end-to-end on the one common frozen cohort
+    (ADR 0003 §Roles, §5; ticket #93). Returns the conjunctive result, the common
+    cohort, the input-panel fingerprint (§6), and the archival beta/breadth
+    distributions over the kept cohort."""
+
+    aggregate = load_or_build_habitat_aggregate(universe_symbols, verbose=verbose)
+    session_bars = _load_symbol_opens({c.trading_symbol for c in cohort_clusters})
+    real_events: dict[str, list[date]] = defaultdict(list)
+    for event in embargo_events:
+        real_events[event.trading_symbol].append(event.known_time)
+    inputs = build_cluster_e2_inputs(
+        [(c.trading_symbol, c.known_time) for c in cohort_clusters],
+        session_bars_by_symbol=session_bars,
+        real_event_known_times_by_symbol=real_events,
+        habitat_daily_by_date=aggregate,
+    )
+    cohort = assemble_common_cohort(inputs, config=PROTOCOL)
+    result = evaluate_returns_line(cohort, config=PROTOCOL)
+    if verbose:
+        _print_returns_result(result)
+    # Archival beta/breadth distributions over the kept cohort (non-gating).
+    beta_breadth = beta_breadth_distribution(inputs, cohort.cluster_ids, config=PROTOCOL)
+    return result, cohort, inputs_fingerprint(inputs), beta_breadth
+
+
+def _print_returns_result(result: ReturnsLineResult) -> None:
+    if result.verdict == str(Verdict.UNDERPOWERED_STOP):
+        print(f"  verdict: underpowered_stop (cohort {result.cohort_n:,} < "
+              f"{PROTOCOL.estage_min_cohort:,})")
+    else:
+        e1p = result.e1.p
+        e2p = result.e2.p
+        print(f"  common cohort {result.cohort_n:,} over {result.month_span} months")
+        print(f"  E1 p={e1p:.5f}  E2 p={e2p:.5f}  →  verdict: {result.verdict}"
+              + (f" (failing {', '.join(result.failing_gates)})" if result.failing_gates else ""))
+    for reason, count in sorted(result.e1.drop_counts.items(), key=lambda kv: -kv[1]):
+        print(f"    dropped {reason}: {count:,}")
+
+
+def _artifact_content_sha256(artifact: dict) -> str:
+    """SHA-256 over the canonical JSON of the artifact, excluding any prior hash
+    field — the self-hash that pins this exact archived record."""
+    payload = {k: v for k, v in artifact.items() if k != "artifact_sha256"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_returns_artifact(
+    result: ReturnsLineResult,
+    cohort: CommonCohort,
+    *,
+    mode: str,
+    git_sha: str | None,
+    data_fingerprint: str | None = None,
+    beta_breadth: dict | None = None,
+) -> dict:
+    """The E1/E2 returns artifact (``cfob-returns.json``). Separate from the D/F0
+    ``cfob-structure.json`` and never overwrites it (ticket #93). ``capital_go`` is
+    false by construction. Carries a self-``artifact_sha256`` (computed last) so the
+    archived record is content-addressable."""
+
+    manifest = reproducibility_manifest(
+        cohort, result, config=PROTOCOL, data_fingerprint=data_fingerprint
+    )
+    diagnostics = returns_diagnostics(cohort, result, config=PROTOCOL)
+    artifact = {
+        "stage": "E1+E2",
+        "line": PROTOCOL.line,
+        "experiment_id": "cfob-e1-e2",
+        "git_sha": git_sha,
+        "mode": mode,
+        "verdict": result.verdict,
+        "failing_gates": list(result.failing_gates),
+        "capital_go": False,
+        "implementability_eligible": False,
+        "cohort": {
+            "common_cohort_n": result.cohort_n,
+            "month_span": result.month_span,
+            "drop_counts": dict(result.e1.drop_counts),
+        },
+        "gates": {
+            "E1": result.e1.to_dict(),
+            "E2": result.e2.to_dict(),
+            "alpha": PROTOCOL.estage_bootstrap_alpha,
+            "cost_bps": PROTOCOL.estage_cost_bps,
+            "conjunctive": "stage_pass iff E1 p<=alpha AND E2 p<=alpha on the same cohort",
+        },
+        "protocol": {
+            "horizon_sessions": PROTOCOL.horizon_sessions,
+            "cost_bps": PROTOCOL.estage_cost_bps,
+            "cost_ladder_bps": list(PROTOCOL.estage_cost_ladder_bps),
+            "winsor_tail": PROTOCOL.estage_winsor_tail,
+            "min_cohort": PROTOCOL.estage_min_cohort,
+            "bootstrap_replications": PROTOCOL.estage_bootstrap_replications,
+            "bootstrap_alpha": PROTOCOL.estage_bootstrap_alpha,
+            "block_expected_months": PROTOCOL.estage_block_expected_months,
+            "block_restart_q": PROTOCOL.estage_block_restart_q,
+            "placebo_draws": PROTOCOL.estage_placebo_draws,
+            "beta_window_sessions": PROTOCOL.estage_beta_window_sessions,
+            "beta_min_pairs": PROTOCOL.estage_beta_min_pairs,
+            "factor_breadth_floor": PROTOCOL.estage_factor_breadth_floor,
+            "spec_version": PROTOCOL.estage_spec_version,
+            "entry_rule": "next_open_after_filing_date",
+        },
+        "diagnostics": diagnostics,
+        "reproducibility": manifest,
+        "claims": [
+            "E1 is provisional timing evidence; a green E1 is not alpha.",
+            f"stage_pass requires BOTH E1 and E2 p<={PROTOCOL.estage_bootstrap_alpha} on the "
+            f"same common frozen cohort at {PROTOCOL.estage_cost_bps:g} bps round-trip.",
+            "E2 is a habitat-factor-adjusted timing test, not asset-pricing alpha and "
+            "not an investable return.",
+        ],
+        "non_claims": [
+            "Not capital permission; capital_go is false by construction.",
+            "Not comparable gate-by-gate to R2-1 / CMFT / Phase 2 or CFOB Stage D.",
+            "Does not reopen residual, R2-1, PEAD, or CMFT.",
+            "The habitat factor is gross; cost applies only to the focal traded leg.",
+        ],
+        "archival": {
+            "status": "line-closed",
+            "config_fingerprint": config_fingerprint(PROTOCOL),
+            "beta_breadth_distribution": beta_breadth,
+            "note": "Line archived at this record. Do NOT retune any frozen constant "
+            "against the same data — a changed config_fingerprint is a new trial under "
+            "the deflated-Sharpe standard, not an edit to this result.",
+        },
+    }
+    artifact["artifact_sha256"] = _artifact_content_sha256(artifact)
+    return artifact
+
+
+def _fmt_ci(ci: dict | None) -> str:
+    if not ci:
+        return "(n/a)"
+    return (f"point `{ci['point']:.5f}`, {int((1 - ci['ci_alpha']) * 100)}% CI "
+            f"[`{ci['ci_low']:.5f}`, `{ci['ci_high']:.5f}`]")
+
+
+def _fmt_dist(d: dict | None) -> str:
+    if not d:
+        return "(n/a)"
+    return (f"n={d['n']:,} · median `{d['median']:.4g}` · "
+            f"p5..p95 [`{d['p5']:.4g}`, `{d['p95']:.4g}`]")
+
+
+def _archival_doc_lines(artifact: dict) -> list[str]:
+    """The line-close archival section: bootstrap CIs, the post-hoc paired contrast,
+    beta/habitat-breadth distributions, the config + artifact hashes, the explicit
+    cost-cancellation statement, and the do-not-retune notice."""
+    diag = artifact.get("diagnostics", {})
+    ci = diag.get("bootstrap_ci", {})
+    paired = diag.get("paired_e1_minus_e2_posthoc", {})
+    arch = artifact.get("archival", {})
+    bb = arch.get("beta_breadth_distribution", {}) or {}
+    repro = artifact["reproducibility"]
+    pci = paired.get("block_bootstrap_ci") if isinstance(paired, dict) else None
+    lines = [
+        "## Line-close archive",
+        "",
+        f"**Status:** `{arch.get('status', 'line-closed')}` — {arch.get('note', '')}",
+        "",
+        "### Bootstrap confidence intervals (post-hoc, non-gating)",
+        "",
+        "Percentile CIs for θ̂ = T(d) from the **un-recentered** block resample "
+        "(the gate itself is the one-sided null-imposed p-value; these only show the "
+        "point estimate's sampling spread):",
+        "",
+        f"- E1: {_fmt_ci(ci.get('E1'))}",
+        f"- E2: {_fmt_ci(ci.get('E2'))}",
+        "",
+        "### Paired contrast dᵢ^E1 − dᵢ^E2 — **EXPLORATORY / POST-HOC**",
+        "",
+        "Not a pre-registered gate; decides nothing, recorded for the archive only:",
+        "",
+        f"- winsorized mean `{paired.get('winsorized_mean'):.5f}`, {_fmt_ci(pci)}, "
+        f"excludes zero: `{paired.get('ci_excludes_zero')}`"
+        if isinstance(paired, dict) and paired.get("winsorized_mean") is not None
+        else "- (unavailable)",
+        "",
+        "### Beta and habitat-breadth distributions (kept cohort)",
+        "",
+        f"- Observed pre-event OLS beta: {_fmt_dist(bb.get('observed_beta'))}",
+        f"- Habitat breadth (non-focal names, count−1): {_fmt_dist(bb.get('habitat_breadth_nonfocal'))}",
+        "",
+        "### Cost invariance",
+        "",
+        "A **fixed symmetric 25 bps round-trip cost cancels exactly** from the "
+        "observed-minus-placebo `dᵢ` (both legs are net of the same cost). It affects "
+        "**absolute profitability** reporting, but **not** these E1/E2 inferential "
+        "statistics — the 10/25/50 bps ladder moves neither p-value.",
+        "",
+        "### Content hashes",
+        "",
+        f"- `config_fingerprint`: `{arch.get('config_fingerprint')}`",
+        f"- `artifact_sha256`: `{artifact.get('artifact_sha256', '(injected at write)')}`",
+        f"- `data_fingerprint`: `{repro['data_fingerprint']}`",
+        f"- `cohort_fingerprint`: `{repro['cohort_fingerprint']}`",
+        "",
+        "**Archived — do not retune against the same data.** A changed "
+        "`config_fingerprint` is a new trial under the deflated-Sharpe standard, not an "
+        "edit to this result.",
+        "",
+    ]
+    return lines
+
+
+def write_returns_docs(artifact: dict) -> None:
+    """The E1/E2 results doc (``docs/research/cfob-e1-e2-results.md``), mirroring the
+    D/F0 results-doc shape: verdict, cohort counts, both gate p-values, drop ledger,
+    protocol block, claims/non-claims, manifest, and the line-close archival block
+    (ticket #93 + archival close)."""
+
+    gates = artifact["gates"]
+    e1 = gates["E1"]
+    e2 = gates["E2"]
+    cohort = artifact["cohort"]
+    repro = artifact["reproducibility"]
+    lines = [
+        "# CFOB E1/E2 returns gates — results",
+        "",
+        f"**Verdict:** `{artifact['verdict']}`"
+        + (f" (failing: {', '.join(artifact['failing_gates'])})" if artifact["failing_gates"] else "")
+        + f" · `capital_go` = {str(artifact['capital_go']).lower()}",
+        "",
+        f"- Mode: `{artifact['mode']}` · git `{artifact['git_sha']}`",
+        f"- Common frozen cohort: **{cohort['common_cohort_n']:,}** clusters over "
+        f"{cohort['month_span']} known-time months",
+        f"- E1 p = `{e1['p']}` · E2 p = `{e2['p']}` · α = `{gates['alpha']}` · "
+        f"cost = {gates['cost_bps']} bps round-trip",
+        "",
+        "## Conjunctive gate",
+        "",
+        f"`stage_pass` iff E1 `p ≤ {gates['alpha']}` **and** E2 `p ≤ {gates['alpha']}` on the "
+        f"*same* common frozen cohort; else `promotion_block` naming the failing gate; "
+        f"`underpowered_stop` below the {PROTOCOL.estage_min_cohort:,}-cluster floor. "
+        f"`capital_go` stays a separate human decision even on a green E2.",
+        "",
+        "## Drop-reason ledger",
+        "",
+        "Every cluster excluded from the common cohort is counted (resolved before "
+        "inference, no post-hoc exclusion):",
+        "",
+    ]
+    drops = cohort["drop_counts"]
+    if drops:
+        for reason, count in sorted(drops.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{reason}`: {count:,}")
+    else:
+        lines.append("- (none)")
+    lines += [
+        "",
+        "## Non-gating diagnostics",
+        "",
+        "The block bootstrap is the gate; the diagnostics below are reported, never "
+        "gated. Parametric iid / month-clustered / ticker-clustered t **under-state** "
+        "the calendar-overlap dependence. The round-trip cost **cancels** in the "
+        "placebo-differenced `d_i`, so the 10/25/50 bps ladder does not move the gate "
+        "statistic. Estimator/data variants outside this build (non-circular blocks, "
+        "Politis–White selector, intercept-inclusive / log-return / unit-beta / SPY "
+        "benchmarks, universe-excess) are recorded as `deferred_non_gating`.",
+        "",
+        "## Reproducibility",
+        "",
+        f"- NumPy `{repro['numpy_version']}` · generator `{repro['generator']}`",
+        f"- Master seed `{repro['master_seed']}` · spec `{repro['spec_version']}`",
+        f"- Data fingerprint `{repro['data_fingerprint']}`",
+        "- Seeds, bootstrap-index hashes, and the SHA-256 length-prefixed "
+        "serialization contract are in `cfob-returns.json` — a second same-seed / "
+        "same-data run reproduces every p-value bit-for-bit.",
+        "",
+        *_archival_doc_lines(artifact),
+        "## Claims",
+        "",
+        *[f"- {c}" for c in artifact["claims"]],
+        "",
+        "### Non-claims",
+        "",
+        *[f"- {c}" for c in artifact["non_claims"]],
+        "",
+        "## How to re-run",
+        "",
+        "```bash",
+        "CFOB_SEP_DIR=fixtures/full-depth-sep \\",
+        "  uv run python fixtures/real-continuous/reports/research_cfob.py "
+        "--measure-returns --write-docs",
+        "```",
+        "",
+        "Frozen design: `docs/adr/0003-cfob-e1-e2-returns-gate.md`.",
+        "",
+    ]
+    RETURNS_DOCS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RETURNS_DOCS_PATH.write_text("\n".join(lines))
+
+
+def synthetic_returns_inputs() -> list[ClusterE2Inputs]:
+    """A tiny synthetic common-cohort input set for the ``--measure-returns
+    --synthetic`` smoke path — exercises assemble → gates → verdict → artifact →
+    doc end-to-end without the SEP panel. Claims nothing."""
+
+    import numpy as np
+
+    rng = np.random.default_rng(0xC0B)
+    inputs: list[ClusterE2Inputs] = []
+    # Deep enough that every drawn placebo clears the frozen 252-session beta window
+    # and the 60-session forward window: real events at 60/180/300 embargo indices
+    # 0..360, so admissible placebo dates all sit above the beta-window floor.
+    n = 700
+    for i in range(24):
+        steps = rng.normal(scale=0.01, size=n - 1)
+        opens = [100.0]
+        for step in steps:
+            opens.append(opens[-1] * (1.0 + step))
+        focal_daily = np.asarray(opens[1:]) / np.asarray(opens[:-1]) - 1.0
+        # Habitat: wide enough to clear the breadth floor every session.
+        habitat_sum = list(0.4 * focal_daily + rng.normal(scale=0.001, size=n - 1))
+        habitat_count = [60] * (n - 1)
+        inputs.append(
+            ClusterE2Inputs(
+                cluster_id=f"SYN{i}:2015-01-02",
+                known_time=date(2015, 1, 2 + (i % 20)),
+                session_opens=tuple(opens),
+                habitat_sum=tuple(float(x) for x in habitat_sum),
+                habitat_count=tuple(habitat_count),
+                entry_index=500,
+                real_event_entry_indices=(60, 180, 300),
+            )
+        )
+    return inputs
+
+
 def apply_universe_filter(
     clusters: list[PurchaseCluster], *, verbose: bool = True
 ) -> tuple[list[PurchaseCluster], dict[str, list[date]], dict]:
@@ -326,7 +982,7 @@ def apply_universe_filter(
 
     symbols = {cluster.trading_symbol for cluster in clusters}
     years = sorted({cluster.year for cluster in clusters})
-    history: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
+    history: dict[str, list[tuple[date, float, float, float]]] = defaultdict(list)
     kept: list[PurchaseCluster] = []
     secondary_kept = 0
     price_floor_excluded = 0
@@ -346,7 +1002,7 @@ def apply_universe_filter(
                 continue
             for symbol, bars in _load_sep_year(load_year, symbols).items():
                 history[symbol].extend(bars)
-                market_sessions.update(day for day, _, _ in bars)
+                market_sessions.update(day for day, *_ in bars)
         for symbol in list(history):
             history[symbol] = sorted(set(history[symbol]))[-600:]
 
@@ -598,6 +1254,29 @@ def main() -> int:
     parser.add_argument("--synthetic", action="store_true", help="smoke mode, claims nothing")
     parser.add_argument("--write-docs", action="store_true", help="write the results doc")
     parser.add_argument(
+        "--measure-e1",
+        action="store_true",
+        help="after cohort formation, run the E1 returns gate and print its p-value",
+    )
+    parser.add_argument(
+        "--measure-e2",
+        action="store_true",
+        help="after cohort formation, run the E2 returns gate (habitat-adjusted) "
+        "on the same frozen cohort and print its p-value",
+    )
+    parser.add_argument(
+        "--measure-returns",
+        action="store_true",
+        help="run the full E1/E2 returns line (conjunctive verdict) on the one common "
+        "frozen cohort and write cfob-returns.json + the results doc",
+    )
+    parser.add_argument(
+        "--pull-sep",
+        action="store_true",
+        help="materialize the SEP year parquets for the cluster symbols into "
+        "CFOB_SEP_DIR (needs NASDAQ_DATA_LINK_API_KEY), then exit",
+    )
+    parser.add_argument(
         "--skip-reconcile",
         action="store_true",
         help="skip EDGAR form.idx reconcile (fail-closed unless synthetic)",
@@ -605,6 +1284,24 @@ def main() -> int:
     args = parser.parse_args()
 
     through = date.today()
+
+    if args.synthetic and args.measure_returns:
+        # Full E1/E2 returns line on a synthetic common cohort — exercises
+        # assemble -> gates -> conjunctive verdict -> artifact -> doc without SEP.
+        print("Running E1/E2 returns line on synthetic common cohort (claims nothing)...")
+        syn_inputs = synthetic_returns_inputs()
+        cohort = assemble_common_cohort(syn_inputs, config=PROTOCOL)
+        result = evaluate_returns_line(cohort, config=PROTOCOL)
+        _print_returns_result(result)
+        artifact = build_returns_artifact(
+            result, cohort, mode="synthetic", git_sha=current_git_sha(),
+            data_fingerprint=inputs_fingerprint(syn_inputs),
+        )
+        RETURNS_ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
+        if args.write_docs:
+            write_returns_docs(artifact)
+        print(f"synthetic returns verdict: {artifact['verdict']}")
+        return 0
 
     if args.synthetic:
         raw = synthetic_clusters()
@@ -656,10 +1353,11 @@ def main() -> int:
         raise SystemExit("fail-closed: no qualifying purchases parsed")
     print(f"  qualifying purchases: {len(purchases):,}")
 
-    if not SEP_DIR.is_dir():
+    if not args.pull_sep and not SEP_DIR.is_dir():
         raise SystemExit(
             f"fail-closed: SEP panel not found at {SEP_DIR}. "
-            "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory."
+            "Set CFOB_SEP_DIR to the full-depth SEP year-parquet directory, "
+            "or run --pull-sep to materialize it."
         )
 
     print("Loading TICKERS reference for CIK-primary mapping...")
@@ -684,6 +1382,17 @@ def main() -> int:
     raw = list(build_clusters(canonical_purchases))
     print(f"  raw clusters: {len(raw):,}")
 
+    if args.pull_sep:
+        # Materialize the SEP price panel for every raw cluster symbol (a superset
+        # of the universe-eligible set) from SEP_WARMUP_START so the habitat floor
+        # AND the date-specific 252-session beta are fully constructible before the
+        # first research date. The subsequent measure run reads it back.
+        print(f"Materializing SEP price panel into {SEP_DIR}...")
+        symbols = {cluster.trading_symbol for cluster in raw}
+        written = materialize_sep_panel(symbols, SEP_WARMUP_START, through, SEP_DIR)
+        print(f"  wrote {len(written):,} year parquet(s)")
+        return 0
+
     print(f"Applying habitat universe filter from SEP ({SEP_DIR})...")
     eligible, sessions, diagnostics = apply_universe_filter(raw)
     print(f"  universe-eligible clusters: {len(eligible):,}")
@@ -696,6 +1405,41 @@ def main() -> int:
     print("De-overlapping (first-wins, h60)...")
     deoverlapped = list(de_overlap(eligible, sessions_by_symbol=sessions))
     print(f"  de-overlapped clusters: {len(deoverlapped):,}")
+
+    if args.measure_e1:
+        # E1 returns gate (ADR 0003). Embargo avoids every pre-de-overlap
+        # universe-eligible event window; the cohort is the de-overlapped set.
+        print("\nRunning E1 returns gate (open-to-open h60, placebo block bootstrap)...")
+        measure_e1_gate(eligible, deoverlapped)
+        return 0
+
+    if args.measure_e2:
+        # E2 returns gate (ADR 0003 §4) on the *same* frozen cohort as E1. The
+        # habitat aggregate is built over the universe-eligible symbols (focal
+        # excluded per cluster via the leave-one-out factor) and cached.
+        print("\nRunning E2 returns gate (habitat LOO factor, pre-event beta benchmark)...")
+        habitat_universe = {cluster.trading_symbol for cluster in eligible}
+        measure_e2_gate(eligible, deoverlapped, habitat_universe)
+        return 0
+
+    if args.measure_returns:
+        # Full E1/E2 returns line -> conjunctive verdict on the one common frozen
+        # cohort, plus the separate cfob-returns.json artifact + results doc
+        # (ADR 0003 §Roles, §5; ticket #93). cfob-structure.json is left untouched.
+        print("\nRunning E1/E2 returns line (conjunctive verdict on the common cohort)...")
+        habitat_universe = {cluster.trading_symbol for cluster in eligible}
+        result, cohort, data_fp, beta_breadth = measure_returns_line(
+            eligible, deoverlapped, habitat_universe
+        )
+        artifact = build_returns_artifact(
+            result, cohort, mode="measured", git_sha=current_git_sha(),
+            data_fingerprint=data_fp, beta_breadth=beta_breadth,
+        )
+        RETURNS_ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
+        if args.write_docs:
+            write_returns_docs(artifact)
+        print(f"  wrote {RETURNS_ARTIFACT_PATH}")
+        return 0
 
     shares = year_shares(deoverlapped)
     d_report = evaluate_stage_d(de_overlapped_clusters=len(deoverlapped), shares=shares)

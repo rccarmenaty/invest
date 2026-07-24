@@ -802,3 +802,81 @@ def test_retryable_statuses_use_bounded_retry_and_retry_after(
     assert caught.value.reason == reason
     assert attempts == 3
     assert sleeps == expected_sleeps
+
+
+def test_fetch_available_tolerates_a_symbol_missing_from_sep(monkeypatch) -> None:
+    """Bulk panel materialization keeps whatever bars exist; a delisted/absent
+    symbol is simply not present, never a fail-closed like fetch_range."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_sep_page([["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10]]))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    bars = reader.fetch_available(("ACME", "MISSING"), date(2024, 1, 1), date(2024, 1, 31))
+
+    assert [bar.symbol for bar in bars] == ["ACME"]
+
+
+def test_fetch_available_tolerates_incomplete_date_coverage(monkeypatch) -> None:
+    """An IPO/halt gap (bars only on some sessions) is admissible for the panel;
+    fetch_range would reject it as incomplete coverage."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # ACME both days, BETA only the second day.
+        return httpx.Response(
+            200,
+            json=_sep_page(
+                [
+                    ["ACME", "2024-01-02", 10, 11, 9, 10, 100, 10],
+                    ["ACME", "2024-01-03", 10, 11, 9, 10, 100, 10],
+                    ["BETA", "2024-01-03", 20, 21, 19, 20, 50, 20],
+                ]
+            ),
+        )
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    bars = reader.fetch_available(("ACME", "BETA"), date(2024, 1, 2), date(2024, 1, 3))
+
+    assert [(bar.symbol, bar.date) for bar in bars] == [
+        ("ACME", date(2024, 1, 2)),
+        ("ACME", date(2024, 1, 3)),
+        ("BETA", date(2024, 1, 3)),
+    ]
+
+
+def test_fetch_available_merges_chunks_sorted_by_symbol_then_date(monkeypatch) -> None:
+    """Over-budget symbol sets pull in disjoint chunks; the merged panel is sorted
+    by (symbol, date) so per-year grouping downstream is deterministic."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rows = [
+            [ticker, "2024-01-02", 10, 11, 9, 10, 100, 10]
+            for ticker in request.url.params["ticker"].split(",")
+        ]
+        return httpx.Response(200, json=_sep_page(rows))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reader.MAX_TICKER_PARAM_CHARS = 9
+
+    bars = reader.fetch_available(("CCCC", "AAAA", "BBBB"), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert [bar.symbol for bar in bars] == ["AAAA", "BBBB", "CCCC"]
+
+
+def test_fetch_available_returns_adjusted_open_and_close(monkeypatch) -> None:
+    """The panel carries adjusted open (open_adj) and closeadj (close_adj): the
+    adapter's closeadj/close ratio is applied to open, and close equals closeadj."""
+    monkeypatch.setenv("NASDAQ_DATA_LINK_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # raw open 10, close 10, closeadj 20 -> 2x split factor.
+        return httpx.Response(200, json=_sep_page([["ACME", "2024-01-02", 10, 12, 9, 10, 100, 20]]))
+
+    reader = SharadarMarketDataReader(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    bars = reader.fetch_available(("ACME",), date(2024, 1, 2), date(2024, 1, 2))
+
+    assert bars[0].open == Decimal("20")
+    assert bars[0].close == Decimal("20")

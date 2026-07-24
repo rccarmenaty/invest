@@ -723,9 +723,17 @@ def test_symbol_alone_never_establishes_identity() -> None:
 
 
 def _bars(
-    *, days: int, close: float = 20.0, volume: float = 500_000.0, start: date = date(2019, 1, 1)
-) -> list[tuple[date, float, float]]:
-    return [(start + timedelta(days=i), close, volume) for i in range(days)]
+    *,
+    days: int,
+    close: float = 20.0,
+    volume: float = 500_000.0,
+    start: date = date(2019, 1, 1),
+    open_: float | None = None,
+) -> list[tuple[date, float, float, float]]:
+    # Canonical bar shape is (date, open, close, volume); open defaults to close
+    # when a test does not care about it.
+    o = close if open_ is None else open_
+    return [(start + timedelta(days=i), o, close, volume) for i in range(days)]
 
 
 def test_universe_rejects_a_symbol_with_no_price_history() -> None:
@@ -823,3 +831,46 @@ def test_dedupe_propagates_source_table_provenance() -> None:
     deduped, _ = dedupe_amendments([original, amendment])
 
     assert all(t.source_table == "NONDERIV_TRANS" for t in deduped)
+
+
+# --- E1/E2 plumbing prefactor (ticket #89) -----------------------------------
+
+
+def test_verdict_has_promotion_block_alongside_existing_exits() -> None:
+    assert Verdict.PROMOTION_BLOCK == "promotion_block"
+    # Existing dual-exit vocabulary is intact.
+    assert Verdict.KILL_LINE == "kill_line"
+    assert Verdict.UNDERPOWERED_STOP == "underpowered_stop"
+    assert Verdict.STAGE_PASS == "stage_pass"
+
+
+def test_protocol_config_carries_frozen_e1_e2_gate_constants() -> None:
+    c = ProtocolConfig()
+    # Return / cost (ADR 0003 §1)
+    assert c.estage_cost_bps == 25.0
+    assert c.estage_cost_ladder_bps == (10.0, 25.0, 50.0)
+    # Cohort estimator T(d) (ADR 0003 §3)
+    assert c.estage_winsor_tail == 0.01
+    assert c.estage_min_cohort == 2000
+    # Block bootstrap gate (ADR 0003 §2)
+    assert c.estage_bootstrap_replications == 99_999
+    assert c.estage_bootstrap_alpha == 0.005
+    assert c.estage_block_expected_months == 6
+    assert c.estage_block_restart_q == pytest.approx(1.0 / 6.0)
+    # Placebo (ADR 0003 §5)
+    assert c.estage_placebo_draws == 100
+    # E2 beta / benchmark (ADR 0003 §4)
+    assert c.estage_beta_window_sessions == 252
+    assert c.estage_beta_min_pairs == 200
+    assert c.estage_factor_breadth_floor == 50
+    # Reproducibility contract (ADR 0003 §6)
+    assert isinstance(c.estage_master_seed, int)
+    assert isinstance(c.estage_spec_version, str) and c.estage_spec_version
+
+
+def test_protocol_config_retains_diagnostic_t_thresholds() -> None:
+    # The frozen D/F0 artifact still serializes these placeholder E1 bars; they
+    # stay as diagnostic thresholds and must not be removed by the E1/E2 work.
+    c = ProtocolConfig()
+    assert c.future_min_clustered_t == 3.0
+    assert c.future_trimmed_min_t == 2.0
