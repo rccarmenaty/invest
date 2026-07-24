@@ -31,7 +31,7 @@ import bisect
 import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date
 
 import numpy as np
@@ -213,6 +213,76 @@ def stationary_block_bootstrap_p(
         discards=discards,
         index_hash=index_hasher.hexdigest(),
     )
+
+
+def stationary_block_bootstrap_ci(
+    month_buckets: Sequence[Sequence[float]],
+    *,
+    statistic_fn: Callable[[NDArray[np.float64]], float] = winsorized_mean,
+    q: float,
+    replications: int,
+    seed: int,
+    ci_alpha: float = 0.05,
+    circular: bool = True,
+) -> dict[str, object]:
+    """A **non-gating, post-hoc** percentile confidence interval for θ̂ = T(d) from
+    the *same* stationary month-block resample as the gate, but **without** the null
+    recentering (ADR 0003 §2 — the gate imposes the null; a CI resamples the observed
+    cohort). Returns the point estimate, the ``[ci_alpha/2, 1-ci_alpha/2]`` percentile
+    interval, and the discard count. This does **not** decide anything — the frozen
+    one-sided block-bootstrap p-value is the gate; this only characterizes the sampling
+    spread of the point estimate for the archival record.
+
+    The block-draw loop is duplicated verbatim from ``stationary_block_bootstrap_p``
+    (same RNG discipline) rather than shared, so the frozen gate's RNG consumption —
+    and therefore its p-value — can never be perturbed by a refactor here."""
+
+    if replications < 1:
+        raise ValueError("replications must be >= 1")
+    if not 0.0 < q <= 1.0:
+        raise ValueError("q must be in (0, 1]")
+    if not 0.0 < ci_alpha < 1.0:
+        raise ValueError("ci_alpha must be in (0, 1)")
+    n_months = len(month_buckets)
+    if n_months == 0:
+        raise ValueError("month_buckets must contain at least one month")
+
+    bucket_arrays = [np.asarray(b, dtype=np.float64) for b in month_buckets]
+    pooled = np.concatenate(bucket_arrays)
+    if pooled.size == 0:
+        raise ValueError("month_buckets contain no cluster statistics")
+    observed = statistic_fn(pooled)  # NOT recentered — this is the CI, not the gate
+
+    rng = np.random.Generator(np.random.PCG64(seed))
+    stats = np.empty(replications, dtype=np.float64)
+    discards = 0
+    valid = 0
+    while valid < replications:
+        idx = np.empty(n_months, dtype=np.int64)
+        idx[0] = rng.integers(n_months)
+        for pos in range(1, n_months):
+            nxt = idx[pos - 1] + 1
+            if rng.random() < q or (not circular and nxt >= n_months):
+                idx[pos] = rng.integers(n_months)
+            else:
+                idx[pos] = nxt % n_months if circular else nxt
+        drawn = [bucket_arrays[i] for i in idx if bucket_arrays[i].size]
+        if not drawn:
+            discards += 1
+            continue
+        stats[valid] = statistic_fn(np.concatenate(drawn))
+        valid += 1
+
+    lo, hi = np.quantile(stats, [ci_alpha / 2.0, 1.0 - ci_alpha / 2.0], method="linear")
+    return {
+        "point": float(observed),
+        "ci_low": float(lo),
+        "ci_high": float(hi),
+        "ci_alpha": ci_alpha,
+        "method": "stationary-block percentile (non-null, post-hoc)",
+        "replications": replications,
+        "discards": discards,
+    }
 
 
 # --- E1 gate orchestration (ADR 0003 §1, §5) ---------------------------------
@@ -1236,6 +1306,27 @@ def _bootstrap_block_sensitivity(
     return out
 
 
+def _bootstrap_ci_for_gate(
+    d_values: tuple[float, ...],
+    month_keys: tuple[tuple[int, int], ...],
+    *,
+    gate_tag: str,
+    config: ProtocolConfig,
+    replications: int,
+) -> dict[str, object] | None:
+    """Non-null percentile CI for one gate's θ̂ at the frozen 6-month block length,
+    on a private ``{gate}-diag-ci`` seed stream (post-hoc, never touches the gate)."""
+    if not d_values:
+        return None
+    buckets = ordered_month_buckets(month_keys, d_values)
+    seed = derive_seed(
+        config.estage_master_seed, config.estage_spec_version, f"{gate_tag}-diag-ci"
+    )
+    return stationary_block_bootstrap_ci(
+        buckets, q=config.estage_block_restart_q, replications=replications, seed=seed
+    )
+
+
 def _crisis_concentration(month_keys: tuple[tuple[int, int], ...]) -> dict[str, float]:
     """Power-context: the single-year maximum share of clusters and the combined
     2008+2020 crisis share — the calendar clumping the block bootstrap exists to
@@ -1293,13 +1384,32 @@ def returns_diagnostics(
                 config=config, replications=block_diagnostic_replications,
             ),
         },
+        "bootstrap_ci": {
+            "replications": block_diagnostic_replications,
+            "method": "non-null stationary-block percentile (post-hoc, non-gating)",
+            "E1": _bootstrap_ci_for_gate(
+                cohort.d_e1_values, cohort.month_keys, gate_tag="E1",
+                config=config, replications=block_diagnostic_replications,
+            ),
+            "E2": _bootstrap_ci_for_gate(
+                cohort.d_e2_values, cohort.month_keys, gate_tag="E2",
+                config=config, replications=block_diagnostic_replications,
+            ),
+            "note": "percentile CI for θ̂=T(d) from the observed (un-recentered) block "
+            "resample; the one-sided null-imposed p-value is the gate, this only shows "
+            "the point estimate's sampling spread.",
+        },
+        "paired_e1_minus_e2_posthoc": paired_e1_minus_e2_posthoc(
+            cohort, config=config, replications=block_diagnostic_replications
+        ),
         "cost_ladder_bps": {
             "ladder": list(config.estage_cost_ladder_bps),
             "primary": config.estage_cost_bps,
             "d_statistic_cost_invariant": True,
-            "note": "the round-trip cost is applied to the observed and every placebo "
-            "leg alike, so it cancels in d_i = obs_net − mean(placebo_net); the ladder "
-            "moves only the raw return level, not the gate statistic.",
+            "note": "a fixed symmetric round-trip cost is applied to the observed and "
+            "every placebo leg alike, so it cancels exactly in d_i = obs_net − "
+            "mean(placebo_net); the 10/25/50 bps ladder moves only absolute "
+            "profitability reporting, never the E1/E2 inferential statistics.",
         },
         "power_context": {
             "cohort_n": cohort.size,
@@ -1358,6 +1468,7 @@ def reproducibility_manifest(
         "generator": "PCG64",
         "master_seed": config.estage_master_seed,
         "spec_version": config.estage_spec_version,
+        "config_fingerprint": config_fingerprint(config),
         "derived_seeds": {
             "E1": e1_seed,
             "E2": e2_seed,
@@ -1422,3 +1533,121 @@ def inputs_fingerprint(inputs: Sequence[ClusterE2Inputs]) -> str:
         for item in inputs
     )
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+# --- Archival preservation (post-hoc, non-gating; line-close record) ----------
+
+
+def config_fingerprint(config: ProtocolConfig = PROTOCOL) -> str:
+    """A deterministic sha256 over every frozen ``estage_*`` constant, in field
+    order. Pins the exact configuration a run used, so the archived record proves no
+    constant was retuned between the measurement and any later reproduction."""
+
+    parts = [
+        f"{f.name}={getattr(config, f.name)!r}"
+        for f in fields(config)
+        if f.name.startswith("estage_")
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _percentiles(values: Sequence[float]) -> dict[str, float] | None:
+    """p5/p25/median/p75/p95 (+ min/max/n/mean) for an archival distribution summary,
+    or ``None`` when empty. Fixed ``method="linear"`` so the summary is reproducible."""
+    arr = np.asarray([v for v in values if v is not None], dtype=np.float64)
+    if arr.size == 0:
+        return None
+    qs = np.quantile(arr, [0.05, 0.25, 0.5, 0.75, 0.95], method="linear")
+    return {
+        "n": int(arr.size),
+        "mean": float(arr.mean()),
+        "min": float(arr.min()),
+        "p5": float(qs[0]), "p25": float(qs[1]), "median": float(qs[2]),
+        "p75": float(qs[3]), "p95": float(qs[4]),
+        "max": float(arr.max()),
+    }
+
+
+def paired_e1_minus_e2_posthoc(
+    cohort: CommonCohort,
+    *,
+    config: ProtocolConfig = PROTOCOL,
+    replications: int = 9_999,
+) -> dict[str, object]:
+    """**POST-HOC / EXPLORATORY** paired diagnostic on ``δ_i = d_i^E1 − d_i^E2`` per
+    cluster — the same clusters, matched. This is **not** a pre-registered gate and
+    decides nothing; it is recorded for the archive only. Reports the winsorized mean
+    paired difference and a non-null stationary-block percentile CI (its own private
+    seed stream, so no gate RNG is touched)."""
+
+    if cohort.size == 0:
+        return {"post_hoc": True, "available": False, "reason": "empty cohort"}
+    diff = tuple(
+        float(a) - float(b) for a, b in zip(cohort.d_e1_values, cohort.d_e2_values, strict=True)
+    )
+    buckets = ordered_month_buckets(cohort.month_keys, diff)
+    seed = derive_seed(
+        config.estage_master_seed, config.estage_spec_version, "paired-e1-minus-e2-posthoc"
+    )
+    ci = stationary_block_bootstrap_ci(
+        buckets, q=config.estage_block_restart_q, replications=replications, seed=seed
+    )
+    lo, hi = float(ci["ci_low"]), float(ci["ci_high"])
+    return {
+        "post_hoc": True,
+        "label": "EXPLORATORY / POST-HOC — not a pre-registered gate; decides nothing",
+        "statistic": "delta_i = d_i^E1 - d_i^E2 (matched per cluster)",
+        "winsorized_mean": winsorized_mean(diff),
+        "std": float(np.asarray(diff).std(ddof=1)) if len(diff) > 1 else None,
+        "block_bootstrap_ci": ci,
+        "ci_excludes_zero": not (lo <= 0.0 <= hi),
+        "note": "reported for the line-close archive; the conjunctive E1/E2 gate, not "
+        "this paired contrast, is the frozen decision.",
+    }
+
+
+def beta_breadth_distribution(
+    inputs: Sequence[ClusterE2Inputs],
+    kept_cluster_ids: Sequence[str],
+    *,
+    config: ProtocolConfig = PROTOCOL,
+) -> dict[str, object]:
+    """Archival distributions (non-gating) over the **kept** common cohort: the
+    per-cluster observed-date pre-event OLS beta, and the per-cluster forward-window
+    habitat breadth (non-focal PIT-eligible name count, ``count − 1``). Recomputed
+    with the frozen estimator from the same inputs — betas and breadth are what E2's
+    residual is built on, preserved here so the line-close record is self-contained."""
+
+    kept = set(kept_cluster_ids)
+    horizon = config.horizon_sessions
+    beta_window = config.estage_beta_window_sessions
+    min_pairs = config.estage_beta_min_pairs
+    breadth_floor = config.estage_factor_breadth_floor
+    betas: list[float] = []
+    breadths: list[float] = []
+    for item in inputs:
+        if item.cluster_id not in kept or item.entry_index is None:
+            continue
+        focal_daily = _daily_open_returns(item.session_opens)
+        factor = factor_daily_returns(
+            item.session_opens, item.habitat_sum, item.habitat_count, breadth_floor=breadth_floor
+        )
+        beta_end = max(0, item.entry_index - 1)
+        lo = max(0, beta_end - beta_window)
+        beta = ols_beta(focal_daily[lo:beta_end], factor[lo:beta_end], min_pairs=min_pairs)
+        if beta is not None:
+            betas.append(float(beta))
+        # Forward-window breadth: the non-focal eligible name count over the entry's
+        # 60 forward sessions (count − 1); the median summarizes the cluster.
+        fwd_counts = [
+            int(c) - 1
+            for c in item.habitat_count[item.entry_index : item.entry_index + horizon]
+        ]
+        if fwd_counts:
+            breadths.append(float(np.median(fwd_counts)))
+    return {
+        "observed_beta": _percentiles(betas),
+        "habitat_breadth_nonfocal": _percentiles(breadths),
+        "note": "observed-date pre-event OLS beta and forward-window non-focal habitat "
+        "breadth (count-1) over the kept cohort; recomputed with the frozen estimator.",
+    }

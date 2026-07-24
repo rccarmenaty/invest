@@ -629,6 +629,12 @@ from invest.application.cfob_returns import (  # noqa: E402
     returns_diagnostics,
     shared_admissible_indices,
 )
+from invest.application.cfob_returns import (  # noqa: E402
+    beta_breadth_distribution,
+    config_fingerprint,
+    paired_e1_minus_e2_posthoc,
+    stationary_block_bootstrap_ci,
+)
 
 
 def _gate(passed: bool, underpowered: bool, p: float | None) -> tuple:
@@ -858,3 +864,94 @@ def test_inputs_fingerprint_tracks_raw_inputs() -> None:
         301, a.real_event_entry_indices,  # entry index moved
     )
     assert inputs_fingerprint([a]) != inputs_fingerprint([b])
+
+
+# --- Archival preservation (post-hoc, non-gating) ----------------------------
+
+
+def _diag_cohort(n: int = 60, seed: int = 3) -> CommonCohort:
+    rng = np.random.default_rng(seed)
+    return CommonCohort(
+        tuple(f"T{i%7}:2015-01-02" for i in range(n)),
+        tuple(float(x) for x in rng.normal(0.01, 0.3, n)),
+        tuple(float(x) for x in rng.normal(0.0, 0.27, n)),
+        tuple((2015 + i // 12, 1 + i % 12) for i in range(n)),
+        {},
+    )
+
+
+def test_stationary_block_bootstrap_ci_brackets_point_and_is_deterministic() -> None:
+    buckets = [[0.1, 0.2], [], [0.3], [-0.1, 0.0, 0.05]]
+    kw = dict(q=1.0 / 6.0, replications=999, seed=1234)
+    a = stationary_block_bootstrap_ci(buckets, **kw)
+    b = stationary_block_bootstrap_ci(buckets, **kw)
+    assert a == b  # deterministic on seed
+    assert a["ci_low"] <= a["point"] <= a["ci_high"]
+    assert a["ci_low"] < a["ci_high"]
+    assert "post-hoc" in a["method"]
+
+
+def test_stationary_block_bootstrap_ci_does_not_recenter() -> None:
+    # A strongly positive cohort must yield a CI around a positive point (unlike the
+    # null-imposed gate, which recenters to 0). Confirms the CI is on the raw cohort.
+    buckets = [[1.0, 1.1], [0.9], [1.05, 0.95]]
+    ci = stationary_block_bootstrap_ci(buckets, q=1.0 / 3.0, replications=499, seed=7)
+    assert ci["point"] > 0.5 and ci["ci_low"] > 0.0
+
+
+def test_paired_e1_minus_e2_posthoc_is_labeled_and_bracketed() -> None:
+    cfg = ProtocolConfig()
+    diag = paired_e1_minus_e2_posthoc(_diag_cohort(), config=cfg, replications=499)
+    assert diag["post_hoc"] is True
+    assert "POST-HOC" in diag["label"]
+    ci = diag["block_bootstrap_ci"]
+    assert ci["ci_low"] <= ci["point"] <= ci["ci_high"]
+    assert isinstance(diag["ci_excludes_zero"], bool)
+
+
+def test_config_fingerprint_is_deterministic_and_sensitive() -> None:
+    base = ProtocolConfig()
+    assert config_fingerprint(base) == config_fingerprint(ProtocolConfig())
+    # Retuning ANY frozen estage_* constant changes the fingerprint.
+    assert config_fingerprint(base) != config_fingerprint(
+        ProtocolConfig(estage_bootstrap_alpha=0.01)
+    )
+    assert config_fingerprint(base) != config_fingerprint(ProtocolConfig(estage_cost_bps=10.0))
+
+
+def test_beta_breadth_distribution_summarizes_kept_cohort() -> None:
+    cfg = ProtocolConfig(
+        estage_placebo_draws=5, horizon_sessions=10,
+        estage_beta_window_sessions=30, estage_beta_min_pairs=20,
+    )
+    n = 400
+    opens, hsum, hcount = _e2_opens_and_habitat(n, count=60, drift=0.001)
+    kept = ClusterE2Inputs("KEEP:2015-01-02", date(2015, 1, 2), tuple(opens),
+                           tuple(hsum), tuple(hcount), 300, ())
+    dist = beta_breadth_distribution([kept], ["KEEP:2015-01-02"], config=cfg)
+    assert dist["observed_beta"]["n"] == 1
+    # habitat breadth is count-1 = 59 on every session of this fixture.
+    assert dist["habitat_breadth_nonfocal"]["median"] == 59.0
+    # A cluster not in the kept set contributes nothing.
+    empty = beta_breadth_distribution([kept], [], config=cfg)
+    assert empty["observed_beta"] is None
+
+
+def test_returns_diagnostics_include_ci_paired_and_cost_cancellation_note() -> None:
+    cfg = ProtocolConfig(estage_min_cohort=5, estage_bootstrap_replications=99)
+    cohort = _diag_cohort()
+    result = evaluate_returns_line(cohort, config=cfg)
+    diag = returns_diagnostics(cohort, result, config=cfg, block_diagnostic_replications=299)
+    assert diag["bootstrap_ci"]["E1"]["ci_low"] <= diag["bootstrap_ci"]["E1"]["ci_high"]
+    assert diag["bootstrap_ci"]["E2"]["method"].startswith("stationary-block percentile")
+    assert diag["paired_e1_minus_e2_posthoc"]["post_hoc"] is True
+    assert "cancels" in diag["cost_ladder_bps"]["note"]
+    assert "profitability" in diag["cost_ladder_bps"]["note"]
+
+
+def test_reproducibility_manifest_carries_config_fingerprint() -> None:
+    cohort = _diag_cohort()
+    result = evaluate_returns_line(cohort, config=ProtocolConfig(estage_min_cohort=5,
+                                                                 estage_bootstrap_replications=99))
+    manifest = reproducibility_manifest(cohort, result, config=ProtocolConfig())
+    assert manifest["config_fingerprint"] == config_fingerprint(ProtocolConfig())

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -65,6 +66,8 @@ from invest.application.cfob_returns import (
     assemble_e2_cohort,
     build_cluster_e2_inputs,
     build_cluster_return_inputs,
+    beta_breadth_distribution,
+    config_fingerprint,
     evaluate_e1_gate,
     evaluate_e2_gate,
     evaluate_returns_line,
@@ -626,10 +629,11 @@ def measure_returns_line(
     universe_symbols: set[str],
     *,
     verbose: bool = True,
-) -> tuple[ReturnsLineResult, CommonCohort, str]:
+) -> tuple[ReturnsLineResult, CommonCohort, str, dict]:
     """Wire the full E1/E2 returns line end-to-end on the one common frozen cohort
     (ADR 0003 §Roles, §5; ticket #93). Returns the conjunctive result, the common
-    cohort, and the input-panel fingerprint (§6) for the artifact/manifest."""
+    cohort, the input-panel fingerprint (§6), and the archival beta/breadth
+    distributions over the kept cohort."""
 
     aggregate = load_or_build_habitat_aggregate(universe_symbols, verbose=verbose)
     session_bars = _load_symbol_opens({c.trading_symbol for c in cohort_clusters})
@@ -646,7 +650,9 @@ def measure_returns_line(
     result = evaluate_returns_line(cohort, config=PROTOCOL)
     if verbose:
         _print_returns_result(result)
-    return result, cohort, inputs_fingerprint(inputs)
+    # Archival beta/breadth distributions over the kept cohort (non-gating).
+    beta_breadth = beta_breadth_distribution(inputs, cohort.cluster_ids, config=PROTOCOL)
+    return result, cohort, inputs_fingerprint(inputs), beta_breadth
 
 
 def _print_returns_result(result: ReturnsLineResult) -> None:
@@ -663,6 +669,14 @@ def _print_returns_result(result: ReturnsLineResult) -> None:
         print(f"    dropped {reason}: {count:,}")
 
 
+def _artifact_content_sha256(artifact: dict) -> str:
+    """SHA-256 over the canonical JSON of the artifact, excluding any prior hash
+    field — the self-hash that pins this exact archived record."""
+    payload = {k: v for k, v in artifact.items() if k != "artifact_sha256"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_returns_artifact(
     result: ReturnsLineResult,
     cohort: CommonCohort,
@@ -670,16 +684,18 @@ def build_returns_artifact(
     mode: str,
     git_sha: str | None,
     data_fingerprint: str | None = None,
+    beta_breadth: dict | None = None,
 ) -> dict:
     """The E1/E2 returns artifact (``cfob-returns.json``). Separate from the D/F0
     ``cfob-structure.json`` and never overwrites it (ticket #93). ``capital_go`` is
-    false by construction."""
+    false by construction. Carries a self-``artifact_sha256`` (computed last) so the
+    archived record is content-addressable."""
 
     manifest = reproducibility_manifest(
         cohort, result, config=PROTOCOL, data_fingerprint=data_fingerprint
     )
     diagnostics = returns_diagnostics(cohort, result, config=PROTOCOL)
-    return {
+    artifact = {
         "stage": "E1+E2",
         "line": PROTOCOL.line,
         "experiment_id": "cfob-e1-e2",
@@ -733,13 +749,99 @@ def build_returns_artifact(
             "Does not reopen residual, R2-1, PEAD, or CMFT.",
             "The habitat factor is gross; cost applies only to the focal traded leg.",
         ],
+        "archival": {
+            "status": "line-closed",
+            "config_fingerprint": config_fingerprint(PROTOCOL),
+            "beta_breadth_distribution": beta_breadth,
+            "note": "Line archived at this record. Do NOT retune any frozen constant "
+            "against the same data — a changed config_fingerprint is a new trial under "
+            "the deflated-Sharpe standard, not an edit to this result.",
+        },
     }
+    artifact["artifact_sha256"] = _artifact_content_sha256(artifact)
+    return artifact
+
+
+def _fmt_ci(ci: dict | None) -> str:
+    if not ci:
+        return "(n/a)"
+    return (f"point `{ci['point']:.5f}`, {int((1 - ci['ci_alpha']) * 100)}% CI "
+            f"[`{ci['ci_low']:.5f}`, `{ci['ci_high']:.5f}`]")
+
+
+def _fmt_dist(d: dict | None) -> str:
+    if not d:
+        return "(n/a)"
+    return (f"n={d['n']:,} · median `{d['median']:.4g}` · "
+            f"p5..p95 [`{d['p5']:.4g}`, `{d['p95']:.4g}`]")
+
+
+def _archival_doc_lines(artifact: dict) -> list[str]:
+    """The line-close archival section: bootstrap CIs, the post-hoc paired contrast,
+    beta/habitat-breadth distributions, the config + artifact hashes, the explicit
+    cost-cancellation statement, and the do-not-retune notice."""
+    diag = artifact.get("diagnostics", {})
+    ci = diag.get("bootstrap_ci", {})
+    paired = diag.get("paired_e1_minus_e2_posthoc", {})
+    arch = artifact.get("archival", {})
+    bb = arch.get("beta_breadth_distribution", {}) or {}
+    repro = artifact["reproducibility"]
+    pci = paired.get("block_bootstrap_ci") if isinstance(paired, dict) else None
+    lines = [
+        "## Line-close archive",
+        "",
+        f"**Status:** `{arch.get('status', 'line-closed')}` — {arch.get('note', '')}",
+        "",
+        "### Bootstrap confidence intervals (post-hoc, non-gating)",
+        "",
+        "Percentile CIs for θ̂ = T(d) from the **un-recentered** block resample "
+        "(the gate itself is the one-sided null-imposed p-value; these only show the "
+        "point estimate's sampling spread):",
+        "",
+        f"- E1: {_fmt_ci(ci.get('E1'))}",
+        f"- E2: {_fmt_ci(ci.get('E2'))}",
+        "",
+        "### Paired contrast dᵢ^E1 − dᵢ^E2 — **EXPLORATORY / POST-HOC**",
+        "",
+        "Not a pre-registered gate; decides nothing, recorded for the archive only:",
+        "",
+        f"- winsorized mean `{paired.get('winsorized_mean'):.5f}`, {_fmt_ci(pci)}, "
+        f"excludes zero: `{paired.get('ci_excludes_zero')}`"
+        if isinstance(paired, dict) and paired.get("winsorized_mean") is not None
+        else "- (unavailable)",
+        "",
+        "### Beta and habitat-breadth distributions (kept cohort)",
+        "",
+        f"- Observed pre-event OLS beta: {_fmt_dist(bb.get('observed_beta'))}",
+        f"- Habitat breadth (non-focal names, count−1): {_fmt_dist(bb.get('habitat_breadth_nonfocal'))}",
+        "",
+        "### Cost invariance",
+        "",
+        "A **fixed symmetric 25 bps round-trip cost cancels exactly** from the "
+        "observed-minus-placebo `dᵢ` (both legs are net of the same cost). It affects "
+        "**absolute profitability** reporting, but **not** these E1/E2 inferential "
+        "statistics — the 10/25/50 bps ladder moves neither p-value.",
+        "",
+        "### Content hashes",
+        "",
+        f"- `config_fingerprint`: `{arch.get('config_fingerprint')}`",
+        f"- `artifact_sha256`: `{artifact.get('artifact_sha256', '(injected at write)')}`",
+        f"- `data_fingerprint`: `{repro['data_fingerprint']}`",
+        f"- `cohort_fingerprint`: `{repro['cohort_fingerprint']}`",
+        "",
+        "**Archived — do not retune against the same data.** A changed "
+        "`config_fingerprint` is a new trial under the deflated-Sharpe standard, not an "
+        "edit to this result.",
+        "",
+    ]
+    return lines
 
 
 def write_returns_docs(artifact: dict) -> None:
     """The E1/E2 results doc (``docs/research/cfob-e1-e2-results.md``), mirroring the
     D/F0 results-doc shape: verdict, cohort counts, both gate p-values, drop ledger,
-    protocol block, claims/non-claims, manifest (ticket #93)."""
+    protocol block, claims/non-claims, manifest, and the line-close archival block
+    (ticket #93 + archival close)."""
 
     gates = artifact["gates"]
     e1 = gates["E1"]
@@ -799,6 +901,7 @@ def write_returns_docs(artifact: dict) -> None:
         "serialization contract are in `cfob-returns.json` — a second same-seed / "
         "same-data run reproduces every p-value bit-for-bit.",
         "",
+        *_archival_doc_lines(artifact),
         "## Claims",
         "",
         *[f"- {c}" for c in artifact["claims"]],
@@ -1325,9 +1428,12 @@ def main() -> int:
         # (ADR 0003 §Roles, §5; ticket #93). cfob-structure.json is left untouched.
         print("\nRunning E1/E2 returns line (conjunctive verdict on the common cohort)...")
         habitat_universe = {cluster.trading_symbol for cluster in eligible}
-        result, cohort, data_fp = measure_returns_line(eligible, deoverlapped, habitat_universe)
+        result, cohort, data_fp, beta_breadth = measure_returns_line(
+            eligible, deoverlapped, habitat_universe
+        )
         artifact = build_returns_artifact(
-            result, cohort, mode="measured", git_sha=current_git_sha(), data_fingerprint=data_fp
+            result, cohort, mode="measured", git_sha=current_git_sha(),
+            data_fingerprint=data_fp, beta_breadth=beta_breadth,
         )
         RETURNS_ARTIFACT_PATH.write_text(json.dumps(artifact, indent=2, default=str))
         if args.write_docs:
