@@ -272,6 +272,51 @@ def admissible_placebo_indices(
     return [c for c in range(last_valid + 1) if c not in embargoed]
 
 
+def shared_admissible_indices(
+    session_opens: Sequence[float],
+    focal_daily: NDArray[np.float64],
+    factor: NDArray[np.float64],
+    *,
+    real_event_entry_indices: Sequence[int],
+    horizon: int,
+    cost_bps: float,
+    beta_window: int,
+    min_pairs: int,
+) -> list[int]:
+    """The single shared E1/E2 placebo pool (ADR 0003 §5, amended): E1 forward-window
+    and embargo admissibility **intersected with full E2 support**.
+
+    A date is admissible only when it clears ``admissible_placebo_indices`` (complete
+    forward window, outside every real-event embargo) **and** its benchmark residual
+    is computable — a complete forward focal+factor window and a 252-session pre-event
+    beta estimable from ``≥ min_pairs`` valid pairs. Because E2 support implies the E1
+    focal net return exists, both gates' per-date statistics are defined on every
+    pooled date, so E1 and E2 draw identical placebo dates and neither gate can drop a
+    cluster for a placebo it cannot evaluate. Dates without support (e.g. a focal's
+    own pre-history head with no beta window) are simply inadmissible."""
+
+    base = admissible_placebo_indices(
+        session_count=len(session_opens),
+        real_event_entry_indices=real_event_entry_indices,
+        horizon=horizon,
+    )
+    return [
+        c
+        for c in base
+        if date_e2_residual(
+            session_opens,
+            focal_daily,
+            factor,
+            c,
+            horizon=horizon,
+            cost_bps=cost_bps,
+            beta_window=beta_window,
+            min_pairs=min_pairs,
+        )
+        is not None
+    ]
+
+
 def sample_placebo_indices(
     admissible: Sequence[int], *, draws: int, seed: int
 ) -> list[int] | None:
@@ -953,12 +998,16 @@ def assemble_common_cohort(
     pass so both gates measure identical clusters (ADR 0003 §5).
 
     Each admitted cluster contributes a matched pair ``(d_i^E1, d_i^E2)`` computed
-    over the *same* placebo draws (same admissibility + per-cluster seed as the
-    standalone gates). One counted ledger, drop reasons in resolution order:
-    ``no_entry_session`` → ``insufficient_placebo`` → ``focal_window_incomplete``
-    (observed or a placebo focal window runs off the panel) → ``focal_e2_support``
-    (observed date lacks a beta or full forward breadth) → ``placebo_e2_support``
-    (some placebo date lacks E2 support)."""
+    over the **one shared placebo pool** — the E1 forward/embargo admissible dates
+    intersected with full E2 support (``shared_admissible_indices``) — sampled with
+    the per-cluster seed. Because every pooled date is E2-supported, both legs are
+    defined on every draw, so no cluster is ever dropped for a placebo it cannot
+    evaluate; instead a cluster with fewer than ``draws`` shared admissible dates is
+    excluded **before inference** (ADR 0003 §5, amended). One counted ledger, drop
+    reasons in resolution order: ``no_entry_session`` → ``focal_window_incomplete``
+    (observed forward window runs off the panel) → ``focal_e2_support`` (observed date
+    has no beta or full forward breadth) → ``insufficient_placebo`` (fewer than
+    ``draws`` shared E2-supported admissible dates)."""
 
     horizon = config.horizon_sessions
     cost_bps = config.estage_cost_bps
@@ -976,40 +1025,46 @@ def assemble_common_cohort(
         if item.entry_index is None:
             drop_counts["no_entry_session"] += 1
             continue
-        admissible = admissible_placebo_indices(
-            session_count=len(item.session_opens),
-            real_event_entry_indices=item.real_event_entry_indices,
-            horizon=horizon,
-        )
-        seed = derive_seed(
-            config.estage_master_seed, config.estage_spec_version, "placebo", item.cluster_id
-        )
-        placebo = sample_placebo_indices(admissible, draws=draws, seed=seed)
-        if placebo is None:
-            drop_counts["insufficient_placebo"] += 1
-            continue
 
-        # E1 leg: focal net returns (cost cancels in the placebo difference, but is
-        # applied to every leg for the frozen return convention).
-        d1 = cluster_d_statistic(
-            item.session_opens, item.entry_index, placebo, horizon=horizon, cost_bps=cost_bps
-        )
-        if d1 is None:
-            drop_counts["focal_window_incomplete"] += 1
-            continue
-
-        # E2 leg: benchmark residuals over the same placebo dates.
         focal_daily = _daily_open_returns(item.session_opens)
         factor = factor_daily_returns(
             item.session_opens, item.habitat_sum, item.habitat_count, breadth_floor=breadth_floor
         )
+
+        # The observed date must itself be E2-supported (which implies its E1 focal
+        # net return exists). Split the two failure modes for the ledger.
         e_obs = date_e2_residual(
             item.session_opens, focal_daily, factor, item.entry_index,
             horizon=horizon, cost_bps=cost_bps, beta_window=beta_window, min_pairs=min_pairs,
         )
         if e_obs is None:
-            drop_counts["focal_e2_support"] += 1
+            if focal_net_return(
+                item.session_opens, item.entry_index, horizon=horizon, cost_bps=cost_bps
+            ) is None:
+                drop_counts["focal_window_incomplete"] += 1
+            else:
+                drop_counts["focal_e2_support"] += 1
             continue
+
+        # One shared E2-supported placebo pool; the pre-inference gate excludes a
+        # cluster with fewer than `draws` admissible dates.
+        pool = shared_admissible_indices(
+            item.session_opens, focal_daily, factor,
+            real_event_entry_indices=item.real_event_entry_indices,
+            horizon=horizon, cost_bps=cost_bps, beta_window=beta_window, min_pairs=min_pairs,
+        )
+        seed = derive_seed(
+            config.estage_master_seed, config.estage_spec_version, "placebo", item.cluster_id
+        )
+        placebo = sample_placebo_indices(pool, draws=draws, seed=seed)
+        if placebo is None:
+            drop_counts["insufficient_placebo"] += 1
+            continue
+
+        # Both legs are defined on every pooled date by construction.
+        d1 = cluster_d_statistic(
+            item.session_opens, item.entry_index, placebo, horizon=horizon, cost_bps=cost_bps
+        )
         e_placebo = [
             date_e2_residual(
                 item.session_opens, focal_daily, factor, i,
@@ -1017,12 +1072,9 @@ def assemble_common_cohort(
             )
             for i in placebo
         ]
-        if any(e is None for e in e_placebo):
-            drop_counts["placebo_e2_support"] += 1
-            continue
 
         cluster_ids.append(item.cluster_id)
-        d_e1.append(d1)
+        d_e1.append(float(d1))
         d_e2.append(e_obs - float(np.mean(e_placebo)))
         month_keys.append((item.known_time.year, item.known_time.month))
 

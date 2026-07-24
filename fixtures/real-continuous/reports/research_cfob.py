@@ -109,6 +109,12 @@ HABITAT_CACHE = REPORTS_DIR / "cfob-habitat-daily.parquet"
 BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
 USER_AGENT = "invest-research ramoncarmenaty@gmail.com"
 FIRST_YEAR = 2006
+# SEP price warm-up: the E2 habitat factor needs the 252-bar habitat floor and the
+# date-specific 252-session beta both fully constructible *before* the first research
+# date. That is ~2 trading years of warm-up (252 floor + 252 beta); pull from
+# FIRST_YEAR-4 so the first research year (2006) is fully supported with margin and
+# the shared E2-supported placebo pool can reach back to ~2004 (ADR 0003 §4 amended).
+SEP_WARMUP_START = date(FIRST_YEAR - 4, 1, 1)
 REQUEST_PAUSE_SECONDS = 0.4
 RECONCILE_TOLERANCE = 0.02
 RECONCILE_SAMPLE = ((2006, 2), (2009, 4), (2012, 3), (2015, 1), (2018, 2), (2021, 4), (2024, 3))
@@ -1275,13 +1281,12 @@ def main() -> int:
 
     if args.pull_sep:
         # Materialize the SEP price panel for every raw cluster symbol (a superset
-        # of the universe-eligible set) from FIRST_YEAR-2 so the habitat floor's
-        # trailing history is covered. The subsequent measure run reads it back.
+        # of the universe-eligible set) from SEP_WARMUP_START so the habitat floor
+        # AND the date-specific 252-session beta are fully constructible before the
+        # first research date. The subsequent measure run reads it back.
         print(f"Materializing SEP price panel into {SEP_DIR}...")
         symbols = {cluster.trading_symbol for cluster in raw}
-        written = materialize_sep_panel(
-            symbols, date(FIRST_YEAR - 2, 1, 1), through, SEP_DIR
-        )
+        written = materialize_sep_panel(symbols, SEP_WARMUP_START, through, SEP_DIR)
         print(f"  wrote {len(written):,} year parquet(s)")
         return 0
 

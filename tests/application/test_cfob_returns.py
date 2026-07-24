@@ -627,6 +627,7 @@ from invest.application.cfob_returns import (  # noqa: E402
     evaluate_returns_line,
     reproducibility_manifest,
     returns_diagnostics,
+    shared_admissible_indices,
 )
 
 
@@ -681,6 +682,69 @@ def _e2_cluster(cid: str, entry: int, *, n: int = 400) -> ClusterE2Inputs:
         entry_index=entry,
         real_event_entry_indices=(9,),  # embargo the sub-beta-window placebo indices
     )
+
+
+def test_shared_admissible_indices_intersects_e1_admissibility_and_e2_support() -> None:
+    # The single shared pool (ADR 0003 §5 amended) = E1 forward/embargo admissibility
+    # AND full E2 support (a computable benchmark residual). With a flat panel that
+    # clears breadth everywhere, the only extra exclusion is the sub-beta-window head:
+    # a date needs >= min_pairs prior daily returns for its 252-session beta.
+    n = 400
+    opens, hsum, hcount = _e2_opens_and_habitat(n)
+    focal_daily = np.asarray(opens[1:], float) / np.asarray(opens[:-1], float) - 1.0
+    factor = factor_daily_returns(opens, hsum, hcount, breadth_floor=50)
+    kw = dict(horizon=10, cost_bps=25.0, beta_window=30, min_pairs=20)
+
+    pool = shared_admissible_indices(
+        opens, focal_daily, factor, real_event_entry_indices=(), **kw
+    )
+    base = admissible_placebo_indices(session_count=n, real_event_entry_indices=(), horizon=10)
+
+    assert set(pool).issubset(base)          # never admits what E1 would not
+    assert 20 not in pool and 21 in pool     # date 20 has 19 prior pairs (<20); 21 has 20
+    assert min(pool) == 21 and max(pool) == n - 10 - 1
+    # Every pooled date has a computable residual by construction.
+    assert all(
+        date_e2_residual(opens, focal_daily, factor, c, **kw) is not None for c in pool
+    )
+
+
+def test_assemble_common_cohort_keeps_cluster_despite_unsupported_head_no_all100_drop() -> None:
+    # With the shared E2-supported pool, placebo dates are drawn ONLY from supported
+    # dates, so a cluster is never dropped merely because some E1-admissible date in
+    # its head lacks a beta window — the old all-100 `placebo_e2_support` drop is gone.
+    cfg = ProtocolConfig(
+        estage_placebo_draws=5, horizon_sessions=10,
+        estage_beta_window_sessions=30, estage_beta_min_pairs=20,
+    )
+    n = 400
+    opens, hsum, hcount = _e2_opens_and_habitat(n, count=60, drift=0.001)
+    # No embargo hack needed now: the pool itself excludes the sub-beta-window head.
+    cluster = ClusterE2Inputs(
+        "KEEP:2015-01-02", date(2015, 1, 2), tuple(opens), tuple(hsum), tuple(hcount), 300, ()
+    )
+    cohort = assemble_common_cohort([cluster], config=cfg)
+
+    assert cohort.size == 1
+    assert "placebo_e2_support" not in cohort.drop_counts
+
+
+def test_assemble_common_cohort_drops_cluster_with_fewer_than_draws_supported_dates() -> None:
+    # The pre-inference gate: a cluster with fewer than `draws` shared admissible
+    # (E2-supported) dates is excluded before inference, counted as insufficient_placebo.
+    cfg = ProtocolConfig(
+        estage_placebo_draws=100, horizon_sessions=10,
+        estage_beta_window_sessions=30, estage_beta_min_pairs=20,
+    )
+    n = 130  # supported pool = [21 .. n-11] = 99 dates < 100 draws
+    opens, hsum, hcount = _e2_opens_and_habitat(n, count=60, drift=0.001)
+    cluster = ClusterE2Inputs(
+        "THIN:2015-01-02", date(2015, 1, 2), tuple(opens), tuple(hsum), tuple(hcount), 60, ()
+    )
+    cohort = assemble_common_cohort([cluster], config=cfg)
+
+    assert cohort.size == 0
+    assert cohort.drop_counts["insufficient_placebo"] == 1
 
 
 def test_assemble_common_cohort_aligns_e1_e2_on_identical_clusters() -> None:
